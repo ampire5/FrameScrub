@@ -194,7 +194,7 @@ brew uninstall --cask framescrub          # the app
 brew uninstall --zap --cask framescrub    # also settings, resume positions and thumbnails
 ```
 
-The data lives in `~/.config/framescrub` (settings, bindings, icons) and `~/Library/Application Support/FrameScrub` (resume positions, folder colours, start-screen pictures); window places are in `~/Library/Preferences/local.framescrub.plist`, which `--zap` leaves. With the zip, delete the app and these by hand.
+The data lives in `~/.config/framescrub` (settings, bindings, icons) and `~/Library/Application Support/FrameScrub` (resume positions, folder colours, start-screen pictures); window places are in `~/Library/Preferences/local.framescrub.plist`; `--zap` removes all three. With the zip, delete the app and these by hand.
 
 ## Configure
 
