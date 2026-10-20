@@ -1,0 +1,38 @@
+import Foundation
+
+/// The settings the user edits (Preferences window, menus, export sheet). A change is applied in memory
+/// and announced to the observers first; then only its keys are written to framescrub.conf, in place.
+/// Keys that still have their default value and are not in the file are not added to it.
+public final class PreferencesStore {
+    public private(set) var config: Config
+    private let url: URL
+    private var observers: [(Config) -> Void] = []
+
+    public init(config: Config, url: URL = Config.fileURL) {
+        self.config = config
+        self.url = url
+    }
+
+    public func addObserver(_ observer: @escaping (Config) -> Void) {
+        observers.append(observer)
+    }
+
+    /// Throws the write error after the new value is applied: the app keeps working with it.
+    public func update(_ keys: [String], _ change: (inout Config) -> Void) throws {
+        let before = config
+        change(&config)
+        guard config != before else { return }
+        for observer in observers { observer(config) }
+        try persist(keys)
+    }
+
+    private func persist(_ keys: [String]) throws {
+        let existing = FileManager.default.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
+        let defaults = Config()
+        let needed = keys.filter {
+            config.text(forKey: $0) != defaults.text(forKey: $0) || ConfigText.containsKey($0, in: existing)
+        }
+        guard !needed.isEmpty else { return }
+        try config.write(keys: needed, to: url)
+    }
+}

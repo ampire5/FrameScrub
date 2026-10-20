@@ -1,0 +1,74 @@
+{
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "knob.svg",
+          "name": "knob",
+          "glass": true
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.4
+      },
+      "translucency": {
+        "enabled": true,
+        "value": 0.3
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "image-name": "art.png",
+          "name": "art",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "specular": false
+    },
+    {
+      "layers": [
+        {
+          "image-name": "bar.svg",
+          "name": "bar",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.35
+      },
+      "specular": true
+    },
+    {
+      "layers": [
+        {
+          "image-name": "glow.svg",
+          "name": "glow",
+          "glass": false
+        },
+        {
+          "image-name": "bg.svg",
+          "name": "bg",
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0.5
+      },
+      "specular": false
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
