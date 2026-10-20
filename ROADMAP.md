@@ -7,8 +7,13 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 - **Subtitles and audio tracks.** Embedded and external subtitles, switching between audio and subtitle tracks, remembered per file.
 - **The shared Settings window and Home** from [Loupe](https://github.com/ampire5/Loupe): the same Settings layout, and a Photos-style start screen with a sidebar, Recent and Stash.
 - **A filmstrip in the seek bar.** A continuous strip of keyframes along the timeline, as in QuickTime's trim view, alongside the existing hover preview.
-- **Small conveniences:** jump back to where you were before a seek, previous/next keyframe, go to a time or frame number (`⌘G`), hold a key for 2× speed, the frame type (I/P/B) in the OSD, always on top.
-- **The window** opens at 1:1 when the video fits and remembers where you put it.
+
+## Recently shipped
+
+- Go to a time or frame number (`⌘G`), and back to where you were before a seek (`Shift+Backspace`).
+- Previous / next keyframe, and the keyframe lens on the seek bar.
+- Hold a key for 2× speed; the frame type (`K`, `I`, `P`, `B`) on every frame step; float on top (`T`).
+- The window opens at 1:1 when the video fits and remembers its size and place.
 
 ## Planned
 

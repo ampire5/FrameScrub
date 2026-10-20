@@ -25,12 +25,13 @@ For editors, reviewers, animators, photographers pulling stills from video — a
 ## Why FrameScrub
 
 - **Backward is as fast as forward.** A cache of decoded frames around the playhead fills in both directions in the background, so stepping back never waits for a keyframe — even in long-GOP 4K HEVC HDR.
+- **It plays backward, too.** Real reverse playback at 1, 2, 4 and 8×, frames only, no sound. When the decoder can't keep up, frames are skipped and the speed holds. The A-B loop and Play Marks Only run backward as well.
 - **Sound you can scrub, like tape.** Drag through a paused video and hear it the way a reel sounds under your hand: the pitch follows your speed, and scrubbing backward plays the sound in reverse. A single frame step plays a short blip of sound, so you can find a cue, a clap or the first word by ear. Prefer clean audio? `⇧⌥M` keeps the sound's own pitch.
 - **Its own VideoToolbox pipeline.** Several frames in flight instead of one at a time: ~640 fps for 4K H.264 and ~730 fps for 4K HEVC at ~0.4 ms of CPU per frame.
-- **Frames out at full quality.** Save the frame you're on as JPEG, 10-bit HEIC, 16-bit PNG or TIFF in the source colour space (BT.709, HLG, PQ), or export every frame of a range — optionally only the sharpest ones.
+- **Frames out at full quality.** Save the frame you're on as JPEG, 10-bit HEIC, 16-bit PNG or TIFF in the source colour space (BT.709, HLG, PQ), or export every frame of a range — optionally only the sharpest ones, skipping blurred frames and near-duplicates.
 - **Cut without re-encoding.** Mark ins and outs, save them as clips — separately, joined, or everything *except* the marks — snapped to keyframes, losslessly.
 - **NAS-friendly.** One shared read cache, MP4 indexes from the header, background index scans for MKV/WebM/TS: seeking over SMB stays quick on high-bitrate files.
-- **Your library, your hands.** A start screen with Recent and your [Stash](https://github.com/stashapp/stash) library, mpv-style key bindings, MX Master 4 haptics, a TourBox Lite preset.
+- **Your library, your hands.** A start screen with Recent and your [Stash](https://github.com/stashapp/stash) library, mpv-style key bindings, Logitech mouse support with MX Master 4 haptics, a TourBox Lite preset.
 
 ## Made for big collections
 
@@ -77,10 +78,15 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 </table>
 
 **Playback and scrubbing**
-- Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on MX mice, shuttle at 1/2/4/8× forward and backward, scrub audio that plays backward like tape (`⌥M`).
+- Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
+- Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
+- **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
 - Scene detection: jump to the next scene or back to the start of this one.
-- A-B loop, cut marks with drag-to-adjust edges, play only the marked parts.
-- H.264, HEVC (incl. 10-bit HDR), AV1 on M3 and later, everything else through FFmpeg; MP4, MOV, MKV, WebM, TS and more.
+- `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
+- A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
+- H.264 and HEVC (incl. 10-bit HDR) on its own VideoToolbox pipeline; AV1 through FFmpeg, in hardware on M3 and later and with libdav1d otherwise; everything else through FFmpeg too. MP4, MOV, MKV, WebM, TS and more.
+
+<p align="center"><img src="docs/images/lens.webp" width="70%" alt="Seek-bar preview with the keyframe lens: keyframes as ticks, K −1.50 s / +0.25 s"></p>
 
 **Picture**
 - MetalFX upscaling and HDR tone mapping; Apple's neural super-resolution redraws a paused frame sharper.
@@ -88,11 +94,14 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
 
 **Saving**
-- `s` saves the frame; `⇧S` exports an A-B range — every frame, every N-th, N per second, or only the sharpest of every N.
+- `s` saves the frame; `⇧S` exports an A-B range — every frame, every N-th, N per second, or only the sharpest of every N. The export can skip blurred stretches and frames too like the last one it saved.
+- Saved frames can be enlarged ×2, ×4 or to a set size, up to 16384 px; Apple's neural upscaler does it for SDR frames from sources up to 1920 px, Lanczos otherwise.
 - `⇧⌘C` saves the marks as clips without re-encoding.
 
 **Hardware**
-- **Logitech MX Master 4** over HID++: haptic patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors; the thumb wheel, gesture and side buttons bound like keys.
+- **Any mouse**: the wheel scrubs, the side wheel seeks, right click plays, and every button and wheel can be rebound in `input.conf`.
+- **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
+- **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
 - **TourBox Lite**: a ready-made preset in `extras/tourbox`.
 
 **Icon**
@@ -100,7 +109,27 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 
 <p align="center"><img src="docs/images/icons.webp" width="55%" alt="The FrameScrub horse in light, dark and clear styles"></p>
 
-The full list of keys, gestures and settings is in **[docs/reference.md](docs/reference.md)**.
+## Keys
+
+The most useful default (classic) keys. `?` shows every key in effect; **[docs/reference.md](docs/reference.md)** has the full list, the left-hand layout, gestures and settings.
+
+| Keys | Action |
+|---|---|
+| `Space` | Play / pause |
+| `,` `.` | One frame back / forward |
+| `⌥←` `⌥→` | Previous / next keyframe |
+| `←` `→` / `↓` `↑` | Seek ∓5 s / ∓60 s |
+| `Shift+↓` `Shift+↑` | Start of this scene / next scene |
+| `Ctrl+j` `Ctrl+k` `Ctrl+l` | Shuttle back / stop / forward (each press faster, up to 8×) |
+| Hold `/` | Play at 2× while held |
+| `[` `]` `Backspace` | Speed down / up / reset |
+| `⌘G` / `Shift+Backspace` | Go to a time or frame / back to before the last seek |
+| `l` / `L` | A-B range: start, end, clear / what happens at B |
+| `I` `O` / `⌘Z` | Cut mark in / out / undo |
+| `s` / `S` / `⇧⌘C` | Save frame / export the A-B range / save the marks as clips |
+| `<` `>` | Previous / next video in the folder |
+| `f` / `T` | Full screen / float on top |
+| `i` / `?` | Stats panel / all keys |
 
 ## Stash
 
@@ -127,7 +156,7 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 | **Display** | A `CAMetalLayer` with EDR for HDR (HLG and PQ, tone-mapped where the screen can't show it), Core Image for colour, MetalFX upscaling, and VideoToolbox's frame processor for neural super-resolution of paused frames. |
 | **Audio** | `AVAudioEngine` with a time-pitch unit for playback at any speed and for tape-style scrub audio (FFmpeg's libswresample converts the samples). |
 | **I/O** | One shared read cache per file for every decoder (playback, backward, thumbnails, audio, export), which keeps seeks over SMB fast. |
-| **Input** | mpv-style `input.conf`, trackpad and wheel gestures, the MX Master 4 over IOKit HID with [LogiHIDPP](https://github.com/ampire5/LogiHIDPP). |
+| **Input** | mpv-style `input.conf`, trackpad and wheel gestures, Logitech mice over IOKit HID with [LogiHIDPP](https://github.com/ampire5/LogiHIDPP). |
 | **Structure** | A SwiftPM package with no Xcode project: `FrameScrubCore` (demuxing, decoding, caches, playback, export, with no window code) and the app, on top of the shared packages HomeScreenKit, InfoPanelKit and StashKit. About 20 000 lines of Swift. |
 | **Tests** | 1 095 tests in Swift Testing, run against generated fixture videos (exact frame numbers are drawn into every frame), including performance tests for decoding and simulated NAS seeks; CI on GitHub Actions. |
 
@@ -137,7 +166,15 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 brew install --cask ampire5/tap/framescrub
 ```
 
-Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases) (it needs `brew install ffmpeg`). Builds are not signed with an Apple Developer ID yet; the cask clears the quarantine flag for you.
+Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases) (it needs `brew install ffmpeg`).
+
+FrameScrub needs macOS 26 or later on Apple Silicon, and FFmpeg from Homebrew.
+
+**"FrameScrub can't be opened" (zip only).** Builds are not signed with an Apple Developer ID yet. The cask clears the quarantine flag for you; for the zip, try to open the app once, then click **Open Anyway** in System Settings → Privacy & Security, or run:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/FrameScrub.app
+```
 
 ### Build from source
 
@@ -150,6 +187,15 @@ scripts/make-app.sh --install      # → ~/Applications/FrameScrub.app
 swift run -c release FrameScrub /path/to/video.mp4
 ```
 
+### Uninstall
+
+```sh
+brew uninstall --cask framescrub          # the app
+brew uninstall --zap --cask framescrub    # also settings, resume positions and thumbnails
+```
+
+The data lives in `~/.config/framescrub` (settings, bindings, icons) and `~/Library/Application Support/FrameScrub` (resume positions, folder colours, start-screen pictures); window places are in `~/Library/Preferences/local.framescrub.plist`, which `--zap` leaves. With the zip, delete the app and these by hand.
+
 ## Configure
 
 Settings (`⌘,`) has tabs for General, Scrolling, Saving, Display, Mouse & Trackpad and Stash. They edit two plain-text files, keeping your comments:
@@ -159,6 +205,10 @@ Settings (`⌘,`) has tabs for General, Scrolling, Saving, Display, Mouse & Trac
 
 See **[docs/reference.md](docs/reference.md)** for every option.
 
+## Privacy
+
+No telemetry, no accounts, no update checks. FrameScrub goes online only to talk to your Stash server, when you set one, and to download Apple's upscaling model once, if you agree. Nothing is written next to your videos except the frames and clips you save.
+
 ## Tests
 
 ```sh
@@ -166,6 +216,17 @@ scripts/make-fixtures.sh                                 # generates Tests/Fixtu
 swift test
 FRAMESCRUB_PERF=1 swift test --filter PerformanceTests   # also runs the simulated-NAS seeks (makes a 4K file once)
 ```
+
+## Reporting bugs and contributing
+
+Bugs and ideas go to [Issues](https://github.com/ampire5/FrameScrub/issues). For a bug, please include:
+
+- the macOS version and Mac model;
+- the decoder line from the stats panel (`i`; right click → Copy All copies the whole panel);
+- the FFmpeg version (`ffmpeg -version`);
+- whether the file plays in QuickTime Player.
+
+Pull requests are welcome; a full contributing guide is on the roadmap.
 
 ## Roadmap
 
