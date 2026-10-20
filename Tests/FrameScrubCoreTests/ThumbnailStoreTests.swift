@@ -1,4 +1,5 @@
 import CoreImage
+import CryptoKit
 import Foundation
 import Testing
 @testable import FrameScrubCore
@@ -56,6 +57,17 @@ import Testing
         store.save(picture(64, 36), for: urls[2], context: context)   // prunes after the dates were set
         #expect(store.image(for: urls[0]) == nil)
         #expect(store.image(for: urls[1]) != nil && store.image(for: urls[2]) != nil)
+    }
+
+    @Test func picturesSavedUnderTheOldKeyAreNotShown() throws {
+        let directory = makeTemporaryDirectory()
+        let url = try video()
+        let key = try #require(ResumeStore.key(for: url))
+        let old = SHA256.hash(data: Data(key.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+        let store = ThumbnailStore(directory: directory)
+        store.save(picture(64, 36), for: url, context: context)
+        try FileManager.default.moveItem(at: try #require(store.fileURL(for: url)), to: directory.appendingPathComponent(old + ".jpg"))
+        #expect(store.image(for: url) == nil)
     }
 
     @Test func aMissingVideoHasNone() {

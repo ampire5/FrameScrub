@@ -103,9 +103,12 @@ public enum StatsContent {
     }
 
     private static func videoRows(_ p: PlayerStats) -> [InfoRow?] {
-        var dimensions = "\(p.width) × \(p.height)"
+        // As shown: a quarter turn swaps the sides.
+        let sideways = p.rotation % 180 != 0
+        var dimensions = sideways ? "\(p.height) × \(p.width)" : "\(p.width) × \(p.height)"
         if p.sampleAspect != 1, p.height > 0 {
-            dimensions += String(format: ", DAR %.2f", Double(p.width) * p.sampleAspect / Double(p.height))
+            let aspect = Double(p.width) * p.sampleAspect / Double(p.height)
+            dimensions += String(format: ", DAR %.2f", sideways ? 1 / aspect : aspect)
         }
         return [row("Codec", p.format.videoText), row("Dimensions", dimensions), row("Bit depth", "\(p.bitDepth)-bit"),
                 row("Frame rate", String(format: "%.3f fps", p.frameRate)), row("Rotation", p.rotation != 0 ? "\(p.rotation)°" : nil),

@@ -2,6 +2,7 @@
 #define CFFMPEG_SHIM_H
 
 #include <math.h>
+#include <string.h>
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/avutil.h>
@@ -20,13 +21,20 @@ static inline int cff_averror_stream_not_found(void) { return AVERROR_STREAM_NOT
 static inline int cff_averror_muxer_not_found(void) { return AVERROR_MUXER_NOT_FOUND; }
 static inline int64_t cff_nopts(void) { return AV_NOPTS_VALUE; }
 
-/// Clockwise rotation (0, 90, 180, 270) needed to show the stream upright.
+/// Clockwise rotation (0, 90, 180, 270) needed to show the stream upright. A mirrored matrix gives the turn
+/// without its horizontal flip (read on its own, a flip would count as half a turn and show the picture upside down).
 static inline int cff_stream_rotation_cw(const AVStream *st) {
     const AVPacketSideData *sd = av_packet_side_data_get(st->codecpar->coded_side_data,
                                                          st->codecpar->nb_coded_side_data,
                                                          AV_PKT_DATA_DISPLAYMATRIX);
-    if (!sd) return 0;
-    double ccw = av_display_rotation_get((const int32_t *)sd->data);
+    if (!sd || sd->size < 9 * sizeof(int32_t)) return 0;
+    int32_t m[9];
+    memcpy(m, sd->data, sizeof(m));
+    if ((int64_t)m[0] * m[4] - (int64_t)m[1] * m[3] < 0) {
+        m[0] = -m[0];
+        m[3] = -m[3];
+    }
+    double ccw = av_display_rotation_get(m);
     if (isnan(ccw)) return 0;
     int cw = (int)(lround(-ccw) % 360);
     if (cw < 0) cw += 360;

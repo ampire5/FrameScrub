@@ -10,6 +10,10 @@ enum Fixtures {
     static let withAudioGOP25 = "withaudio_gop25.mp4"   // the same, keyframes 0/25/50/75
     static let withAudioGOP25MKV = "withaudio_gop25.mkv"   // the same in Matroska
     static let rotated = "rotated.mp4"          // withaudio.mp4 + display matrix (270 cw)
+    static let rotated180 = "rotated180.mp4"    // withaudio.mp4 + display matrix (180)
+    static let rotated90 = "rotated90.mp4"      // withaudio.mp4 + display matrix (90 cw)
+    static let hflip = "hflip.mp4"              // withaudio.mp4 + mirrored display matrix (horizontal flip)
+    static let hflipRotated = "hflip_rotated.mp4"   // withaudio.mp4 + mirrored display matrix (270 cw, then flipped)
     static let audioLate = "audiolate.mp4"      // withaudio.mp4 with its audio starting ~2 s after the video
     static let audioLead = "audiolead.mp4"      // withaudio.mp4, fragmented, audio track first: audio read ~1 s ahead
     static let noDecoder = "nodecoder.nut"      // 320x200, 250 frames of a codec FFmpeg cannot decode
@@ -19,7 +23,7 @@ enum Fixtures {
     static let scenes = "scenes.mp4"            // 320x180, 175 frames, keyframes every 25; scenes at 0, 50 (black), 75, 125
     static let scenesMidGOP = "scenes_midgop.mp4"   // 320x180, 125 frames, keyframes 0/50/100; the cut at 60, inside a GOP
     static let layoutChange = "audio_layout_change.ts"   // 320x180, 25 fps, 4 s; AAC 48 kHz: 2 s stereo, then 2 s mono
-    static let all = [h264, hevc10, vfr, av1, withAudio, rotated, audioLead, noDecoder, fragmented, editList, anamorphic, scenes, scenesMidGOP, layoutChange]
+    static let all = [h264, hevc10, vfr, av1, withAudio, rotated, rotated180, rotated90, hflip, hflipRotated, audioLead, noDecoder, fragmented, editList, anamorphic, scenes, scenesMidGOP, layoutChange]
 
     static let directory = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()   // FrameScrubCoreTests

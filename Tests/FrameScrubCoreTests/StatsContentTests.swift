@@ -76,6 +76,8 @@ import Testing
     @Test func rotationOnlyWhenTurned() {
         #expect(rows(StatsContent.sections(player: player(rotation: 90), file: nil, picture: nil, stash: nil), "Video")["Rotation"] == "90°")
         #expect(rows(StatsContent.sections(player: player(rotation: 0), file: nil, picture: nil, stash: nil), "Video")["Rotation"] == nil)
+        let portrait = rows(StatsContent.sections(player: player(rotation: 270), file: nil, picture: nil, stash: nil), "Video")
+        #expect(portrait["Dimensions"] == "1080 × 1920")   // as shown
     }
 
     @Test func labelledLinesAreSplit() {

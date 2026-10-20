@@ -21,9 +21,12 @@ public final class ThumbnailStore {
         self.maxSide = maxSide
     }
 
+    /// Part of each file name: raising it drops every saved picture (2: mirrored display matrices are read upright).
+    static let version = 2
+
     func fileURL(for video: URL) -> URL? {
         guard let key = ResumeStore.key(for: video) else { return nil }
-        let hash = SHA256.hash(data: Data(key.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
+        let hash = SHA256.hash(data: Data("\(key)\n\(Self.version)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
         return directory.appendingPathComponent(hash + ".jpg")
     }
 

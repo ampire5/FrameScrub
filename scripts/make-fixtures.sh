@@ -49,6 +49,11 @@ ff -i "$out/withaudio_gop25.mp4" -c copy "$out/withaudio_gop25.mkv"
 
 # Same clip with a display matrix. -display_rotation is counter-clockwise: 90 means 270 clockwise.
 ff -display_rotation 90 -i "$out/withaudio.mp4" -c copy "$out/rotated.mp4"
+ff -display_rotation 180 -i "$out/withaudio.mp4" -c copy "$out/rotated180.mp4"
+ff -display_rotation -90 -i "$out/withaudio.mp4" -c copy "$out/rotated90.mp4"
+# Mirrored matrices: a plain horizontal flip, and a flip after a 90-degree turn (shown as rotated.mp4 mirrored).
+ff -display_rotation 0 -display_hflip -i "$out/withaudio.mp4" -c copy "$out/hflip.mp4"
+ff -display_rotation 90 -display_hflip -i "$out/withaudio.mp4" -c copy "$out/hflip_rotated.mp4"
 
 # Same clip with its audio starting 2 s after the video (scrub audio: frames before the audio are silent).
 ff -i "$out/withaudio.mp4" -itsoffset 2 -i "$out/withaudio.mp4" -map 0:v -map 1:a -c copy "$out/audiolate.mp4"

@@ -111,6 +111,16 @@ import Testing
         expectRanges(try inspect(result.url).1, [250...320, 500...530])
     }
 
+    @Test(arguments: [Fixtures.rotated180, Fixtures.rotated90]) func clipsKeepTheDisplayRotation(name: String) throws {
+        let rotation = try MediaSource(url: Fixtures.url(name)).rotationClockwise
+        let clip = try ClipWriter.write(try job(name, a: 10, b: 30), isCancelled: { false })
+        #expect(try MediaSource(url: clip.url).rotationClockwise == rotation)
+        ClipWriter.forceFallbackForTesting = true
+        defer { ClipWriter.forceFallbackForTesting = false }
+        let fallback = try ClipWriter.write(try joinedJob(name, ranges: [(10, 30)]), isCancelled: { false })
+        #expect(try MediaSource(url: fallback.url).rotationClockwise == rotation)
+    }
+
     private func files(in directory: URL) -> [String] {
         (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
     }
