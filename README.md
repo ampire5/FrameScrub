@@ -32,6 +32,17 @@ For editors, reviewers, animators, photographers pulling stills from video — a
 - **NAS-friendly.** One shared read cache, MP4 indexes from the header, background index scans for MKV/WebM/TS: seeking over SMB stays quick on high-bitrate files.
 - **Your library, your hands.** A start screen with Recent and your [Stash](https://github.com/stashapp/stash) library, mpv-style key bindings, MX Master 4 haptics, a TourBox Lite preset.
 
+## Made for big collections
+
+FrameScrub is built for folders of hundreds of videos on a NAS.
+
+- **It remembers every file.** Each video reopens where you stopped, with its A-B range; the start screen lists Recent videos with how far you got.
+- **A folder is a playlist.** `F8` shows it, `⌘F` filters it by name, `F9` sorts it by name, newest or largest, and the next video opens on its own at the end.
+- **Cull without leaving the player.** `⌘⌫` moves the video to the Trash and opens the next one (on a share without a Trash it asks first).
+- **Shares are first-class.** One read cache per file for every decoder keeps seeks fast over SMB; a share that is asleep or gone gets a clear message, and Return tries again.
+- **Black bars are found and cropped** across the whole file, so letterboxed videos fill the window.
+- **Your Stash library** as a second start screen, with progress reported back (see [Stash](#stash)).
+
 ## Numbers
 
 MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `FRAMESCRUB_PERF=1 swift test --filter PerformanceTests`.
