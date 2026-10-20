@@ -1,9 +1,10 @@
 # Roadmap
 
-FrameScrub is made by one person in their spare time, so there are no dates here — just the order things are likely to happen in. Bugs are always fixed first. Ideas and votes are welcome in [Issues](https://github.com/ampire5/FrameScrub/issues).
+FrameScrub is made by one person in their spare time, so there are no dates here — just the order things are likely to happen in. Bugs are always fixed first. **What would make FrameScrub work better for you?** Tell me in a [feature request](https://github.com/ampire5/FrameScrub/issues/new?template=feature_request.yml): what you want to do, how you do it today, and what your collection looks like. Requests and 👍 on existing issues decide what comes next.
 
 ## Next
 
+- **Light, dark or system theme everywhere.** The start screen, the playlist panel and the other dark-only windows follow the choice in Settings.
 - **Subtitles and audio tracks.** Embedded and external subtitles, switching between audio and subtitle tracks, remembered per file.
 - **The shared Settings window and Home** from [Loupe](https://github.com/ampire5/Loupe): the same Settings layout, and a Photos-style start screen with a sidebar, Recent and Stash.
 - **A filmstrip in the seek bar.** A continuous strip of keyframes along the timeline, as in QuickTime's trim view, alongside the existing hover preview.

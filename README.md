@@ -221,9 +221,11 @@ swift test
 FRAMESCRUB_PERF=1 swift test --filter PerformanceTests   # also runs the simulated-NAS seeks (makes a 4K file once)
 ```
 
-## Reporting bugs and contributing
+## Feedback, bugs and contributing
 
-Bugs and ideas go to [Issues](https://github.com/ampire5/FrameScrub/issues). For a bug, please include:
+**I want to hear what you need.** If FrameScrub is close to what you want but not quite there, open a [feature request](https://github.com/ampire5/FrameScrub/issues/new?template=feature_request.yml): what you're trying to do, how you do it today, and what your collection looks like. That is what decides the [roadmap](ROADMAP.md).
+
+Bugs go to [Issues](https://github.com/ampire5/FrameScrub/issues/new?template=bug_report.yml). For a bug, please include:
 
 - the macOS version and Mac model;
 - the decoder line from the stats panel (`i`; right click → Copy All copies the whole panel);
