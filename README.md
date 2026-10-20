@@ -27,6 +27,7 @@ For editors, reviewers, animators, photographers pulling stills from video — a
 - **Backward is as fast as forward.** A cache of decoded frames around the playhead fills in both directions in the background, so stepping back never waits for a keyframe — even in long-GOP 4K HEVC HDR.
 - **It plays backward, too.** Real reverse playback at 1, 2, 4 and 8×, frames only, no sound. When the decoder can't keep up, frames are skipped and the speed holds. The A-B loop and Play Marks Only run backward as well.
 - **Sound you can scrub, like tape.** Drag through a paused video and hear it the way a reel sounds under your hand: the pitch follows your speed, and scrubbing backward plays the sound in reverse. A single frame step plays a short blip of sound, so you can find a cue, a clap or the first word by ear. Prefer clean audio? `⇧⌥M` keeps the sound's own pitch.
+- **Big, bright screens.** HDR (HLG and PQ) through EDR on XDR displays, MetalFX upscaling of 1080p and 4K to 5K and 6K screens, and Apple's neural super-resolution for a paused frame.
 - **Its own VideoToolbox pipeline.** Several frames in flight instead of one at a time: ~640 fps for 4K H.264 and ~730 fps for 4K HEVC at ~0.4 ms of CPU per frame.
 - **Frames out at full quality.** Save the frame you're on as JPEG, 10-bit HEIC, 16-bit PNG or TIFF in the source colour space (BT.709, HLG, PQ), or export every frame of a range — optionally only the sharpest ones, skipping blurred frames and near-duplicates.
 - **Cut without re-encoding.** Mark ins and outs, save them as clips — separately, joined, or everything *except* the marks — snapped to keyframes, losslessly.
@@ -99,6 +100,9 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - `⇧⌘C` saves the marks as clips without re-encoding.
 
 **Hardware**
+
+As far as we know, no other Mac app goes this deep into Logitech hardware, and it keeps growing.
+
 - **Any mouse**: the wheel scrubs, the side wheel seeks, right click plays, and every button and wheel can be rebound in `input.conf`.
 - **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
 - **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
