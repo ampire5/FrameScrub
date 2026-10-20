@@ -134,6 +134,10 @@ swift test
 FRAMESCRUB_PERF=1 swift test --filter PerformanceTests   # also runs the simulated-NAS seeks (makes a 4K file once)
 ```
 
+## Roadmap
+
+Next up: subtitles and audio tracks, the shared Settings and Home from Loupe, a filmstrip in the seek bar — and a plugin architecture for media servers (Plex, Jellyfin, DLNA, HLS). See **[ROADMAP.md](ROADMAP.md)**.
+
 ## Credits
 
 Screenshots show *CHARGE* and *Spring* by Blender Studio (CC BY 4.0) and launch footage by NASA (public domain).
