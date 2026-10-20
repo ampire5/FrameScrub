@@ -12,6 +12,7 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 
 ## Planned
 
+- **A contributing guide**: how to build, test and send a pull request, plus the code layout and conventions.
 - **FFmpeg inside the app**, so the Releases zip works without `brew install ffmpeg`.
 - **Stash streaming** for scenes whose files aren't reachable over a share: playback straight from Stash over HTTP, with the same read cache.
 
