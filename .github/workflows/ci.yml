@@ -8,6 +8,7 @@ on:
 jobs:
   test:
     runs-on: xcode-27
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -17,7 +18,7 @@ jobs:
       - name: Test fixtures
         run: scripts/make-fixtures.sh
       - name: Test
-        run: swift test
+        run: swift test --no-parallel   # timing tests share 3 cores badly in parallel
       - name: Build the app
         run: scripts/make-app.sh
       - name: Upload the app

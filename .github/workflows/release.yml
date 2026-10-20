@@ -10,6 +10,7 @@ permissions:
 jobs:
   release:
     runs-on: xcode-27
+    timeout-minutes: 40
     env:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
@@ -19,7 +20,7 @@ jobs:
       - name: Test
         run: |
           scripts/make-fixtures.sh
-          swift test
+          swift test --no-parallel
       - name: Build the app
         run: scripts/make-app.sh
       # Not signed with a Developer ID yet, and it still uses Homebrew's FFmpeg: the release notes say so.
