@@ -111,7 +111,7 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 | | |
 |---|---|
 | **Demuxing** | FFmpeg's libavformat, with an index built from the MP4 header or scanned in the background for MKV, WebM and TS, so any frame can be found exactly. |
-| **Decoding** | Its own VideoToolbox pipeline: `VTDecompressionSession` with several frames in flight for H.264, HEVC (8- and 10-bit) and AV1 on M3 and later; FFmpeg's libavcodec for every other codec. |
+| **Decoding** | Its own VideoToolbox pipeline: `VTDecompressionSession` with several frames in flight for H.264 and HEVC (8- and 10-bit); FFmpeg's libavcodec for everything else, AV1 included (VideoToolbox hardware decoding on M3 and later, libdav1d otherwise). |
 | **Frame cache** | Decoded frames live in IOSurface-backed pixel buffers in a cache around the playhead, which a forward and a backward worker keep filled, so stepping either way is a lookup, not a decode. |
 | **Display** | A `CAMetalLayer` with EDR for HDR (HLG and PQ, tone-mapped where the screen can't show it), Core Image for colour, MetalFX upscaling, and VideoToolbox's frame processor for neural super-resolution of paused frames. |
 | **Audio** | `AVAudioEngine` with a time-pitch unit for playback at any speed and for tape-style scrub audio (FFmpeg's libswresample converts the samples). |
