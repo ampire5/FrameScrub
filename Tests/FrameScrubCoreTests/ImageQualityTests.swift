@@ -105,7 +105,8 @@ import Testing
         }
     }
 
-    @Test(arguments: [Fixtures.h264, Fixtures.hevc10], [Path.videoToolbox, Path.ffmpegVideoToolbox])
+    @Test(.disabled(if: isVirtualMachine, "a VM's paravirtual VideoToolbox decodes to other pixels"),
+          arguments: [Fixtures.h264, Fixtures.hevc10], [Path.videoToolbox, Path.ffmpegVideoToolbox])
     func matchesSoftwareDecoding(_ name: String, _ path: Path) throws {
         let (_, index) = try openIndexed(name)
         let frames = name == Fixtures.h264 ? [0, 37, 251, 599] : [0, 59, 61, 119]

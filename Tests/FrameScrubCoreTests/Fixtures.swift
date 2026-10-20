@@ -127,3 +127,11 @@ func makeTemporaryDirectory() -> URL {
     try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
+
+/// Whether the tests run in a virtual machine (a CI runner): its VideoToolbox is paravirtual, decodes to slightly
+/// different pixels and has no frame processor, so tests that compare against real hardware are skipped there.
+let isVirtualMachine: Bool = {
+    var value: Int32 = 0
+    var size = MemoryLayout<Int32>.size
+    return sysctlbyname("kern.hv_vmm_present", &value, &size, nil, 0) == 0 && value == 1
+}()
