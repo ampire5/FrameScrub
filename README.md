@@ -225,6 +225,8 @@ FRAMESCRUB_PERF=1 swift test --filter PerformanceTests   # also runs the simulat
 
 **I want to hear what you need.** If FrameScrub is close to what you want but not quite there, open a [feature request](https://github.com/ampire5/FrameScrub/issues/new?template=feature_request.yml): what you're trying to do, how you do it today, and what your collection looks like. That is what decides the [roadmap](ROADMAP.md).
 
+Questions, half-formed ideas and stories of how you use it are welcome in [Discussions](https://github.com/ampire5/FrameScrub/discussions).
+
 Bugs go to [Issues](https://github.com/ampire5/FrameScrub/issues/new?template=bug_report.yml). For a bug, please include:
 
 - the macOS version and Mac model;

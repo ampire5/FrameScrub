@@ -1,1 +1,5 @@
 blank_issues_enabled: true
+contact_links:
+  - name: Ideas, questions and how you use FrameScrub
+    url: https://github.com/ampire5/FrameScrub/discussions
+    about: Not a bug or a concrete request? Start a discussion.
