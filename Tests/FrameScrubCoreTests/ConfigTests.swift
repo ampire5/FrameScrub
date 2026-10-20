@@ -4,11 +4,11 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct ConfigTests {
-    /// The README's settings block is the commented reference config: every key, each with its default.
-    @Test func readmeSettingsListEveryKeyWithItsDefault() throws {
+    /// The reference's settings block (docs/reference.md) is the commented reference config: every key, each with its default.
+    @Test func referenceSettingsListEveryKeyWithItsDefault() throws {
         let readme = try String(contentsOf: URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-            .appendingPathComponent("README.md"), encoding: .utf8)
+            .appendingPathComponent("docs/reference.md"), encoding: .utf8)
         let afterHeading = try #require(readme.components(separatedBy: "`~/.config/framescrub/framescrub.conf`:").dropFirst().first)
         let block = try #require(afterHeading.components(separatedBy: "```").dropFirst().first)
             .components(separatedBy: .newlines).dropFirst().joined(separator: "\n")

@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: swift --version
+      - name: Homebrew dependencies
+        run: brew install ffmpeg
+      - name: Test fixtures
+        run: scripts/make-fixtures.sh
+      - name: Test
+        run: swift test
+      - name: Build the app
+        run: scripts/make-app.sh
+      - name: Upload the app
+        run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FrameScrub-macOS-arm64
+          path: FrameScrub-macOS-arm64.zip
