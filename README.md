@@ -84,6 +84,11 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - **Logitech MX Master 4** over HID++: haptic patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors; the thumb wheel, gesture and side buttons bound like keys.
 - **TourBox Lite**: a ready-made preset in `extras/tourbox`.
 
+**Icon**
+- A Liquid Glass horse that follows macOS's light, dark, clear and tinted icon styles. Prefer your own? Put a PNG or `.icns` in `~/.config/framescrub/icons` and set `app-icon` to its name.
+
+<p align="center"><img src="docs/images/icons.webp" width="55%" alt="The FrameScrub horse in light, dark and clear styles"></p>
+
 The full list of keys, gestures and settings is in **[docs/reference.md](docs/reference.md)**.
 
 ## Stash
