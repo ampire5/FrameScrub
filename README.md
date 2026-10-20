@@ -65,7 +65,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 </table>
 
 **Playback and scrubbing**
-- Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on MX mice, shuttle at 1/2/4/8× forward and backward, tape-style scrub audio.
+- Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on MX mice, shuttle at 1/2/4/8× forward and backward, scrub audio that plays backward like tape (`⌥M`).
 - Scene detection: jump to the next scene or back to the start of this one.
 - A-B loop, cut marks with drag-to-adjust edges, play only the marked parts.
 - H.264, HEVC (incl. 10-bit HDR), AV1 on M3 and later, everything else through FFmpeg; MP4, MOV, MKV, WebM, TS and more.
