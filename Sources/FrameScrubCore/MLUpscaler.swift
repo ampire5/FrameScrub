@@ -87,7 +87,7 @@ func runBlocking<T: Sendable>(_ operation: @escaping @Sendable () async throws -
     let box = ResultBox<T>()
     let done = DispatchSemaphore(value: 0)
     Task.detached {
-        box.result = await Result { try await operation() }
+        do { box.result = .success(try await operation()) } catch { box.result = .failure(error) }
         done.signal()
     }
     done.wait()
