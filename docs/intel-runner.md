@@ -11,8 +11,10 @@ FrameScrub and of Loupe runs the same branch on a real Intel Mac with macOS 26:
 | Dependencies | prebuilt FFmpeg (`scripts/deps.sh`) | prebuilt decoders (`scripts/deps.sh`) |
 | Test videos | taken from the latest successful cloud CI run (artifact `fixtures`) | — |
 
-It runs on pushes to `lts/macos26` (not for documentation-only changes) and by hand (Actions → *Intel Mac
-(self-hosted)* → Run workflow). **Never on pull requests**: the runner is a personal computer.
+It runs by hand only for now (Actions → *Intel Mac (self-hosted)* → Run workflow, once the workflow is on `main` too,
+which GitHub needs for manual runs): with no runner registered, runs on every push waited a day and failed. When the
+runner is registered, put back its push trigger (`push: branches: [lts/macos26]`, ignoring `**.md` and `docs/**`).
+**Never on pull requests**: the runner is a personal computer.
 
 ## The Mac
 
