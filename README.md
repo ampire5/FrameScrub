@@ -184,9 +184,10 @@ xattr -dr com.apple.quarantine /Applications/FrameScrub.app
 
 ### Build from source
 
-macOS 26, the Command Line Tools (`xcode-select --install`) or Xcode 26, and the tools that build FrameScrub's own
-FFmpeg (x86_64, static, into `.deps/x86_64`; the first build takes a while). On Apple Silicon the scripts run
-themselves under Rosetta.
+macOS 26 and the Command Line Tools (`xcode-select --install`) or Xcode 26. FrameScrub links its own FFmpeg (x86_64,
+static): the first build downloads the prebuilt one into `.deps/x86_64` (`scripts/deps.sh`), or builds it from source
+with the tools below when the recipe has no prebuilt archive yet. On Apple Silicon the scripts run themselves under
+Rosetta.
 
 ```sh
 brew install nasm meson ninja pkgconf

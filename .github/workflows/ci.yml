@@ -6,6 +6,7 @@ on:
   push:
     branches: [lts/macos26]
   pull_request:
+  workflow_dispatch:
 
 defaults:
   run:
@@ -36,8 +37,8 @@ jobs:
         with:
           path: .deps/x86_64
           key: deps-x86_64-${{ hashFiles('scripts/build-deps.sh') }}
-      - name: Build FFmpeg
-        run: scripts/build-deps.sh
+      - name: FFmpeg (prebuilt, or built from source)
+        run: scripts/deps.sh fetch
       - name: Test fixtures
         run: scripts/make-fixtures.sh
       - name: Test

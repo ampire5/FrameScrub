@@ -29,8 +29,8 @@ jobs:
       - name: Homebrew tools
         shell: bash
         run: brew install ffmpeg nasm meson ninja pkgconf
-      - name: Build FFmpeg
-        run: scripts/build-deps.sh
+      - name: FFmpeg (prebuilt, or built from source)
+        run: scripts/deps.sh fetch
       - name: Test
         run: |
           scripts/make-fixtures.sh

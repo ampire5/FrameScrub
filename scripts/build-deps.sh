@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Builds FrameScrub's own FFmpeg for the lts/macos26 line (LTS_POLICY.md): FFmpeg and dav1d, x86_64, static, into
-# .deps/x86_64 (or $FRAMESCRUB_DEPS). Homebrew builds no Intel bottles any more, so the Intel app links its decoders in
-# and needs no Homebrew at run time. Decoders, demuxers and muxers only: FrameScrub encodes nothing, its clips are
-# stream copies. Runs on an Intel Mac and on Apple Silicon (a cross build). A finished build is kept: delete the
-# directory, or change a version below, to build again.
+# The recipe of FrameScrub's own FFmpeg for the lts/macos26 line (LTS_POLICY.md): FFmpeg and dav1d, x86_64, static,
+# built from source into .deps/x86_64 (or $FRAMESCRUB_DEPS). Homebrew builds no Intel bottles any more, so the Intel
+# app links its decoders in and needs no Homebrew at run time. Decoders, demuxers and muxers only: FrameScrub encodes
+# nothing, its clips are stream copies. Runs on an Intel Mac and on Apple Silicon (a cross build).
+# Builds every time: scripts/deps.sh, which the build scripts call, downloads the prebuilt result of this exact
+# recipe instead, and runs this only when there is none. A change here is a new recipe (a new prebuilt archive).
 # Needs: brew install nasm meson ninja pkgconf
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -11,11 +12,6 @@ ffmpeg_version=9.0.2
 dav1d_version=1.5.4
 min=26.0
 prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/x86_64}
-stamp="ffmpeg $ffmpeg_version, dav1d $dav1d_version, macOS $min"
-if [[ -f "$prefix/.stamp" && $(<"$prefix/.stamp") == "$stamp" ]]; then
-    echo "FFmpeg ($stamp) already in $prefix"
-    exit 0
-fi
 rm -rf "$prefix"
 src=$prefix/src
 mkdir -p "$src"
@@ -80,5 +76,4 @@ for pc in "$pcdir"/*.pc; do mv "$pc.flat" "$pc"; done
 [[ $(lipo -archs "$prefix/lib/libavcodec.a") == x86_64 ]] \
     || { echo "error: libavcodec.a is not x86_64 only: $(lipo -archs "$prefix/lib/libavcodec.a")" >&2; exit 1; }
 rm -rf "$src"
-echo "$stamp" >"$prefix/.stamp"
-echo "FFmpeg ($stamp) installed in $prefix"
+echo "FFmpeg $ffmpeg_version, dav1d $dav1d_version (macOS $min) installed in $prefix"

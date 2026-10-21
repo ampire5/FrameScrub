@@ -35,8 +35,14 @@ Fixes that only matter on Intel (discrete GPUs, older VideoToolbox) are made dir
 ## Builds and releases
 
 - The apps on this branch link their native libraries in statically (FrameScrub: FFmpeg and dav1d; Loupe:
-  libjpeg-turbo, libjxl with its brotli and highway, libheif for the bench), built by `scripts/build-deps.sh`.
-  Homebrew no longer builds Intel bottles, so the Intel apps need no Homebrew at run time.
+  libjpeg-turbo, libjxl with its brotli and highway, libheif for the bench), built from source by
+  `scripts/build-deps.sh` at pinned versions. Homebrew no longer builds Intel bottles, so the Intel apps need no
+  Homebrew at run time.
+- **Prebuilt dependencies.** `scripts/deps.sh` (called by the build scripts) downloads the build of the current recipe
+  from the repository's pre-release `deps-x86_64-<hash of build-deps.sh>` (SHA-256 checked) into `.deps/x86_64`, and
+  builds from source only when there is none. CI, releases and local builds therefore link the same binaries. After
+  changing `build-deps.sh` (a version bump, a security fix), run the **Prebuilt dependencies (x86_64)** workflow by
+  hand once; until then builds compile the new recipe themselves (CI also keeps it in its cache).
 - The apps depend on the packages' `lts/macos26` branches, not on version tags.
 - Releases are tagged **`vX.Y.Z-lts`** on `lts/macos26` and ship `…-macOS-x86_64.zip`. They are not marked
   latest on GitHub. The release workflow updates the `on_intel` block of the Homebrew cask; `main`'s releases update
