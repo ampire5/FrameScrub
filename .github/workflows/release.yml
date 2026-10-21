@@ -8,10 +8,6 @@ on:
 permissions:
   contents: write
 
-defaults:
-  run:
-    shell: arch -x86_64 /bin/bash -eo pipefail {0}
-
 jobs:
   release:
     runs-on: macos-26
@@ -21,13 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Rosetta and Xcode 26
-        shell: bash
         run: |
           /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license
           xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           sudo xcode-select -s "$xcode"
       - name: Homebrew tools
-        shell: bash
         run: brew install ffmpeg nasm meson ninja pkgconf
       - name: FFmpeg (prebuilt, or built from source)
         run: scripts/deps.sh fetch

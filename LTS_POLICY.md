@@ -53,8 +53,8 @@ Fixes that only matter on Intel (discrete GPUs, older VideoToolbox) are made dir
 
 ## Testing
 
-GitHub has no Intel runner with macOS 26, so CI builds and tests x86_64 on the Apple Silicon `macos-26` image under
-Rosetta. The CPU code paths are covered; the GPU and the hardware decoders are the Apple Silicon ones there. The
+GitHub has no Intel runner with macOS 26, so CI cross-builds x86_64 on the Apple Silicon `macos-26` image and runs
+the tests under Rosetta. The CPU code paths are covered; the GPU and the hardware decoders are the Apple Silicon ones there. The
 **Intel Mac (self-hosted)** workflow runs the tests (Loupe's Metal render tests included) and the app build on a real
 Intel Mac when one is registered as a runner ([docs/intel-runner.md](docs/intel-runner.md)). Before an LTS release,
 also check by hand on that Mac: playback of H.264, HEVC 8- and 10-bit and AV1 (software on Intel),

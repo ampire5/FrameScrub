@@ -1,6 +1,6 @@
 # The Intel Mac runner (lts/macos26)
 
-GitHub's CI for `lts/macos26` builds and tests x86_64 under Rosetta on an Apple Silicon image: the CPU code is covered,
+GitHub's CI for `lts/macos26` cross-builds x86_64 on an Apple Silicon image and tests it under Rosetta: the CPU code is covered,
 but the GPU, VideoToolbox and the memory model are Apple Silicon's. The **Intel Mac (self-hosted)** workflow of
 FrameScrub and of Loupe runs the same branch on a real Intel Mac with macOS 26:
 
