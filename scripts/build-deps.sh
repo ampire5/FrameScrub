@@ -77,7 +77,7 @@ for pc in "$pcdir"/*.pc; do
 done
 for pc in "$pcdir"/*.pc; do mv "$pc.flat" "$pc"; done
 
-lipo -archs "$prefix/lib/libavcodec.a" | grep -qx x86_64 \
+[[ $(lipo -archs "$prefix/lib/libavcodec.a") == x86_64 ]] \
     || { echo "error: libavcodec.a is not x86_64 only: $(lipo -archs "$prefix/lib/libavcodec.a")" >&2; exit 1; }
 rm -rf "$src"
 echo "$stamp" >"$prefix/.stamp"
