@@ -22,7 +22,7 @@ runner is registered, put back its push trigger (`push: branches: [lts/macos26]`
   should take jobs.
 - Xcode 26 (or the Command Line Tools for Swift 6.2), selected with `xcode-select`. Xcode also gives `actool` for the
   app icon.
-- Nothing from Homebrew while the prebuilt dependencies are published (the *Prebuilt dependencies (x86_64)* workflow).
+- Nothing from Homebrew while the prebuilt dependencies are published (the *Prebuilt dependencies* workflow).
   Without them `scripts/deps.sh` builds from source and needs `brew install nasm meson ninja pkgconf` (FrameScrub) or
   `brew install cmake ninja nasm pkgconf` (Loupe); Homebrew builds those from source on Intel now, which takes a while
   once.
