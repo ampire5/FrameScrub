@@ -25,12 +25,15 @@ import Testing
     private func peak(_ image: CIImage) -> Float {
         let context = CIContext()
         let width = Int(image.extent.width.rounded()), height = Int(image.extent.height.rounded())
-        var pixels = [Float16](repeating: 0, count: width * height * 4)
+        // 32-bit floats: Float16 is unavailable on Intel Macs (lts/macos26).
+        var pixels = [Float](repeating: 0, count: width * height * 4)
         pixels.withUnsafeMutableBytes {
-            context.render(image, toBitmap: $0.baseAddress!, rowBytes: width * 8, bounds: image.extent,
-                           format: .RGBAh, colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
+            context.render(image, toBitmap: $0.baseAddress!, rowBytes: width * 16, bounds: image.extent,
+                           format: .RGBAf, colorSpace: CGColorSpace(name: CGColorSpace.extendedLinearSRGB)!)
         }
-        return stride(from: 0, to: pixels.count, by: 4).map { max(Float(pixels[$0]), Float(pixels[$0 + 1]), Float(pixels[$0 + 2])) }.max() ?? 0
+        return stride(from: 0, to: pixels.count, by: 4).map { (i: Int) -> Float in
+            max(pixels[i], pixels[i + 1], pixels[i + 2])
+        }.max() ?? 0
     }
 
     @Test func rendererHonoursThePlan() throws {
