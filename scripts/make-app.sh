@@ -1,13 +1,21 @@
 #!/usr/bin/env bash
-# Builds build/FrameScrub.app (release). FFmpeg is linked from Homebrew, not bundled.
+# Builds build/FrameScrub.app (release, x86_64: the lts/macos26 line). FFmpeg is FrameScrub's own, linked in
+# statically (scripts/build-deps.sh): the app needs no Homebrew.
 # Usage: scripts/make-app.sh [--install]   (--install copies the app to ~/Applications)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[[ $(uname -m) == x86_64 ]] || exec arch -x86_64 /bin/bash "$0" "$@"
+. scripts/deps-env.sh
 swift build -c release
 app=build/FrameScrub.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-cp "$(swift build -c release --show-bin-path)/FrameScrub" "$app/Contents/MacOS/FrameScrub"
+bin=$app/Contents/MacOS/FrameScrub
+cp "$(swift build -c release --show-bin-path)/FrameScrub" "$bin"
+[[ $(lipo -archs "$bin") == x86_64 ]] || { echo "error: FrameScrub is $(lipo -archs "$bin"), not x86_64" >&2; exit 1; }
+# The app must run on a Mac without Homebrew: the binary links system libraries only.
+outside=$(otool -L "$bin" | tail -n +2 | sed -E 's/^[[:space:]]+//; s/ \(compatibility.*$//' | grep -vE '^(/usr/lib/|/System/)' || true)
+[[ -z "$outside" ]] || { echo "error: FrameScrub links outside the system:"$'\n'"$outside" >&2; exit 1; }
 cp Resources/Info.plist "$app/Contents/Info.plist"
 # App icon: the Icon Composer package is compiled by actool into Assets.car (Liquid Glass icon, CFBundleIconName)
 # plus AppIcon.icns (CFBundleIconFile, for older readers). actool ships with Xcode, not with the Command Line

@@ -1,29 +1,52 @@
-name: CI
+name: CI (LTS, Intel)
 
+# The lts/macos26 line: macOS 26 on Intel Macs (LTS_POLICY.md). GitHub has no Intel runner with macOS 26, so the job
+# runs on the Apple Silicon macos-26 image with the build steps under Rosetta: SwiftPM builds and tests x86_64.
 on:
   push:
-    branches: [main]
+    branches: [lts/macos26]
   pull_request:
+
+defaults:
+  run:
+    shell: arch -x86_64 /bin/bash -eo pipefail {0}
 
 jobs:
   test:
-    runs-on: xcode-27
-    timeout-minutes: 40
+    runs-on: macos-26
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: Rosetta and Xcode 26
+        shell: bash
+        run: |
+          /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license
+          xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$xcode"
       - name: Toolchain
-        run: swift --version
-      - name: Homebrew dependencies
-        run: brew install ffmpeg
+        run: |
+          uname -m
+          swift --version
+      # Homebrew's ffmpeg tool encodes the test fixtures; the app links its own FFmpeg (next steps).
+      - name: Homebrew tools
+        shell: bash
+        run: brew install ffmpeg nasm meson ninja pkgconf
+      - name: Cache FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: .deps/x86_64
+          key: deps-x86_64-${{ hashFiles('scripts/build-deps.sh') }}
+      - name: Build FFmpeg
+        run: scripts/build-deps.sh
       - name: Test fixtures
         run: scripts/make-fixtures.sh
       - name: Test
-        run: swift test --no-parallel   # timing tests share 3 cores badly in parallel
+        run: scripts/test.sh --no-parallel   # timing tests share 3 cores badly in parallel
       - name: Build the app
         run: scripts/make-app.sh
       - name: Upload the app
-        run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-arm64.zip
+        run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-x86_64.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: FrameScrub-macOS-arm64
-          path: FrameScrub-macOS-arm64.zip
+          name: FrameScrub-macOS-x86_64
+          path: FrameScrub-macOS-x86_64.zip

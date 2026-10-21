@@ -170,9 +170,11 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 brew install --cask ampire5/tap/framescrub
 ```
 
-Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases) (it needs `brew install ffmpeg`).
+Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases): the `-lts` releases, `macOS-x86_64`.
 
-FrameScrub needs macOS 26 or later on Apple Silicon, and FFmpeg from Homebrew.
+> **This is the `lts/macos26` branch: FrameScrub for Intel Macs on macOS 26**, the last macOS for them, supported until
+> Apple ends macOS 26 security updates (expected autumn 2028). FFmpeg is built into the app, so it needs no Homebrew.
+> Fixes and selected features come over from `main` ([LTS_POLICY.md](LTS_POLICY.md)). On Apple Silicon, use `main`.
 
 **"FrameScrub can't be opened" (zip only).** Builds are not signed with an Apple Developer ID yet. The cask clears the quarantine flag for you; for the zip, try to open the app once, then click **Open Anyway** in System Settings → Privacy & Security, or run:
 
@@ -182,13 +184,14 @@ xattr -dr com.apple.quarantine /Applications/FrameScrub.app
 
 ### Build from source
 
-macOS 26 or later on Apple Silicon, the Command Line Tools (`xcode-select --install`), and FFmpeg:
+macOS 26, the Command Line Tools (`xcode-select --install`) or Xcode 26, and the tools that build FrameScrub's own
+FFmpeg (x86_64, static, into `.deps/x86_64`; the first build takes a while). On Apple Silicon the scripts run
+themselves under Rosetta.
 
 ```sh
-brew install ffmpeg
+brew install nasm meson ninja pkgconf
 scripts/make-app.sh --install      # → ~/Applications/FrameScrub.app
-# or run it directly:
-swift run -c release FrameScrub /path/to/video.mp4
+scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homebrew's ffmpeg tool)
 ```
 
 ### Uninstall
