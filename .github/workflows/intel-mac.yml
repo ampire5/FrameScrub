@@ -1,0 +1,58 @@
+name: Intel Mac (self-hosted)
+
+# The lts/macos26 line on a real Intel Mac with macOS 26 (docs/intel-runner.md): native x86_64, the Mac's own GPU and
+# VideoToolbox, which the Rosetta CI on GitHub's Apple Silicon image cannot cover. Never on pull requests: the runner
+# is a personal computer and must not run code from forks. When the Mac is off, the run waits for it (up to a day).
+on:
+  push:
+    branches: [lts/macos26]
+    paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: intel-mac-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [self-hosted, macOS, X64, intel-macos26]
+    timeout-minutes: 120
+    env:
+      # Outside the checkout, which actions/checkout cleans: kept between runs.
+      FRAMESCRUB_DEPS: ${{ github.workspace }}/../framescrub-deps/x86_64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Machine
+        run: |
+          sw_vers
+          sysctl -n machdep.cpu.brand_string
+          system_profiler SPDisplaysDataType | grep -E 'Chipset Model|Metal' || true
+          xcodebuild -version
+          swift --version
+      - name: FFmpeg (prebuilt, or built from source)
+        run: scripts/deps.sh fetch
+      - name: Latest cloud CI run
+        id: cloud
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=lts/macos26&event=push&status=success&per_page=1" \
+            | jq -r '.workflow_runs[0].id // empty')
+          [[ -n "$run" ]] || { echo "error: no successful CI run on lts/macos26 to take the fixtures from" >&2; exit 1; }
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - name: Test fixtures (from that run)
+        uses: actions/download-artifact@v4
+        with:
+          name: fixtures
+          path: Tests/Fixtures
+          run-id: ${{ steps.cloud.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Test
+        run: scripts/test.sh --no-parallel
+      - name: Build the app
+        run: scripts/make-app.sh

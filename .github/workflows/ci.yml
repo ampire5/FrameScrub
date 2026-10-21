@@ -41,6 +41,14 @@ jobs:
         run: scripts/deps.sh fetch
       - name: Test fixtures
         run: scripts/make-fixtures.sh
+      # For the Intel Mac workflow (intel-mac.yml), whose runner has no FFmpeg with x264/x265 to make them.
+      - name: Upload the fixtures
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixtures
+          path: Tests/Fixtures
+          retention-days: 14
       - name: Test
         run: scripts/test.sh --no-parallel   # timing tests share 3 cores badly in parallel
       - name: Build the app
