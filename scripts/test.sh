@@ -15,7 +15,11 @@ swift build --build-tests --triple "$LTS_TRIPLE"
 helper=$(dirname "$(xcrun --find swift)")/../libexec/swift/pm/swiftpm-testing-helper
 bundle=$(swift build --triple "$LTS_TRIPLE" --show-bin-path)/FrameScrubPackageTests.xctest/Contents/MacOS/FrameScrubPackageTests
 if [[ -x "$helper" && -f "$bundle" ]]; then
-    arch -x86_64 "$helper" --test-bundle-path "$bundle" --testing-library swift-testing "$@"
+    # The bundle finds swift-testing where swift test would point it; DYLD_* goes through arch's -e, as /usr/bin/arch
+    # drops it from its own environment.
+    platform=$(xcrun --show-sdk-platform-path)/Developer
+    arch -x86_64 -e DYLD_FRAMEWORK_PATH="$platform/Library/Frameworks" -e DYLD_LIBRARY_PATH="$platform/usr/lib" \
+        "$helper" --test-bundle-path "$bundle" --testing-library swift-testing "$@"
 else
     arch -x86_64 swift test --skip-build --triple "$LTS_TRIPLE" "$@"
 fi
