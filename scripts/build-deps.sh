@@ -60,11 +60,11 @@ ninja -C "$src/dav1d/build" install >/dev/null
 )
 
 # SwiftPM reads only `Libs`: each .pc gets its whole static link line there (pkg-config --static), keeping the flags
-# SwiftPM allows (-L, -l, -framework).
+# SwiftPM allows (-L, -l, -framework), plus libiconv, which FFmpeg's subtitle and MPEG-TS text use but does not list.
 pcdir=$prefix/lib/pkgconfig
 for pc in "$pcdir"/*.pc; do
     name=$(basename "$pc" .pc)
-    libs=$(pkg-config --static --libs "$name" | tr ' ' '\n' | awk '
+    libs=$( (pkg-config --static --libs "$name"; echo -liconv) | tr ' ' '\n' | awk '
         framework { print "-framework " $0; framework = 0; next }
         $0 == "-framework" { framework = 1; next }
         /^-[lL]/ { print }' | awk '!seen[$0]++' | tr '\n' ' ')
