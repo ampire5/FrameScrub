@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# The recipe of FrameScrub's own FFmpeg for the lts/macos26 line (LTS_POLICY.md): FFmpeg and dav1d, x86_64, static,
-# built from source into .deps/x86_64 (or $FRAMESCRUB_DEPS). Homebrew builds no Intel bottles any more, so the Intel
-# app links its decoders in and needs no Homebrew at run time. Decoders, demuxers and muxers only: FrameScrub encodes
-# nothing, its clips are stream copies. Runs on an Intel Mac and on Apple Silicon (a cross build).
+# The recipe of FrameScrub's own FFmpeg: FFmpeg and dav1d, static, for the architecture in scripts/deps.arch (arm64 on
+# main, x86_64 on lts/macos26), built from source into .deps/<arch> (or $FRAMESCRUB_DEPS). The app links it in and
+# needs no Homebrew at run time: Homebrew builds no Intel bottles any more, and its FFmpeg upgrades used to break the
+# dynamic link. Decoders, demuxers and muxers only: FrameScrub encodes nothing, its clips are stream copies. Builds on
+# either Mac, natively or as a cross build.
 # Builds every time: scripts/deps.sh, which the build scripts call, downloads the prebuilt result of this exact
 # recipe instead, and runs this only when there is none. A change here is a new recipe (a new prebuilt archive).
 # The `# renovate:` lines let Renovate (renovate.json on main) propose version updates.
-# Needs: brew install nasm meson ninja pkgconf
+# Needs: brew install meson ninja pkgconf (and nasm for x86_64)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # renovate: datasource=github-tags depName=FFmpeg/FFmpeg extractVersion=^n(?<version>\d+\.\d+(?:\.\d+)?)$
@@ -14,12 +15,18 @@ ffmpeg_version=9.0.2
 # renovate: datasource=github-tags depName=videolan/dav1d
 dav1d_version=1.5.4
 min=26.0
-prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/x86_64}
+arch=$(<scripts/deps.arch)
+case $arch in
+    arm64) cpu_family=aarch64 ;;
+    x86_64) cpu_family=x86_64 ;;
+    *) echo "error: scripts/deps.arch names $arch, not arm64 or x86_64" >&2; exit 1 ;;
+esac
+prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/$arch}
 rm -rf "$prefix"
 src=$prefix/src
 mkdir -p "$src"
 jobs=$(sysctl -n hw.ncpu)
-# Only this prefix: Homebrew's arm64 libraries must not leak into the x86_64 link.
+# Only this prefix: Homebrew's libraries must not leak into the static link.
 export PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig
 unset PKG_CONFIG_PATH
 export MACOSX_DEPLOYMENT_TARGET=$min
@@ -30,10 +37,10 @@ git -c advice.detachedHead=false clone -q --depth 1 -b "n$ffmpeg_version" https:
 # "n9.0.2", or the hash of an enclosing checkout.
 echo "$ffmpeg_version" >"$src/ffmpeg/VERSION"
 
-# A cross file even on an Intel Mac: Meson otherwise takes the CPU from its (possibly arm64) Python.
-cat >"$src/x86_64.meson" <<EOF
+# A cross file even for the Mac's own architecture: Meson otherwise takes the CPU from its Python, which may differ.
+cat >"$src/$arch.meson" <<EOF
 [binaries]
-c = ['clang', '-arch', 'x86_64']
+c = ['clang', '-arch', '$arch']
 ar = 'ar'
 strip = 'strip'
 pkg-config = 'pkg-config'
@@ -45,17 +52,17 @@ c_link_args = ['-mmacosx-version-min=$min']
 
 [host_machine]
 system = 'darwin'
-cpu_family = 'x86_64'
-cpu = 'x86_64'
+cpu_family = '$cpu_family'
+cpu = '$arch'
 endian = 'little'
 EOF
-meson setup "$src/dav1d/build" "$src/dav1d" --cross-file "$src/x86_64.meson" --prefix "$prefix" --libdir lib \
+meson setup "$src/dav1d/build" "$src/dav1d" --cross-file "$src/$arch.meson" --prefix "$prefix" --libdir lib \
     --buildtype release --default-library static -Denable_tools=false -Denable_tests=false >/dev/null
 ninja -C "$src/dav1d/build" install >/dev/null
 
 (
     cd "$src/ffmpeg"
-    ./configure --prefix="$prefix" --arch=x86_64 --target-os=darwin --enable-cross-compile --cc="clang -arch x86_64" \
+    ./configure --prefix="$prefix" --arch="$cpu_family" --target-os=darwin --enable-cross-compile --cc="clang -arch $arch" \
         --extra-cflags="-mmacosx-version-min=$min" --extra-ldflags="-mmacosx-version-min=$min" \
         --pkg-config=pkg-config --pkg-config-flags=--static --enable-static --disable-shared \
         --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-bzlib --enable-iconv \
@@ -79,7 +86,7 @@ for pc in "$pcdir"/*.pc; do
 done
 for pc in "$pcdir"/*.pc; do mv "$pc.flat" "$pc"; done
 
-[[ $(lipo -archs "$prefix/lib/libavcodec.a") == x86_64 ]] \
-    || { echo "error: libavcodec.a is not x86_64 only: $(lipo -archs "$prefix/lib/libavcodec.a")" >&2; exit 1; }
+[[ $(lipo -archs "$prefix/lib/libavcodec.a") == "$arch" ]] \
+    || { echo "error: libavcodec.a is not $arch only: $(lipo -archs "$prefix/lib/libavcodec.a")" >&2; exit 1; }
 rm -rf "$src"
-echo "FFmpeg $ffmpeg_version, dav1d $dav1d_version (macOS $min) installed in $prefix"
+echo "FFmpeg $ffmpeg_version, dav1d $dav1d_version ($arch, macOS $min) installed in $prefix"

@@ -39,11 +39,12 @@ Fixes that only matter on Intel (discrete GPUs, older VideoToolbox) are made dir
   `scripts/build-deps.sh` at pinned versions. Homebrew no longer builds Intel bottles, so the Intel apps need no
   Homebrew at run time.
 - **Prebuilt dependencies.** `scripts/deps.sh` (called by the build scripts) downloads the build of the current recipe
-  from the repository's pre-release `deps-x86_64-<hash of build-deps.sh>` (SHA-256 checked) into `.deps/x86_64`, and
+  from the repository's pre-release `deps-x86_64-<hash of the recipe>` (SHA-256 checked) into `.deps/x86_64`, and
   builds from source only when there is none. CI, releases and local builds therefore link the same binaries. After
-  changing `build-deps.sh` (a version bump, a security fix), the **Prebuilt dependencies (x86_64)** workflow builds and
+  changing `build-deps.sh` (a version bump, a security fix), the **Prebuilt dependencies** workflow builds and
   publishes the new recipe on its own once the change is on `lts/macos26`; until then builds compile it themselves
   (CI also keeps it in its cache).
+- The scripts are the same as on `main`; `scripts/deps.arch` (`x86_64` here, `arm64` there) is what differs.
 - The apps depend on the packages' `lts/macos26` branches, not on version tags.
 - Releases are tagged **`vX.Y.Z-lts`** on `lts/macos26` and ship `…-macOS-x86_64.zip`. They are not marked
   latest on GitHub. The release workflow updates the `on_intel` block of the Homebrew cask; `main`'s releases update
