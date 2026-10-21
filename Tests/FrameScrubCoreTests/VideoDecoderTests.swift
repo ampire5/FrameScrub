@@ -55,7 +55,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         for frame in frames { #expect(readFrameNumber(frame.pixelBuffer) == frame.number) }
     }
 
-    @Test func usesTheOwnVideoToolboxPathForH264AndHEVC() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func usesTheOwnVideoToolboxPathForH264AndHEVC() throws {
         let (h264, frames) = try decodeAll(Fixtures.h264)
         #expect(h264.backendKind == .videoToolbox && h264.isHardware)
         #expect(frames[0].dynamicRange == .sdr)
@@ -230,7 +230,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
     }
 
     /// The pre-roll before a seek target is decoded as reference only: the VideoToolbox session does not output it.
-    @Test func preRollIsNotOutputByVideoToolbox() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func preRollIsNotOutputByVideoToolbox() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, .videoToolbox)
         let backend = try #require(decoder.backend as? VTBackend)

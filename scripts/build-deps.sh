@@ -23,6 +23,8 @@ export MACOSX_DEPLOYMENT_TARGET=$min
 
 git -c advice.detachedHead=false clone -q --depth 1 -b "$dav1d_version" https://github.com/videolan/dav1d "$src/dav1d"
 git -c advice.detachedHead=false clone -q --depth 1 -b "n$ffmpeg_version" https://github.com/FFmpeg/FFmpeg "$src/ffmpeg"
+# Without git, FFmpeg names itself from RELEASE ("9.0.2", as a release tarball does), not `git describe` ("n9.0.2").
+rm -rf "$src/ffmpeg/.git"
 
 # A cross file even on an Intel Mac: Meson otherwise takes the CPU from its (possibly arm64) Python.
 cat >"$src/x86_64.meson" <<EOF

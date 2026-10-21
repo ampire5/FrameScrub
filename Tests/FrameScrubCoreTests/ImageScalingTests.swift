@@ -53,6 +53,7 @@ func markerImage() -> CIImage {
         let before = samplePixel(edge, x: 31, y: 32)[0]
         let after = samplePixel(sharp, x: 31, y: 32)[0]
         #expect(after < before)
-        #expect(samplePixel(sharp, x: 2, y: 32)[0] == samplePixel(edge, x: 2, y: 32)[0])   // flat areas unchanged
+        // Flat areas unchanged, up to Core Image's rounding (one level off on Intel and under Rosetta).
+        #expect(abs(Int(samplePixel(sharp, x: 2, y: 32)[0]) - Int(samplePixel(edge, x: 2, y: 32)[0])) <= 1)
     }
 }
