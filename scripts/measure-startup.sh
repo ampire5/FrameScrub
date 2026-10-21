@@ -7,8 +7,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 video=$1
 wait=${2:-5}
-swift build -c release >/dev/null
-bin="$(swift build -c release --show-bin-path)/FrameScrub"
+. scripts/deps-env.sh
+swift build -c release --triple "$DEPS_TRIPLE" >/dev/null
+bin="$(swift build -c release --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScrub"
 # The first launch of a new binary waits 0.3–0.6 s for the system's code check: keep that out of the timeline.
 env -u FRAMESCRUB_STARTUP_TRACE "$bin" /nonexistent-framescrub-warmup.mp4 >/dev/null 2>&1 &
 pid=$!

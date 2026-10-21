@@ -14,13 +14,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain
         run: swift --version
-      - name: Homebrew dependencies
-        run: brew install ffmpeg
+      # Homebrew's ffmpeg tool encodes the test fixtures; the app links its own FFmpeg (next steps).
+      - name: Homebrew tools
+        run: brew install ffmpeg meson ninja pkgconf
+      - name: Cache FFmpeg
+        uses: actions/cache@v4
+        with:
+          path: .deps/arm64
+          key: deps-arm64-${{ hashFiles('scripts/build-deps.sh') }}
+      - name: FFmpeg (prebuilt, or built from source)
+        run: scripts/deps.sh fetch
       - name: Test fixtures
         run: scripts/make-fixtures.sh
       - name: Test
-        run: swift test --no-parallel   # timing tests share 3 cores badly in parallel
-      # The package revisions this run built, to compare with Package.resolved.
+        run: scripts/test.sh --no-parallel   # timing tests share 3 cores badly in parallel
+      # The package revisions this run built, to compare with (or to commit as) Package.resolved.
       - name: Package.resolved
         run: cat Package.resolved
       - name: Build the app

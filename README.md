@@ -170,9 +170,9 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 brew install --cask ampire5/tap/framescrub
 ```
 
-Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases) (it needs `brew install ffmpeg`).
+Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases).
 
-FrameScrub needs macOS 26 or later on Apple Silicon, and FFmpeg from Homebrew.
+FrameScrub needs macOS 26 or later on Apple Silicon. FFmpeg is built into the app (0.1.0 still needed `brew install ffmpeg`). Intel Macs on macOS 26 get the [`lts/macos26`](https://github.com/ampire5/FrameScrub/tree/lts/macos26) line: the `-lts` releases, which the cask picks on Intel.
 
 **"FrameScrub can't be opened" (zip only).** Builds are not signed with an Apple Developer ID yet. The cask clears the quarantine flag for you; for the zip, try to open the app once, then click **Open Anyway** in System Settings → Privacy & Security, or run:
 
@@ -182,14 +182,17 @@ xattr -dr com.apple.quarantine /Applications/FrameScrub.app
 
 ### Build from source
 
-macOS 26 or later on Apple Silicon, the Command Line Tools (`xcode-select --install`), and FFmpeg:
+macOS 26 or later on Apple Silicon and the Command Line Tools (`xcode-select --install`). FrameScrub links its own
+FFmpeg and dav1d (arm64, static): the first build downloads the prebuilt ones into `.deps/arm64` (`scripts/deps.sh`), or
+builds them from source (`scripts/build-deps.sh`, with the tools below) when the recipe has no prebuilt archive yet.
 
 ```sh
-brew install ffmpeg
+brew install meson ninja pkgconf
 scripts/make-app.sh --install      # → ~/Applications/FrameScrub.app
-# or run it directly:
-swift run -c release FrameScrub /path/to/video.mp4
+scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homebrew's ffmpeg tool)
 ```
+
+A plain `swift build` or `swift run` finds Homebrew's FFmpeg instead, if any: the scripts point SwiftPM at FrameScrub's.
 
 ### Uninstall
 
@@ -231,7 +234,7 @@ Bugs go to [Issues](https://github.com/ampire5/FrameScrub/issues/new?template=bu
 
 - the macOS version and Mac model;
 - the decoder line from the stats panel (`i`; right click → Copy All copies the whole panel);
-- the FFmpeg version (`ffmpeg -version`);
+- the FrameScrub version (for 0.1.0, which used Homebrew's FFmpeg, also `ffmpeg -version`);
 - whether the file plays in QuickTime Player.
 
 Pull requests are welcome; a full contributing guide is on the roadmap.
