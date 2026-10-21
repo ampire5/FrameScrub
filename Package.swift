@@ -1,8 +1,13 @@
 // swift-tools-version: 6.2
+import Foundation
 import PackageDescription
 
-// Command Line Tools ship the swift-testing macro plugin outside the default search path.
+// Command Line Tools ship the swift-testing macro plugin outside the default search path. Only for them: with Xcode
+// selected its compiler finds its own plugin, and the Command Line Tools' one (another version) would shadow it.
 let testingPluginPath = "/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
+let developerDir = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+    ?? (try? FileManager.default.destinationOfSymbolicLink(atPath: "/var/db/xcode_select_link")) ?? ""
+let usesCommandLineTools = developerDir.hasPrefix("/Library/Developer/CommandLineTools")
 
 let package = Package(
     name: "FrameScrub",
@@ -50,7 +55,7 @@ let package = Package(
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
             ],
-            swiftSettings: [.unsafeFlags(["-plugin-path", testingPluginPath])]
+            swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),
     ],
     swiftLanguageModes: [.v5]
