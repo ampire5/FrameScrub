@@ -122,6 +122,13 @@ final class HapticLog {
         #expect(sink.pieces.first?.samples.count == 9600)
     }
 
+    /// Indexed, and a picture of the file on screen. Playing waits for the file's first picture before its clock runs
+    /// (`restartClock`), so a test that moves the clock by hand and expects `tick()` to follow it starts only once
+    /// that picture is in: on a slow or busy machine (CI) it came after the index, and the first ticks did nothing.
+    private func ready(_ player: PlayerCore) async -> Bool {
+        await eventually { player.index?.isExact == true && player.displayedFrame != nil }
+    }
+
     private func shownNumber(_ delegate: RecordingDelegate) -> Int? {
         delegate.frames.last.map { readFrameNumber($0.pixelBuffer) }
     }
@@ -238,7 +245,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 590)
         player.perform(.cyclePause)
         now += 1
@@ -435,7 +442,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
 
         player.perform(.cyclePause)
         #expect(!player.isPaused)
@@ -477,7 +484,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.perform(.cyclePause)
         player.perform(.cyclePause)
         player.perform(.seek(5, .exact))
@@ -532,7 +539,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 595)
         player.perform(.cyclePause)
         now += 5
@@ -544,7 +551,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 590)
         player.perform(.abLoop)
         player.seek(toFrame: 599)
@@ -563,7 +570,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .once })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -587,7 +594,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .once })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -604,7 +611,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .once })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 590)
         player.perform(.abLoop)
         player.seek(toFrame: 599)
@@ -1188,7 +1195,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         setMark(player, 10, 20)
         setMark(player, 100, 110)
         player.seek(toFrame: 0)
@@ -1223,7 +1230,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         setRange(player, 12, 14)
         setMark(player, 10, 20)
         player.seek(toFrame: 10)
@@ -1482,7 +1489,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 60)
         // The clock starts with the first picture on screen: a slow machine may not have shown frame 60 yet.
         #expect(await eventually { self.shownNumber(delegate) == 60 })
@@ -1527,7 +1534,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .pingPong })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -1546,7 +1553,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -1562,7 +1569,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .once })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -1580,7 +1587,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         setMark(player, 10, 20)
         setMark(player, 40, 50)
         player.perform(.playMarks)
@@ -1601,7 +1608,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 300)
         player.perform(.shuttleBack)
         now += 1
@@ -1656,7 +1663,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 100)
         player.perform(.cyclePause)
         #expect(await eventually { player.cache.contains(130) })
@@ -1685,7 +1692,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, _, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .pingPong })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 10)
         player.perform(.abLoop)
         player.seek(toFrame: 20)
@@ -1704,7 +1711,7 @@ final class HapticLog {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
         defer { player.close() }
-        #expect(await eventually { player.index?.isExact == true })
+        #expect(await ready(player))
         player.seek(toFrame: 300)
         player.perform(.shuttleBack)
         player.seek(toFrame: 150)
