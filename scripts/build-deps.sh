@@ -5,10 +5,13 @@
 # nothing, its clips are stream copies. Runs on an Intel Mac and on Apple Silicon (a cross build).
 # Builds every time: scripts/deps.sh, which the build scripts call, downloads the prebuilt result of this exact
 # recipe instead, and runs this only when there is none. A change here is a new recipe (a new prebuilt archive).
+# The `# renovate:` lines let Renovate (renovate.json on main) propose version updates.
 # Needs: brew install nasm meson ninja pkgconf
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# renovate: datasource=github-tags depName=FFmpeg/FFmpeg extractVersion=^n(?<version>\d+\.\d+(?:\.\d+)?)$
 ffmpeg_version=9.0.2
+# renovate: datasource=github-tags depName=videolan/dav1d
 dav1d_version=1.5.4
 min=26.0
 prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/x86_64}
