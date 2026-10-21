@@ -44,9 +44,11 @@ public struct SceneSignature: Sendable, Equatable {
 
     /// Largest colour-byte difference of each of the 64×36 cells, row by row.
     public func cellDifferences(_ other: SceneSignature) -> [Int] {
-        stride(from: 0, to: min(rgb.count, other.rgb.count), by: 3).map { i in
-            max(abs(Int(rgb[i]) - Int(other.rgb[i])), abs(Int(rgb[i + 1]) - Int(other.rgb[i + 1])),
-                abs(Int(rgb[i + 2]) - Int(other.rgb[i + 2])))
+        stride(from: 0, to: min(rgb.count, other.rgb.count), by: 3).map { (i: Int) -> Int in
+            let red: Int = abs(Int(rgb[i]) - Int(other.rgb[i]))
+            let green: Int = abs(Int(rgb[i + 1]) - Int(other.rgb[i + 1]))
+            let blue: Int = abs(Int(rgb[i + 2]) - Int(other.rgb[i + 2]))
+            return max(red, green, blue)
         }
     }
 
