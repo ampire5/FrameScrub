@@ -23,6 +23,6 @@ body:
   - type: textarea
     id: details
     attributes:
-      label: The stats panel (`i` → Copy All) and `ffmpeg -version`
+      label: The stats panel (`i` → Copy All); for 0.1.0, also `ffmpeg -version`
       description: Paste it here; a sample file (or a link to one) helps a lot.
       render: text

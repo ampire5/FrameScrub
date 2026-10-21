@@ -3,3 +3,4 @@ build/
 Tests/Fixtures/
 .DS_Store
 .idea/
+.deps/

@@ -15,15 +15,17 @@ jobs:
       TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Homebrew dependencies
-        run: brew install ffmpeg
+      - name: Homebrew tools
+        run: brew install ffmpeg meson ninja pkgconf
+      - name: FFmpeg (prebuilt, or built from source)
+        run: scripts/deps.sh fetch
       - name: Test
         run: |
           scripts/make-fixtures.sh
-          swift test --no-parallel
+          scripts/test.sh --no-parallel
       - name: Build the app
         run: scripts/make-app.sh
-      # Not signed with a Developer ID yet, and it still uses Homebrew's FFmpeg: the release notes say so.
+      # Not signed with a Developer ID yet: the release notes say so.
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -31,9 +33,10 @@ jobs:
           zip="FrameScrub-${GITHUB_REF_NAME}-macOS-arm64.zip"
           ditto -c -k --keepParent build/FrameScrub.app "$zip"
           gh release create "$GITHUB_REF_NAME" "$zip" --generate-notes \
-            --notes "Unsigned build for Apple Silicon, macOS 26+. Needs \`brew install ffmpeg\`. After unzipping: \`xattr -dr com.apple.quarantine FrameScrub.app\`, then open it."
+            --notes "Unsigned build for Apple Silicon, macOS 26+. FFmpeg is built in. After unzipping: \`xattr -dr com.apple.quarantine FrameScrub.app\`, then open it."
       # Points the cask's on_arm block (the lines marked `# arm`) in ampire5/homebrew-tap at this release; the
-      # lts/macos26 releases update on_intel. Needs a TAP_TOKEN secret that can push to that repo.
+      # lts/macos26 releases update on_intel. FFmpeg is built in now, so on_arm loses its Homebrew dependency (a no-op
+      # once it has). Needs a TAP_TOKEN secret that can push to that repo.
       - name: Update the Homebrew cask
         if: env.TAP_TOKEN != ''
         run: |
@@ -41,6 +44,7 @@ jobs:
           sha=$(shasum -a 256 "FrameScrub-${GITHUB_REF_NAME}-macOS-arm64.zip" | cut -d' ' -f1)
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/ampire5/homebrew-tap" tap
           sed -i '' -E "s/^( *)version \".*\" # arm$/\1version \"$version\" # arm/; s/^( *)sha256 .* # arm$/\1sha256 \"$sha\" # arm/" tap/Casks/framescrub.rb
+          perl -0pi -e 's/\n\n *# The Intel build has FFmpeg built in\.\n *depends_on formula: "ffmpeg"\n/\n/' tap/Casks/framescrub.rb
           git -C tap -c user.name="github-actions" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit -am "framescrub $version"
           git -C tap push
