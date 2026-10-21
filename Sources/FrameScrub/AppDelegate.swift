@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// View › App Icon…: the Dock icon picker (AppIconSwitcher).
     @MainActor @objc private func showIconPicker(_ sender: Any?) { appIcon.showPicker(preferences: preferences) }
     private var pendingURL: URL?
+    /// A link that could not be opened before the window existed.
+    private var pendingNotice: String?
     /// True for a launch that handed over to an already running instance (single-instance=yes) and is quitting.
     private var isSecondary = false
     private var handOverObserver: NSObjectProtocol?
@@ -112,13 +114,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         } else {
             controller.showStartScreen()
         }
-        let warnings = configWarnings + inputWarnings
+        let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
     }
 
-    /// Finder "Open With" and drops on the Dock icon.
+    /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
+        guard let opened = urls.first else { return }
+        // Before anything else, so that the hand-over to the primary instance gets the real path too.
+        guard let url = OpenLink.fileURL(from: opened) else {
+            let notice = "Cannot open the link: \(opened.absoluteString)"
+            if let controller { controller.showMessage(notice, duration: 4) } else if !isSecondary { pendingNotice = notice }
+            return
+        }
         if isSecondary { Self.postHandOver(path: url.path); return }
         if let controller {
             controller.open(url)

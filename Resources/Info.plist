@@ -19,6 +19,14 @@
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
     </dict>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <!-- framescrub://open?path=<percent-encoded absolute path>, see OpenLink. -->
+        <dict>
+            <key>CFBundleURLName</key><string>FrameScrub link</string>
+            <key>CFBundleURLSchemes</key><array><string>framescrub</string></array>
+        </dict>
+    </array>
     <key>CFBundleDocumentTypes</key>
     <array>
         <!-- One type per format with its own icon (Resources/DocumentIcons/<ext>.icns): Finder shows it for
