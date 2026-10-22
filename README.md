@@ -182,6 +182,42 @@ Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releas
 xattr -dr com.apple.quarantine /Applications/FrameScrub.app
 ```
 
+### Edge builds
+
+The latest build that passed CI, not a release: unsigned, for testing. On Apple Silicon these are `main`'s builds, on Intel `lts/macos26`'s. The `framescrub@edge` cask replaces `framescrub` and back; your settings and data stay.
+
+```sh
+brew uninstall --cask framescrub                       # the release, if installed: the two casks conflict
+brew install --cask ampire5/tap/framescrub@edge
+brew update && brew upgrade --cask framescrub@edge     # every new build
+brew list --cask --versions framescrub@edge            # the build you have
+```
+
+The version says which commit it is: `0.1.0-lts-8-g9d42cc8` is 8 commits after 0.1.0-lts, at commit `9d42cc8`. Back to the
+release: `brew uninstall --cask framescrub@edge && brew install --cask ampire5/tap/framescrub`.
+
+**If something goes wrong:**
+
+- **`brew upgrade` finds nothing new.** Homebrew updates the tap only now and then: `brew update` first.
+- **`404 Not Found` while downloading.** Only the newest edge zip is kept, so your copy of the tap points at one that is
+  gone (or a build is being published right now, which takes a minute): `brew update`, then install or upgrade again.
+- **`SHA256 mismatch`.** The same build was published again with a new zip. `brew update`, delete the stale download,
+  try again:
+
+  ```sh
+  rm -f "$(brew --cache --cask framescrub@edge)"
+  brew upgrade --cask framescrub@edge
+  ```
+
+- **`Cask 'framescrub' conflicts with 'framescrub@edge'`.** Only one of the two can be installed: uninstall the other first.
+- **A half-installed or broken app.** `brew reinstall --cask framescrub@edge`. If Homebrew insists it is installed while the
+  app is gone: `brew uninstall --force --cask framescrub@edge`, then install again.
+- **The build itself is broken** (crashes, something stopped working). Go back to the release and wait for the next
+  build; older edge builds are not kept. Please [report it](https://github.com/ampire5/FrameScrub/issues/new?template=bug_report.yml)
+  with the version from `brew list --cask --versions framescrub@edge`.
+- **It misbehaves even on the release.** Your settings may be the cause. Quit FrameScrub and move them aside, and it starts
+  with the defaults: `mv ~/.config/framescrub ~/.config/framescrub.bak`. To remove all its data, see Uninstall below.
+
 ### Build from source
 
 macOS 26 and the Command Line Tools (`xcode-select --install`) or Xcode 26. FrameScrub links its own FFmpeg (x86_64,
