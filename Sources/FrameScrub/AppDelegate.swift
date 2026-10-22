@@ -136,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // framescrub.conf may have been edited meanwhile (a text editor, icon-mode): its changes apply on switching back.
+        if !isSecondary { preferences.reload() }
         guard raiseOnActivate else { return }
         raiseOnActivate = false
         controller?.bringToFront()

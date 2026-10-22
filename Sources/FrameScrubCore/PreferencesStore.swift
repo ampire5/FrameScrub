@@ -26,6 +26,18 @@ public final class PreferencesStore {
         try persist(keys)
     }
 
+    /// Reads framescrub.conf again (an edit made outside the app, `icon-mode`): the observers hear the new config
+    /// if it differs; the file's warnings are returned for the caller to report.
+    @discardableResult
+    public func reload() -> [String] {
+        let (fresh, warnings) = Config.load()
+        if fresh != config {
+            config = fresh
+            for observer in observers { observer(config) }
+        }
+        return warnings
+    }
+
     private func persist(_ keys: [String]) throws {
         let existing = FileManager.default.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
         let defaults = Config()
