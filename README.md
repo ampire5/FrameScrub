@@ -170,6 +170,8 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 brew install --cask ampire5/tap/framescrub
 ```
 
+The latest build that passed CI, not a release: `brew install --cask ampire5/tap/framescrub@edge` (instead of `framescrub`; `brew upgrade` brings every new build).
+
 Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases).
 
 FrameScrub needs macOS 26 or later on Apple Silicon. FFmpeg is built into the app (0.1.0 still needed `brew install ffmpeg`). Intel Macs on macOS 26 get the [`lts/macos26`](https://github.com/ampire5/FrameScrub/tree/lts/macos26) line: the `-lts` releases, which the cask picks on Intel.
