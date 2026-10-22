@@ -96,7 +96,8 @@ With Mac Mouse Fix running and `mx-side-buttons=watch`:
 - [ ] `haptic-limit`: volume at 0 and 100, strength at 0 and 1, speed at the ends of the grid, an edge drag at its pair
       or neighbour.
 - [ ] `haptic-long-armed`: gesture button, panel, Back, Forward each tick at 0.4 s; a button without wheel chords has no
-      tick (its long press acts on the threshold; check `MBTN_MID_LONG` bound by hand if wanted).
+      tick (its long press acts on the threshold; check `MBTN_MID_LONG` bound by hand with `MBTN_MID+WHEEL_UP` and
+      `_DOWN` set to `ignore`, if wanted).
 - [ ] `haptic-toggle`: panel tap (auto colour), panel long (vibrance), a keyboard `toggle-*` / `cycle-*` such as mute or loop, only when
       something changed; a pause toggle (right click, `Space`) does not buzz it.
 - [ ] `haptic-end`: wheel scrub, a frame step and a seek into the first / last frame: one hard bump per push; more
