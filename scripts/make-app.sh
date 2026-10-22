@@ -10,7 +10,12 @@ app=build/FrameScrub.app
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 bin=$app/Contents/MacOS/FrameScrub
-cp "$(swift build -c release --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScrub" "$bin"
+built=$(swift build -c release --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScrub
+cp "$built" "$bin"
+# The symbols go to build/FrameScrub.dSYM, for symbolicating crash reports, not into the app (~6 MB less).
+rm -rf build/FrameScrub.dSYM
+dsymutil "$built" -o build/FrameScrub.dSYM >/dev/null 2>&1 || echo "warning: no build/FrameScrub.dSYM (dsymutil failed)" >&2
+strip "$bin"
 [[ $(lipo -archs "$bin") == "$DEPS_ARCH" ]] || { echo "error: FrameScrub is $(lipo -archs "$bin"), not $DEPS_ARCH" >&2; exit 1; }
 # The app must run on a Mac without Homebrew: the binary links system libraries only.
 outside=$(otool -L "$bin" | tail -n +2 | sed -E 's/^[[:space:]]+//; s/ \(compatibility.*$//' | grep -vE '^(/usr/lib/|/System/)' || true)
