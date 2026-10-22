@@ -236,6 +236,17 @@ import Testing
         #expect(g.nextDeadline == nil)
     }
 
+    /// The default middle button: a tap is full screen on the release, a scroll while it is held is volume and no tap.
+    @Test func defaultMiddleTapsOnReleaseAndScrollsVolumeWhileHeld() {
+        var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)    // MBTN_MID, +WHEEL_UP/DOWN
+        #expect(g.press(.mid, keys: [], rightHeld: false, at: 0) == [])
+        #expect(g.release(.mid, at: 0.1) == [mid])
+        _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+        #expect(g.wheel(hasDelta: true, momentum: false, at: 1.1) == .midButton)
+        #expect(g.release(.mid, at: 1.2) == [])
+        #expect(g.tick(at: 2).fires == [])
+    }
+
     @Test func scrollTailAfterReleaseKeepsModifierUntilGap() {
         var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
         _ = g.press(.back, keys: [], rightHeld: false, at: 0)

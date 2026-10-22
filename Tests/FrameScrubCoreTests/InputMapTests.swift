@@ -87,6 +87,9 @@ import Testing
         #expect(map.command(for: KeyChord(key: "0")) == .addVolume(2))
         #expect(map.command(for: KeyChord(key: "m")) == .cycleMute)
         #expect(map.command(for: KeyChord(key: "MBTN_LEFT_DBL")) == .cycleFullscreen)
+        #expect(map.command(for: KeyChord(key: "MBTN_MID")) == .cycleFullscreen)
+        #expect(map.command(for: KeyChord.parse("MBTN_MID+WHEEL_UP")!) == .addVolume(5))
+        #expect(map.command(for: KeyChord.parse("MBTN_MID+WHEEL_DOWN")!) == .addVolume(-5))
         #expect(map.command(for: KeyChord(key: "ESC")) == .setFullscreen(false))
         #expect(map.command(for: KeyChord(key: "i")) == .stats)
         #expect(map.command(for: KeyChord(key: "PGUP")) == .playlistPrev)
@@ -312,7 +315,7 @@ import Testing
         #expect(map.command(for: KeyChord(key: "k")) == .markSnap)
         #expect(map.command(for: KeyChord.parse("Meta+C")!) == .saveClip)
         #expect(map.command(for: KeyChord(key: "q")) == .quit)
-        #expect(map.bindings.count == 126)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W
+        #expect(map.bindings.count == 129)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)
@@ -340,7 +343,8 @@ import Testing
             ("u", .toggleUpscaler), ("U", .cycleUpscaler), ("9", .addVolume(-2)), ("0", .addVolume(2)),
             ("m", .cycleMute), ("i", .stats), ("o", .showProgress), ("?", .showKeys),
             ("Meta+c", .copyFrame), ("Meta+O", .revealFrames), ("Meta+g", .goTo), ("Meta+BS", .deleteFile),
-            ("ESC", .setFullscreen(false)), ("MBTN_LEFT_DBL", .cycleFullscreen), ("MBTN_RIGHT", .cyclePause),
+            ("ESC", .setFullscreen(false)), ("MBTN_LEFT_DBL", .cycleFullscreen), ("MBTN_MID", .cycleFullscreen),
+            ("MBTN_RIGHT", .cyclePause),
             // the right-half aliases
             ("LEFT", .seek(-5, .byConfig)), ("RIGHT", .seek(5, .byConfig)), ("UP", .seek(60, .byConfig)),
             ("DOWN", .seek(-60, .byConfig)), ("Shift+LEFT", .seek(-1, .exact)), ("Shift+RIGHT", .seek(1, .exact)),
@@ -431,10 +435,12 @@ import Testing
         #expect(KeyChord.parse("MBTN_BACK+WHEEL_UP")?.modifiers == .backButton)
         #expect(KeyChord.parse("MBTN_FORWARD+WHEEL_UP")?.modifiers == .forwardButton)
         #expect(KeyChord.parse("MX_GESTURE+WHEEL_UP")?.modifiers == .gestureButton)
+        #expect(KeyChord.parse("MBTN_MID+WHEEL_UP")?.modifiers == .midButton)
+        #expect(KeyChord.parse("MBTN_MID") == KeyChord(key: "MBTN_MID"))    // the button itself, not a modifier
         #expect(KeyChord.parse("MBTN_BACK") == KeyChord(key: "MBTN_BACK"))
         #expect(KeyChord.parse("MX_PANEL_LONG") == KeyChord(key: "MX_PANEL_LONG"))
         #expect(KeyChord.parse("mx_gesture+Alt+WHEEL_DOWN") == KeyChord(key: "WHEEL_DOWN", modifiers: [.gestureButton, .alt]))
-        #expect(Modifiers.heldButtons == [.backButton, .forwardButton, .panelButton, .gestureButton])
+        #expect(Modifiers.heldButtons == [.backButton, .forwardButton, .panelButton, .gestureButton, .midButton])
         #expect(Modifiers.rightButton.rawValue == 16 && !Modifiers.heldButtons.contains(.rightButton))
     }
 
@@ -502,7 +508,7 @@ import Testing
         #expect(MouseButton(appKitButtonNumber: 5) == nil && MouseButton(appKitButtonNumber: 1) == nil)
         #expect(MouseButton.panel.cid == 0x01A0 && MouseButton.gesture.cid == 0x00C3 && MouseButton.shift.cid == 0x00C4)
         #expect(MouseButton.back.cid == nil && MouseButton.back.sideCID == 0x53 && MouseButton.forward.sideCID == 0x56)
-        #expect(MouseButton.mid.modifier == nil && MouseButton.shift.modifier == nil)
+        #expect(MouseButton.mid.modifier == .midButton && MouseButton.shift.modifier == nil)
         #expect(MouseButton.back.modifier == .backButton && MouseButton.forward.modifier == .forwardButton)
         #expect(MouseButton.panel.modifier == .panelButton && MouseButton.gesture.modifier == .gestureButton)
         #expect(MouseButton.panel.rawValue == "MX_PANEL" && MouseButton.mid.rawValue == "MBTN_MID")
@@ -513,10 +519,10 @@ import Testing
             let map = InputMap(layout: layout)
             #expect(map.binds(.back) && map.binds(.back, suffix: "_LONG") && !map.binds(.back, suffix: "_DBL"))
             #expect(map.binds(.panel) && map.binds(.panel, suffix: "_LONG") && map.binds(.gesture, suffix: "_LONG"))
-            #expect(!map.binds(.shift) && !map.binds(.mid))
+            #expect(!map.binds(.shift) && map.binds(.mid) && !map.binds(.mid, suffix: "_LONG"))
             #expect(map.hasChords(heldWith: .back) && map.hasChords(heldWith: .forward))
             #expect(map.hasChords(heldWith: .panel) && map.hasChords(heldWith: .gesture))
-            #expect(!map.hasChords(heldWith: .mid) && !map.hasChords(heldWith: .shift))
+            #expect(map.hasChords(heldWith: .mid) && !map.hasChords(heldWith: .shift))
             #expect(map.divertedCIDs == [0x01A0, 0x00C3], "\(layout)")
         }
         var map = InputMap()

@@ -13,7 +13,8 @@ public enum MouseButton: String, CaseIterable, Sendable {
         case .forward: .forwardButton
         case .panel: .panelButton
         case .gesture: .gestureButton
-        case .mid, .shift: nil
+        case .mid: .midButton
+        case .shift: nil
         }
     }
 

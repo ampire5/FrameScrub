@@ -22,7 +22,7 @@ extension KeyChord {
 
     private static let heldNames: [(modifier: Modifiers, prefix: String)] = [
         (.rightButton, "Right button + "), (.backButton, "Back + "), (.forwardButton, "Forward + "),
-        (.panelButton, "Panel + "), (.gestureButton, "Gesture button + "),
+        (.midButton, "Middle + "), (.panelButton, "Panel + "), (.gestureButton, "Gesture button + "),
     ]
 
     private static let keyNames: [String: String] = [
