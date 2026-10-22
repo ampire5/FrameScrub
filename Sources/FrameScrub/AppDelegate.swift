@@ -23,6 +23,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// View › App Icon…: the Dock icon picker (AppIconSwitcher).
     @MainActor @objc private func showIconPicker(_ sender: Any?) { appIcon.showPicker(preferences: preferences) }
     private var pendingURL: URL?
+    /// A link's position, segment and plugin page for `pendingURL`.
+    private var pendingTarget: OpenLink.Target?
     /// A link that could not be opened before the window existed.
     private var pendingNotice: String?
     /// True for a launch that handed over to an already running instance (single-instance=yes) and is quitting.
@@ -107,8 +109,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
 
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-        if let path = paths.first {
+        if let link = paths.first.flatMap(URL.init(string:)), link.scheme == "framescrub",
+           let target = OpenLink.target(from: link) {
+            controller.open(target)   // a link on the command line, as from another program
+        } else if let path = paths.first {
             controller.open(URL(fileURLWithPath: path))   // a failure stays on screen with its reason
+        } else if let target = pendingTarget {
+            controller.open(target)
         } else if let url = pendingURL {
             controller.open(url)
         } else {
@@ -118,18 +125,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
     }
 
+    @objc private func togglePluginPanel(_ sender: Any?) {
+        controller?.togglePluginPanel()
+    }
+
     /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let opened = urls.first else { return }
         // Before anything else, so that the hand-over to the primary instance gets the real path too.
-        guard let url = OpenLink.fileURL(from: opened) else {
+        guard let target = OpenLink.target(from: opened) else {
             let notice = "Cannot open the link: \(opened.absoluteString)"
             if let controller { controller.showMessage(notice, duration: 4) } else if !isSecondary { pendingNotice = notice }
             return
         }
+        let url = target.file
         if isSecondary { Self.postHandOver(path: url.path); return }
         if let controller {
-            controller.open(url)
+            controller.open(target)
             // A launch brings the window forward itself (pendingURL). For a running app, macOS may refuse our own
             // activate() while the Finder is still active (it cannot yield to us); the activation LaunchServices
             // grants for the open can land after this event, so the window is raised again when it does.
@@ -140,6 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             }
         } else {
             pendingURL = url
+            pendingTarget = target
         }
     }
 
@@ -569,6 +582,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
         let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
         icon.keyEquivalentModifierMask = [.control, .option, .command]
+        let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")
+        plugin.keyEquivalentModifierMask = [.command, .option]
+        plugin.target = self
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding

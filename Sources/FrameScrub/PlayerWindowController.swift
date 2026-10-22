@@ -60,6 +60,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let osd = OverlayView(fontSize: 15)
     /// The stats (`i`): sections of the file on screen, in the top right corner; made in `buildViews`.
     private var statsPanel: InfoPanelController!
+    /// A web page beside the video that drives the player (View › Show Plugin Panel, `plugin=` in a link).
+    private let pluginPanel = PluginPanel()
+    private var videoTrailing: NSLayoutConstraint!
+    /// Where a link asked to land in the file being opened: applied once the file is open.
+    private var linkTarget: OpenLink.Target?
+    private var lastPluginPush: TimeInterval = 0
     /// The open file's name and folder at once, its size and date once read off the main thread.
     private var fileFacts: FileFacts?
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
@@ -231,6 +237,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    /// A `framescrub://open` link: the file, then its position, segment and plugin page.
+    @discardableResult
+    func open(_ target: OpenLink.Target) -> Bool {
+        if let plugin = target.plugin { showPlugin(plugin) }
+        linkTarget = target.start != nil || target.segment != nil ? target : nil
+        return open(target.file)
+    }
+
     /// Opens a file from outside the folder (Finder, ⌘O, Recent): closing it goes back to Recent.
     @discardableResult
     func open(_ url: URL) -> Bool {
@@ -269,6 +283,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             indexingShownAt = nil
             try core.open(url, fallbackPosition: fallbackPosition)
             StartupTrace.mark("core opened")
+            applyLinkTarget()
             colorFileChanged()   // before anything below reads the colour
             startScreen.isHidden = true
             stashLibrary?.isHidden = true
@@ -949,7 +964,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         NSLayoutConstraint.activate([
             videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             videoView.topAnchor.constraint(equalTo: container.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             startScreen.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -999,6 +1013,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         osdTop = osd.topAnchor.constraint(equalTo: container.topAnchor, constant: 16)
         osdTop.isActive = true
         buildStatsPanel(in: container)
+        buildPluginPanel(in: container)
         seekBar.onHover = { [weak self] in
             self?.showCursorAfterScrub()
             self?.hover($0)
@@ -2304,6 +2319,96 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
     }
 
+    // MARK: Plugin panel
+
+    private func buildPluginPanel(in container: ContainerView) {
+        pluginPanel.translatesAutoresizingMaskIntoConstraints = false
+        pluginPanel.isHidden = true
+        container.addSubview(pluginPanel)
+        videoTrailing = videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        NSLayoutConstraint.activate([
+            videoTrailing,
+            pluginPanel.topAnchor.constraint(equalTo: container.topAnchor),
+            pluginPanel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            pluginPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            pluginPanel.widthAnchor.constraint(equalToConstant: PluginPanel.width),
+        ])
+        pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0) }
+    }
+
+    /// For View › Show Plugin Panel: the page set in Settings (`plugin-url`).
+    var pluginVisible: Bool { !pluginPanel.isHidden }
+
+    func togglePluginPanel() {
+        if pluginVisible {
+            setPluginShown(false)
+        } else if let url = pluginPanel.url ?? UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
+            showPlugin(url)
+        } else {
+            showMessage("No plugin page: set plugin-url (defaults write) or open a link with plugin=")
+        }
+    }
+
+    func showPlugin(_ url: URL) {
+        pluginPanel.load(url)
+        setPluginShown(true)
+    }
+
+    private func setPluginShown(_ shown: Bool) {
+        pluginPanel.isHidden = !shown
+        videoTrailing.constant = shown ? -PluginPanel.width : 0
+        if !shown { window?.makeFirstResponder(videoView) }
+        pushPluginState(force: true)
+    }
+
+    private func applyLinkTarget() {
+        guard let target = linkTarget else { return }
+        linkTarget = nil
+        core.setLoop(seconds: target.segment)
+        if let start = target.start { core.seek(toSeconds: start) }
+    }
+
+    private func pluginMessage(_ body: [String: Any]) {
+        let number = { (key: String) in (body[key] as? NSNumber)?.doubleValue }
+        switch body["cmd"] as? String {
+        case "seek": if let t = number("t") { core.seek(toSeconds: t) }
+        case "play": if core.isPaused { core.play() }
+        case "pause": if !core.isPaused { core.pause() }
+        case "step": core.step(frames: Int(number("n") ?? 1))
+        case "loop":
+            if let a = number("a"), let b = number("b"), b > a { core.setLoop(seconds: a...b) } else { core.setLoop(seconds: nil) }
+        case "focusPlayer": window?.makeFirstResponder(videoView)
+        case "open":
+            let seg = (body["seg"] as? [NSNumber]).flatMap { $0.count == 2 && $0[1].doubleValue > $0[0].doubleValue
+                ? $0[0].doubleValue...$0[1].doubleValue : nil }
+            if let id = body["scene"].map({ "\($0)" }), let paths = body["paths"] as? [String] {
+                // A Stash scene: its file is found on the shares as for ▶ on a scene page.
+                linkTarget = OpenLink.Target(file: URL(fileURLWithPath: "/"), time: number("t"), segment: seg)
+                guard let scene = StashScene(message: ["type": "open", "sceneID": id, "paths": paths]) else { return }
+                openStashScene(scene)
+            } else if let path = body["path"] as? String, path.hasPrefix("/") {
+                open(OpenLink.Target(file: URL(fileURLWithPath: path), time: number("t"), segment: seg))
+            }
+        default: break
+        }
+    }
+
+    /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
+    private func pushPluginState(force: Bool) {
+        guard pluginVisible else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastPluginPush >= 0.1 else { return }
+        lastPluginPush = now
+        var state: [String: Any] = [
+            "t": core.positionSeconds, "frame": core.position, "fps": core.info?.frameRate ?? 0,
+            "duration": core.durationSeconds, "playing": !core.isPaused,
+            "loop": core.loopSeconds.map { [$0.lowerBound, $0.upperBound] } ?? NSNull(),
+        ]
+        state["path"] = core.url?.path ?? NSNull()
+        if case let .stash(sceneID, _) = origin { state["scene"] = sceneID }
+        pluginPanel.push(state)
+    }
+
     // MARK: Stats
 
     /// The stats panel goes over the video, under the seek bar, in the top right corner. It may cover the video below
@@ -2424,11 +2529,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.show(frame)
         lastFrame = frame
         checkSceneCut(frame)
+        pushPluginState(force: false)
         recomputeAutoColorIfDue(frame)
         refreshEnhancement()
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused
             if wasPaused { stashSession?.saveProgress() }

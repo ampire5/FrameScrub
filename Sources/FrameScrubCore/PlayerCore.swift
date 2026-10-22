@@ -1063,6 +1063,40 @@ public final class PlayerCore {
         scrubAudio?.audible = !isMuted && volume > 0
     }
 
+    /// Seeks to a time in seconds (links, plugins).
+    public func seek(toSeconds seconds: Double) {
+        guard let index else { return }
+        seek(toFrame: index.frameNumber(forSeconds: seconds))
+    }
+
+    /// Steps by whole frames, as the frame-step keys do (plugins).
+    public func step(frames: Int) {
+        step(by: frames)
+    }
+
+    /// An A-B loop over a range in seconds, nil to clear it (links, plugins).
+    public func setLoop(seconds range: ClosedRange<Double>?) {
+        guard let index else { return }
+        if let range {
+            let a = index.frameNumber(forSeconds: range.lowerBound)
+            loopA = a
+            loopB = max(a, index.frameNumber(forSeconds: range.upperBound))
+        } else {
+            loopA = nil
+            loopB = nil
+        }
+        delegate?.playerStateDidChange(self)
+    }
+
+    /// The current position in seconds.
+    public var positionSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
+
+    /// The loop in seconds, when both ends are set.
+    public var loopSeconds: ClosedRange<Double>? {
+        guard let index, let a = loopA, let b = loopB else { return nil }
+        return index.seconds(forFrame: a)...index.seconds(forFrame: b)
+    }
+
     private func cycleABLoop() {
         if let a = loopA, loopB == nil {
             loopA = min(a, position)
