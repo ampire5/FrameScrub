@@ -44,4 +44,36 @@ import Testing
     @Test func anotherSchemeIsRefused() {
         #expect(OpenLink.fileURL(from: link("https://open?path=/a")) == nil)
     }
+
+    @Test func readsTimeSegmentAndPlugin() {
+        let target = OpenLink.target(from: link(
+            "framescrub://open?path=%2Fa.mp4&t=12.5&seg=10-16&plugin=http%3A%2F%2Fhost%3A8000%2Fp%2F%3Fq%3D1"))
+        #expect(target?.file.path == "/a.mp4")
+        #expect(target?.time == 12.5)
+        #expect(target?.segment == 10...16)
+        #expect(target?.plugin?.absoluteString == "http://host:8000/p/?q=1")
+        #expect(target?.start == 12.5)
+    }
+
+    @Test func aSegmentAloneStartsAtItsBeginning() {
+        let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&seg=3.5-9"))
+        #expect(target?.time == nil)
+        #expect(target?.start == 3.5)
+    }
+
+    @Test func badExtrasAreIgnoredButTheFileStillOpens() {
+        let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&t=-4&seg=9-3&plugin=file%3A%2F%2F%2Fx"))
+        #expect(target?.file.path == "/a.mp4")
+        #expect(target?.time == nil)
+        #expect(target?.segment == nil)
+        #expect(target?.plugin == nil)
+    }
+
+    @Test func segmentText() {
+        #expect(OpenLink.segment(from: "1-2") == 1...2)
+        #expect(OpenLink.segment(from: "1.25 - 7") == 1.25...7)
+        #expect(OpenLink.segment(from: "5") == nil)
+        #expect(OpenLink.segment(from: "a-b") == nil)
+        #expect(OpenLink.segment(from: "4-4") == nil)
+    }
 }
