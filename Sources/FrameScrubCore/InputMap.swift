@@ -9,18 +9,19 @@ public struct Modifiers: OptionSet, Hashable, Sendable {
     public static let meta = Modifiers(rawValue: 8)
     /// The right mouse button is held: `MBTN_RIGHT+WHEEL_UP`, `MBTN_RIGHT+MBTN_MID`.
     public static let rightButton = Modifiers(rawValue: 16)
-    /// Another button is held: `MBTN_BACK+WHEEL_UP`, `MX_PANEL+WHEEL_UP`.
+    /// Another button is held: `MBTN_BACK+WHEEL_UP`, `MX_PANEL+WHEEL_UP`, `MBTN_MID+WHEEL_UP`.
     public static let backButton = Modifiers(rawValue: 32)
     public static let forwardButton = Modifiers(rawValue: 64)
     public static let panelButton = Modifiers(rawValue: 128)
     public static let gestureButton = Modifiers(rawValue: 256)
+    public static let midButton = Modifiers(rawValue: 512)
     /// The buttons held next to the pointer and wheel; the right button is separate (it has table rows of its own).
-    public static let heldButtons: Modifiers = [.backButton, .forwardButton, .panelButton, .gestureButton]
+    public static let heldButtons: Modifiers = [.backButton, .forwardButton, .panelButton, .gestureButton, .midButton]
 
     /// The names of the held buttons in `description` order, with the modifier of each.
     static let heldButtonNames: [(name: String, modifier: Modifiers)] = [
         ("MBTN_RIGHT", .rightButton), ("MBTN_BACK", .backButton), ("MBTN_FORWARD", .forwardButton),
-        ("MX_PANEL", .panelButton), ("MX_GESTURE", .gestureButton),
+        ("MBTN_MID", .midButton), ("MX_PANEL", .panelButton), ("MX_GESTURE", .gestureButton),
     ]
 }
 
@@ -381,6 +382,9 @@ public struct InputMap {
     m cycle mute
     f cycle fullscreen
     MBTN_LEFT_DBL cycle fullscreen
+    MBTN_MID cycle fullscreen
+    MBTN_MID+WHEEL_UP add volume 5
+    MBTN_MID+WHEEL_DOWN add volume -5
     MBTN_RIGHT+WHEEL_UP scrub fast
     MBTN_RIGHT+WHEEL_DOWN scrub fast
     MBTN_RIGHT+WHEEL_LEFT step-speed down

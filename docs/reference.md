@@ -145,14 +145,16 @@ Actions: `scrub`, `scrub fast`, `scrub invert`, `seek N [exact|keyframes]`, `add
 per notch.
 
 `MBTN_RIGHT+` holds the right mouse button: by default `MBTN_RIGHT+WHEEL_…` and `MBTN_RIGHT+TRACKPAD_…` are
-`scrub fast`. The middle button is `MBTN_MID` (unbound by default). A button with a `_DBL` binding runs its single
+`scrub fast`. The middle button is `MBTN_MID`: by default a click is `cycle fullscreen` (like `MBTN_LEFT_DBL`), and the
+wheel turned while the wheel is held down (`MBTN_MID+WHEEL_UP` / `_DOWN`) is `add volume 5` / `-5`; with that chord
+bound, the click acts on the release, and not at all after a scroll. A button with a `_DBL` binding runs its single
 action only after the double-click interval. The right button released after it served as a modifier does not play /
 pause. Example:
 
 ```
 MBTN_RIGHT+WHEEL_LEFT   step-speed down
 MBTN_RIGHT+WHEEL_RIGHT  step-speed up
-MBTN_MID                cycle fullscreen
+MBTN_MID                cycle ontop
 MBTN_FORWARD_DBL        ab-loop
 MBTN_RIGHT+MBTN_MID     set speed 1.0
 ```
@@ -178,7 +180,7 @@ FrameScrub is in front that button then no longer toggles the SmartShift ratchet
 | `MX_PANEL` | tap (acts on release when the button also has a `_LONG` line or wheel chords) |
 | `MX_PANEL_DBL` | double tap (the single tap waits out the double-click interval) |
 | `MX_PANEL_LONG` | held for `mouse-long-press` (400 ms). A button that also has wheel chords acts on release, and plays `haptic-long-armed` at the threshold |
-| `MX_PANEL+WHEEL_UP` | wheel turned while the button is held (`MX_GESTURE+`, `MBTN_BACK+`, `MBTN_FORWARD+` too) |
+| `MX_PANEL+WHEEL_UP` | wheel turned while the button is held (`MX_GESTURE+`, `MBTN_BACK+`, `MBTN_FORWARD+`, `MBTN_MID+` too) |
 
 A wheel turn with a button held cancels its tap and long press; moving the pointer 8 pt or more with a button down
 makes it a drag, not a press (so Mac Mouse Fix drags and a trembling hand do nothing). The defaults:
@@ -196,6 +198,8 @@ MBTN_BACK+WHEEL_UP / _DOWN  scrub-edge start
 MBTN_FORWARD                mark-out
 MBTN_FORWARD_LONG           mark-delete
 MBTN_FORWARD+WHEEL_UP/_DOWN scrub-edge end
+MBTN_MID                    cycle fullscreen
+MBTN_MID+WHEEL_UP / _DOWN   add volume 5 / -5
 ```
 
 `add auto-color-strength ±d` steps the open file's auto colour strength (0…1, the Settings slider's scale; remembered

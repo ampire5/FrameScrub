@@ -15,6 +15,7 @@ import Testing
         #expect(KeyChord(key: "MBTN_RIGHT").isPointer && !KeyChord(key: "SPACE").isPointer)
         #expect(KeyChord.parse("MBTN_RIGHT+WHEEL_LEFT")!.displayName == "Right button + Side wheel left")
         #expect(KeyChord.parse("MBTN_RIGHT+Shift+MBTN_MID")!.displayName == "Right button + ⇧Middle click")
+        #expect(KeyChord.parse("MBTN_MID+WHEEL_UP")!.displayName == "Middle + Wheel ↑")
         #expect(KeyChord(key: "MBTN_BACK").displayName == "Back button")
         #expect(KeyChord(key: "MBTN_FORWARD_DBL").displayName == "Forward button double click")
     }
