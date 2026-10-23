@@ -1,5 +1,5 @@
 {
-  "originHash" : "a232a55c0c4caf109074c407b99ce1b094f381f2b3d297a404e441a475e497aa",
+  "originHash" : "ace19dcbf877a5ce3341972040bd8dc230f04f74ee7f583594d03e360bd83d8f",
   "pins" : [
     {
       "identity" : "homescreenkit",
@@ -26,6 +26,15 @@
       "state" : {
         "branch" : "lts/macos26",
         "revision" : "92af78ff4abe5ee3812833c2ad1e7836b822132f"
+      }
+    },
+    {
+      "identity" : "settingskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ampire5/SettingsKit.git",
+      "state" : {
+        "branch" : "lts/macos26",
+        "revision" : "35c6f16a66375e34f235ec22748f5ca9f15f7071"
       }
     },
     {
