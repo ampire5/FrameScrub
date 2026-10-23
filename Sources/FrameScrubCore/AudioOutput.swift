@@ -15,6 +15,7 @@ public final class AudioOutput {
     private let lock = NSLock()
     private var generation = 0
     private var startSeconds = 0.0
+    private var starting = false
     /// Main thread, after a device change stopped the engine and it runs again: the playback's queued sound is
     /// gone, so playback that was running must be started again (PlayerCore: from the frame on screen).
     public var onRestart: (() -> Void)?
@@ -70,11 +71,16 @@ public final class AudioOutput {
         return lock.withLock { startSeconds } + Double(playerTime.sampleTime) / playerTime.sampleRate
     }
 
+    /// Asked to play and not heard yet: the feed is still seeking and decoding its first piece. False once the sound
+    /// runs, and when the feed gave up (no sound there, a failure) or playback was paused.
+    public var isStarting: Bool { lock.withLock { starting } }
+
     public func play(fromSeconds seconds: Double) {
         _ = restartEngine()   // a device change whose restart failed: try again when asked to play
         let current = lock.withLock { () -> Int in
             generation += 1
             startSeconds = seconds
+            starting = true
             player.stop()
             return generation
         }
@@ -84,6 +90,7 @@ public final class AudioOutput {
     public func pause() {
         lock.withLock {
             generation += 1
+            starting = false
             player.stop()
         }
     }
@@ -119,6 +126,8 @@ public final class AudioOutput {
     private func isCurrent(_ g: Int) -> Bool { lock.withLock { generation == g } }
 
     private func feed(from seconds: Double, generation g: Int) {
+        // However the feed ends before the sound runs, it is no longer starting.
+        defer { lock.withLock { if generation == g { starting = false } } }
         do {
             try decoder.seek(toSeconds: seconds)
         } catch {
@@ -150,6 +159,7 @@ public final class AudioOutput {
                     startSeconds = chunk.startSeconds
                     player.play()
                     started = true
+                    starting = false
                 }
                 return true
             }

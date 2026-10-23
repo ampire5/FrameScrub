@@ -294,6 +294,7 @@ public final class PlayerCore {
         scrubAudio?.stop()
         scrubAudio = nil
         clock.audioSeconds = nil
+        clock.audioStarting = nil
         clock.stop()
         cache.removeAll()
         readCache?.close()
@@ -422,6 +423,7 @@ public final class PlayerCore {
     private func attachAudio(_ output: AudioOutput?, scrubDecoder: AudioDecoder?) {
         audio = output
         clock.audioSeconds = output.map { output in { output.currentSeconds } }
+        clock.audioStarting = output.map { output in { output.isStarting } }
         output?.onRestart = { [weak self, weak output] in
             guard let self, let output, self.audio === output, !self.isPaused else { return }
             self.restartClock()   // the queued sound went with the stopped engine: it starts again at the frame on screen
@@ -436,7 +438,9 @@ public final class PlayerCore {
         }
         applySpeed(speed)   // the time-pitch unit narrows the range
         applyVolume()
-        if !isPaused, direction > 0, !clockWaitsForPicture { output?.play(fromSeconds: currentSeconds) }
+        // Playing forward on the host clock: started again with the sound, so the clock holds until it is heard instead
+        // of jumping back to it.
+        if !isPaused, direction > 0, !clockWaitsForPicture, output != nil { restartClock() }
     }
 
     private func buildIndexInBackground(_ url: URL, readCache: ReadCache, session current: Int) {
@@ -619,7 +623,12 @@ public final class PlayerCore {
     /// Advances playback to the clock; call on every display refresh.
     public func tick() {
         checkPendingScreenshot()
-        // Before the file's first picture the clock stands still at 0: following it would undo the resume position.
+        // Before the starting frame is on screen the clock stands still: following it would move off the start. The frame
+        // may be in already (shown before the playhead came to it, or decoded unseen): it starts the clock here.
+        if clockWaitsForPicture, !isPaused {
+            if let frame = cache.frame(position), frame.number != displayedFrame { display(frame) }
+            else if displayedFrame == position || cache.isUndecodable(position) { restartClock() }
+        }
         guard !isPaused, !clockWaitsForPicture, let index else { return }
         let seconds = clock.seconds
         let n = index.frameNumber(forSeconds: max(seconds, 0))
@@ -848,9 +857,10 @@ public final class PlayerCore {
 
     /// Backward the clock runs on the host time at a negative rate and the audio waits (spec §3).
     private func restartClock() {
-        // Nothing of this file on screen yet: the clock starts with its first picture (`display`), so playback does
-        // not run ahead of a decoder that is still starting.
-        clockWaitsForPicture = displayedFrame == nil
+        // The frame playback starts on is not on screen yet (a new file, a seek the decoder has not reached; a stand-in
+        // near it does not count): the clock and the sound start with it (`display`, `tick`), so the sound never runs
+        // ahead of a decoder that is still on its way there. An undecodable frame does not hold playback.
+        clockWaitsForPicture = displayedFrame != position && !cache.isUndecodable(position)
         guard !clockWaitsForPicture else {
             clock.stop()
             audio?.pause()

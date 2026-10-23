@@ -34,6 +34,11 @@ import Testing
         await eventually { player.index?.isExact == true && player.displayedFrame != nil }
     }
 
+    /// Playing, and the clock running: it starts once the frame playback starts on is on screen (`restartClock`).
+    private func running(_ player: PlayerCore) async -> Bool {
+        await eventually { player.tick(); return player.clock.isRunning }
+    }
+
     @Test func settingSegmentsLandsInTheFirst() async throws {
         let (player, _) = try makePlayer()
         defer { player.close() }
@@ -336,6 +341,7 @@ import Testing
         let ranges = try frames(player)
         player.seek(toFrame: ranges[0].upperBound - 5)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // 15 frames on: past the end of the first segment
         player.tick()
         #expect(player.position == ranges[0].lowerBound)
@@ -350,12 +356,14 @@ import Testing
         let ranges = try frames(player)
         player.seek(toFrame: ranges[0].upperBound - 5)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // past the end of the first: on to the second
         player.tick()
         #expect(player.position == ranges[1].lowerBound)
         player.perform(.cyclePause)
         player.seek(toFrame: ranges[1].upperBound - 5)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // past the end of the last: back to the first
         player.tick()
         #expect(player.position == ranges[0].lowerBound)
@@ -371,9 +379,11 @@ import Testing
         player.seek(toFrame: ranges[1].lowerBound + 5)
         player.perform(.shuttleBack)                  // backward at 1×
         #expect(!player.isPaused && player.direction == -1)
+        #expect(await running(player))
         now += 0.5                                    // before the start of the second: back to the end of the first
         player.tick()
         #expect(player.position == ranges[0].upperBound)
+        #expect(await running(player))
         now += 1.5                                    // before the start of the first: round to the end of the last
         player.tick()
         #expect(player.position == ranges[1].upperBound)
@@ -391,6 +401,7 @@ import Testing
         var calls: [(Int?, Bool)] = []
         player.onSegmentChange = { calls.append(($0, $1)) }
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // 15 frames on: inside the second segment
         player.tick()
         #expect(player.currentSegment == 1)
@@ -509,6 +520,7 @@ import Testing
         let ranges = try frames(player)
         player.seek(toFrame: ranges[0].upperBound - 5)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // 15 frames on: past the end of the first segment
         player.tick()
         #expect(player.position == ranges[0].upperBound && player.isPaused)
@@ -526,9 +538,11 @@ import Testing
         let ranges = try frames(player)
         player.seek(toFrame: ranges[0].upperBound - 5)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                                    // past the end: turn there
         player.tick()
         #expect(player.position == ranges[0].upperBound && player.direction == -1 && !player.isPaused)
+        #expect(await running(player))
         now += 1.5                                    // 45 frames back: before the start, turn there
         player.tick()
         #expect(player.position == ranges[0].lowerBound && player.direction == 1 && !player.isPaused)
