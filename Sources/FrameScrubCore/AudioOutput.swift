@@ -14,8 +14,15 @@ public final class AudioOutput {
     private let feedQueue = DispatchQueue(label: "framescrub.audio", qos: .userInteractive)
     private let lock = NSLock()
     private var generation = 0
-    private var startSeconds = 0.0
-    private var starting = false
+    /// What the main thread reads every display refresh (`currentSeconds`, `isStarting`), under its own lock: `lock`
+    /// is held around `scheduleBuffer` and `play`, which wait for the engine's lock, and the display link must never
+    /// wait behind them. Written with `lock` held too.
+    private struct Heard {
+        var startSeconds = 0.0
+        var starting = false
+        var playing = false
+    }
+    private let heard = OSAllocatedUnfairLock(initialState: Heard())
     /// Main thread, after a device change stopped the engine and it runs again: the playback's queued sound is
     /// gone, so playback that was running must be started again (PlayerCore: from the frame on screen).
     public var onRestart: (() -> Void)?
@@ -64,23 +71,30 @@ public final class AudioOutput {
         set { engine.mainMixerNode.outputVolume = newValue }
     }
 
-    /// Seconds on the video timeline being heard now; nil while stopped or still starting.
+    /// Seconds on the video timeline being heard now; nil while stopped or still starting. Right after the player
+    /// starts, its time is negative until the first sample reaches the output: the start is reported until then, not
+    /// a time before it (which put playback a frame before a segment's start, where it jumped back and started the
+    /// sound again, over and over).
     public var currentSeconds: Double? {
-        guard player.isPlaying, let nodeTime = player.lastRenderTime,
+        let state = heard.withLock { $0 }
+        guard state.playing, let nodeTime = player.lastRenderTime,
               let playerTime = player.playerTime(forNodeTime: nodeTime) else { return nil }
-        return lock.withLock { startSeconds } + Double(playerTime.sampleTime) / playerTime.sampleRate
+        return state.startSeconds + Double(max(playerTime.sampleTime, 0)) / playerTime.sampleRate
     }
 
     /// Asked to play and not heard yet: the feed is still seeking and decoding its first piece. False once the sound
     /// runs, and when the feed gave up (no sound there, a failure) or playback was paused.
-    public var isStarting: Bool { lock.withLock { starting } }
+    public var isStarting: Bool { heard.withLock { $0.starting } }
+
+    /// Tests: how often playback sound was (re)started.
+    private(set) var playCalls = 0
 
     public func play(fromSeconds seconds: Double) {
+        playCalls += 1
         _ = restartEngine()   // a device change whose restart failed: try again when asked to play
         let current = lock.withLock { () -> Int in
             generation += 1
-            startSeconds = seconds
-            starting = true
+            heard.withLock { $0 = Heard(startSeconds: seconds, starting: true, playing: false) }
             player.stop()
             return generation
         }
@@ -90,7 +104,7 @@ public final class AudioOutput {
     public func pause() {
         lock.withLock {
             generation += 1
-            starting = false
+            heard.withLock { $0.starting = false; $0.playing = false }
             player.stop()
         }
     }
@@ -127,7 +141,7 @@ public final class AudioOutput {
 
     private func feed(from seconds: Double, generation g: Int) {
         // However the feed ends before the sound runs, it is no longer starting.
-        defer { lock.withLock { if generation == g { starting = false } } }
+        defer { lock.withLock { if generation == g { heard.withLock { $0.starting = false } } } }
         do {
             try decoder.seek(toSeconds: seconds)
         } catch {
@@ -151,15 +165,16 @@ public final class AudioOutput {
             // Check, schedule and play atomically with generation changes (play/pause stop the
             // player under the same lock), so a stale feed never touches the player.
             let proceed = lock.withLock { () -> Bool in
-                guard generation == g else { return false }
+                // A device change may have stopped the engine (its restart comes on the main thread); playing a
+                // node of a stopped engine raises. The sound starts again with the restart (`onRestart`).
+                guard generation == g, engine.isRunning else { return false }
                 player.scheduleBuffer(chunk.buffer) { slots.signal() }
                 if !started {
                     // Start only once data is queued, timed from the first chunk: audio that
                     // begins later than requested (e.g. a late-starting track) must not run early.
-                    startSeconds = chunk.startSeconds
                     player.play()
                     started = true
-                    starting = false
+                    heard.withLock { $0 = Heard(startSeconds: chunk.startSeconds, starting: false, playing: true) }
                 }
                 return true
             }

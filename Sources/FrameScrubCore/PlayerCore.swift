@@ -123,6 +123,8 @@ public final class PlayerCore {
     public var isExporting: Bool { exportFlag != nil }
     public var hasAudio: Bool { audio != nil }
     var hasScrubAudio: Bool { scrubAudio != nil }
+    /// Tests: how often the playback sound was (re)started.
+    var audioPlayCalls: Int { audio?.playCalls ?? 0 }
 
     private let enableAudio: Bool
     private let fallbackRoot: URL

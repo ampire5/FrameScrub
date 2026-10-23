@@ -365,6 +365,25 @@ final class HapticLog {
         #expect(self.shownNumber(delegate) == 240)
     }
 
+    /// Locked segments that play on to the next: the sound's first moments must not put the playhead a frame before the
+    /// segment (the player's time is negative until its first sample is heard), from where playback jumped back to the
+    /// segment's start and started the sound again, over and over: a buzz. Needs an audio device.
+    @Test func soundStartingAtASegmentStartStartsOnce() async throws {
+        let player = PlayerCore(config: Config(), enableAudio: true, fallbackRoot: makeTemporaryDirectory())
+        defer { player.close() }
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        guard await eventually(timeout: 3, { player.hasAudio }) else { return }   // no audio device here
+        player.applyLanding(LinkTarget(time: 1.0, segments: [1.0...1.6, 2.4...3.0], advance: .next))
+        player.play()
+        let start = CACurrentMediaTime()
+        while CACurrentMediaTime() - start < 0.45 {   // inside the first segment (0.6 s)
+            player.tick()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(player.audioPlayCalls == 1)
+        #expect(player.position >= 25 && player.position <= 40)
+    }
+
     /// The clock follows the sound: while the sound is still starting it holds the start (both begin together), but
     /// not for longer than `audioStartLimit`.
     @Test func clockHoldsWhileTheSoundStarts() {
