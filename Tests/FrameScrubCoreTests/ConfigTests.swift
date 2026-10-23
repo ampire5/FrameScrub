@@ -341,6 +341,18 @@ import Testing
         #expect(lookup(dir.appendingPathComponent("none.png").path) == nil)
     }
 
+    @Test func parsesSegmentAdvance() {
+        #expect(Config().segmentAdvance == .repeating)
+        let (c, warnings) = Config.parse("segment-advance=next")
+        #expect(warnings.isEmpty)
+        #expect(c.segmentAdvance == .next)
+        #expect(c.text(forKey: "segment-advance") == "next")
+        #expect(Config().text(forKey: "segment-advance") == "repeat")
+        #expect(Config.parse("segment-advance=repeat").0.segmentAdvance == .repeating)
+        #expect(!Config.parse("segment-advance=forever").1.isEmpty)
+        #expect(Config.keys.contains("segment-advance"))
+    }
+
     @Test func parsesABLoopMode() {
         #expect(Config().abLoop == .loop)
         let (c, warnings) = Config.parse("ab-loop=once")

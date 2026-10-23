@@ -655,6 +655,7 @@ public final class PlayerCore {
                 return count == 0 ? nil : "All marks deleted (\(count))"
             }
         case .showProgress: osd(progressText)
+        case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .cycleAspect, .windowScale, .windowFit,
              .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge: break
@@ -1103,6 +1104,10 @@ public final class PlayerCore {
     public var loopSeconds: ClosedRange<Double>? {
         guard let index, let a = loopA, let b = loopB else { return nil }
         return index.seconds(forFrame: a)...index.seconds(forFrame: b)
+    }
+
+    private func toggleSegmentLock() {
+        refuse("No segments")
     }
 
     private func cycleABLoop() {

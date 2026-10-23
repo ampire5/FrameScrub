@@ -109,6 +109,7 @@ modes and Play Marks Only work mirrored.
 | `⇧⌥m` | Scrub pitch: tape (follows the speed) / natural (the sound's own pitch from 0.5× up, reversed backward) (`scrub-audio-pitch`) |
 | `l` | Set range start, then end, then clear (loops playback). While A is set, the frame line counts from it (`A+37 f (1.23 s)`); setting B shows the range's length |
 | `L` | At B: loop back to A, pause on B (playing on from B starts at A again), or back and forth (turns around at B and at A). Backward the same mirrored. Also Playback > At B; saved as `ab-loop` |
+| `⌥l` | Segments: lock playback to the segment under the position / unlock (`⇧⌥f` in left-hand) |
 | `Ctrl+j` `Ctrl+k` `Ctrl+l` | Shuttle: back / stop / forward (see the left-hand table) |
 | `s` | Save current frame (the picture flashes faintly, as it does for ⌘C) |
 | `S` | Export the A-B range (a sheet asks which frames and what size; press again or `Esc` to cancel a running export) |
@@ -461,6 +462,7 @@ scrub-audio=yes                 # yes: sound in pause — a piece per step, tape
 scrub-audio-length=80           # 20…500 ms, length of the piece a single step plays
 scrub-audio-pitch=tape          # tape: the scrub pitch follows the speed; natural: the sound's own pitch (⇧⌥m toggles it)
 ab-loop=loop                    # loop | once | ping-pong — at B: back to A, pause, or turn around (⇧f / L cycles it)
+segment-advance=repeat          # repeat | next — at the end of a locked segment: play it again, or go on to the next one
 key-layout=classic              # classic (the original mpv-style keys) | left-hand
 app-icon=horse                  # Dock icon while running: horse, or a picture of yours: ~/.config/framescrub/icons/<name>.png (or .icns), or a path
 ```

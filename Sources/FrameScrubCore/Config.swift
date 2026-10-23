@@ -237,6 +237,8 @@ public struct Config: Equatable, Sendable {
     /// How the scrub tape sounds: its pitch follows the speed, or stays the sound's own (spec §6б).
     public var scrubAudioPitch = ScrubPitch.tape
     public var abLoop = ABLoopMode.loop
+    /// `segment-advance`: when a locked segment ends, play it again (`repeat`) or go on to the next one (`next`).
+    public var segmentAdvance = SegmentAdvance.repeating
     public var keyLayout = KeyLayout.classic
     /// `app-icon`: which icon the Dock shows (see `AppIcon`).
     public var appIcon = AppIcon.bundle
@@ -260,7 +262,7 @@ public struct Config: Equatable, Sendable {
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
         "preview", "preview-width", "scale", "sharpen", "sr-still", "save-scale", "save-upscaler",
         "vibrance", "vibrance-on", "auto-color", "auto-color-strength", "auto-color-filters", "auto-color-vibrance-gain", "auto-color-interval", "auto-color-threshold", "auto-color-full", "save-color", "ontop", "stats-font-size",
-        "hold-speed", "speed-step", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "key-layout",
+        "hold-speed", "speed-step", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "segment-advance", "key-layout",
         "app-icon",
     ]
 
@@ -358,6 +360,7 @@ public struct Config: Equatable, Sendable {
         case "scrub-audio-length": return String(scrubAudioLengthMs)
         case "scrub-audio-pitch": return scrubAudioPitch.rawValue
         case "ab-loop": return abLoop.rawValue
+        case "segment-advance": return segmentAdvance.rawValue
         case "key-layout": return keyLayout.rawValue
         case "app-icon": return appIcon
         default: return nil
@@ -506,6 +509,7 @@ public struct Config: Equatable, Sendable {
         case "scrub-audio-length": guard let v = int(20...500) else { return false }; scrubAudioLengthMs = v
         case "scrub-audio-pitch": guard let v = ScrubPitch(rawValue: value.lowercased()) else { return false }; scrubAudioPitch = v
         case "ab-loop": guard let v = ABLoopMode(rawValue: value.lowercased()) else { return false }; abLoop = v
+        case "segment-advance": guard let v = SegmentAdvance(rawValue: value.lowercased()) else { return false }; segmentAdvance = v
         case "key-layout": guard let v = KeyLayout(rawValue: value.lowercased()) else { return false }; keyLayout = v
         case "app-icon": guard let v = AppIcon.normalized(value) else { return false }; appIcon = v
         default: return false

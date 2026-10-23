@@ -109,6 +109,7 @@ public enum Command: Equatable, Sendable {
     case cycleOntop
     case showProgress, stats
     case abLoop, cycleABLoopMode
+    case toggleSegmentLock
     case markIn, markOut, markPrev, markNext, markSnap, markLoop, markDelete, markClear, playMarks
     case shuttleBack, shuttleStop, shuttleForward
     case screenshot, exportRange, saveClip
@@ -178,6 +179,7 @@ public enum Command: Equatable, Sendable {
         case .stats: return "script-binding stats/display-stats"
         case .abLoop: return "ab-loop"
         case .cycleABLoopMode: return "cycle-ab-loop-mode"
+        case .toggleSegmentLock: return "toggle-segment-lock"
         case .markIn: return "mark-in"
         case .markOut: return "mark-out"
         case .markPrev: return "mark-prev"
@@ -275,6 +277,7 @@ public enum Command: Equatable, Sendable {
         case let ("script-binding", binding?) where binding.hasPrefix("stats"): return .stats
         case ("ab-loop", nil): return .abLoop
         case ("cycle-ab-loop-mode", nil): return .cycleABLoopMode
+        case ("toggle-segment-lock", nil): return .toggleSegmentLock
         case ("mark-in", nil): return .markIn
         case ("mark-out", nil): return .markOut
         case ("mark-prev", nil): return .markPrev
@@ -415,6 +418,7 @@ public struct InputMap {
     i script-binding stats/display-stats
     l ab-loop
     L cycle-ab-loop-mode
+    Alt+l toggle-segment-lock
     s screenshot
     S export-range
     C save-auto-color
@@ -486,6 +490,7 @@ public struct InputMap {
     g go-to
     f ab-loop
     F cycle-ab-loop-mode
+    Alt+F toggle-segment-lock
     r mark-in
     t mark-out
     R mark-prev

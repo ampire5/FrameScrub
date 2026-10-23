@@ -11,6 +11,15 @@ import Testing
         #expect(KeyChord.parse("MBTN_RIGHT+MBTN_MID")?.description == "MBTN_RIGHT+MBTN_MID")
     }
 
+    @Test func toggleSegmentLockIsOnAltLAndAltShiftF() {
+        #expect(InputMap(layout: .classic).command(for: KeyChord.parse("Alt+l")!) == .toggleSegmentLock)
+        #expect(InputMap(layout: .leftHand).command(for: KeyChord.parse("Alt+F")!) == .toggleSegmentLock)
+        #expect(Command.toggleSegmentLock.configText == "toggle-segment-lock")
+        var map = InputMap()
+        #expect(map.apply("x toggle-segment-lock").isEmpty)
+        #expect(map.command(for: KeyChord.parse("x")!) == .toggleSegmentLock)
+    }
+
     @Test func altMTogglesScrubAudioInBothLayouts() {
         for layout in [KeyLayout.classic, .leftHand] {
             #expect(InputMap(layout: layout).command(for: KeyChord.parse("Alt+m")!) == .toggleScrubAudio, "\(layout)")
@@ -315,7 +324,7 @@ import Testing
         #expect(map.command(for: KeyChord(key: "k")) == .markSnap)
         #expect(map.command(for: KeyChord.parse("Meta+C")!) == .saveClip)
         #expect(map.command(for: KeyChord(key: "q")) == .quit)
-        #expect(map.bindings.count == 129)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W
+        #expect(map.bindings.count == 130)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)

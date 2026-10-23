@@ -138,6 +138,13 @@ import Testing
         #expect(!entries.contains { ($0.action.hasPrefix("A-B range") && $0.keys.contains("l")) || $0.keys.contains("⇧S") })
     }
 
+    @Test func segmentLockIsRightAfterABInThePlaybackSection() {
+        let playback = KeyHelp.sections(for: InputMap()).first { $0.section == .playback }!.entries.map(\.action)
+        let a = playback.firstIndex { $0.hasPrefix("A-B range") }!
+        #expect(playback.firstIndex(of: "At B: loop, pause or turn back") == a + 1)
+        #expect(playback.firstIndex(of: "Segments: lock / unlock") == a + 2)
+    }
+
     @Test func shuttleIsInThePlaybackSection() {
         let map = InputMap(layout: .leftHand)
         #expect(KeyHelp.menuHint(for: .shuttleBack, in: map) == "a")
