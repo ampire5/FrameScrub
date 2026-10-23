@@ -68,6 +68,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The panel's width (`plugin-width`); a drag of its edge writes the setting once the drag rests.
     private var pluginWidth: NSLayoutConstraint!
     private var pluginWidthWrite: Timer?
+    /// Decodes frames for the page's `frame` requests; made on the first request for the open file.
+    private var pluginGrabber: PluginFrameGrabber?
     /// Where a link asked to land in the file being opened: applied once the file is open.
     private var linkTarget: LinkTarget?
     private var lastPluginPush: TimeInterval = 0
@@ -271,6 +273,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if origin == .plain { stashScene = nil }
         failedScene = nil
         recentThumbnailer.cancel()   // the file's reads come first
+        pluginGrabber?.stop()
+        pluginGrabber = nil
         saveThumbnail()
         dropSceneSearch()
         videoView.clear()
@@ -1033,6 +1037,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         core.onIndexReady = { [weak self] in
             self?.previewProvider?.updateIndex($0)
+            self?.pluginGrabber?.updateIndex($0)
             self?.sceneSearch?.updateIndex($0)
         }
         core.onIndexProgress = { [weak self] in self?.showIndexing($0) }
@@ -2446,8 +2451,46 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .focusPlayer: window?.makeFirstResponder(videoView)
         case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
         case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
+        case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
         }
         pluginDone(request)
+    }
+
+    /// `info`, `marks`, `playlist` and `frame`: answered from the open file, refused without one.
+    private func answerPluginRequest(_ request: PluginRequest) {
+        guard let url = core.url, let info = core.info, let index = core.index else {
+            pluginFailed(request, "no file is open")
+            return
+        }
+        switch request.message {
+        case .info:
+            let details = PluginInfo(path: url.path, name: url.lastPathComponent, fps: info.frameRate,
+                                     duration: core.durationSeconds, durationFrames: core.frameCount, width: info.width,
+                                     height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec)
+            pluginDone(request, result: details.json)
+        case .marks:
+            let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
+            pluginDone(request, result: marks.json)
+        case .playlist:
+            let list = playlist.map { PluginPlaylist(index: $0.currentIndex, count: $0.files.count, total: $0.totalCount,
+                                                    name: url.lastPathComponent) }
+                ?? PluginPlaylist(index: 0, count: 1, total: 1, name: url.lastPathComponent)
+            pluginDone(request, result: list.json)
+        case let .frame(frameRequest):
+            guard let n = frameRequest.frameNumber(frameCount: core.frameCount, frameForSeconds: index.frameNumber(forSeconds:)) else {
+                pluginFailed(request, "frame: past the end of the file")
+                return
+            }
+            if pluginGrabber == nil {
+                pluginGrabber = PluginFrameGrabber(url: url, index: index, rotationClockwise: info.rotationClockwise,
+                                                   readCache: core.readCache)
+            }
+            pluginGrabber?.grab(frame: n, maxSide: frameRequest.maxSize) { [weak self] result in
+                MainActor.assumeIsolated { self?.pluginFrameDecoded(result, for: request, file: url, index: index) }
+            }
+        default:
+            pluginDone(request)
+        }
     }
 
     /// A request carried out: a `request()` resolves (with `result`, JSON), a verb hears nothing.
@@ -2457,6 +2500,25 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func pluginFailed(_ request: PluginRequest, _ reason: String) {
         pluginPanel.fail(id: request.id, reason)
+    }
+
+    /// A `frame` request's picture arrived (or not); nothing is said when another file is open by now.
+    private func pluginFrameDecoded(_ result: Result<PluginFrameGrabber.Picture, PluginFrameGrabber.Failure>,
+                                    for request: PluginRequest, file url: URL, index: FrameIndex) {
+        guard core.url == url else { return }
+        switch result {
+        case let .success(picture):
+            let t = (core.index ?? index).seconds(forPTS: picture.pts)
+            let frame = PluginFrame(t: t, frame: picture.frame, width: Int(picture.size.width),
+                                    height: Int(picture.size.height), jpeg: picture.jpeg)
+            pluginDone(request, result: frame.json)
+        case .failure(.stopped):
+            break
+        case .failure(.noFrame):
+            pluginFailed(request, "frame: nothing decoded there")
+        case let .failure(.decoding(reason)):
+            pluginFailed(request, "frame: \(reason)")
+        }
     }
 
     /// A local file the page asked for: only a video, and only once the user has allowed the page's origin to open

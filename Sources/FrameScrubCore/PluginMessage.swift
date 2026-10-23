@@ -26,6 +26,11 @@ public enum PluginMessage: Equatable, Sendable {
     case open(PluginOpen)
     /// Keys go to the player again.
     case focusPlayer
+    /// Requests with an answer (`PluginInfo`, `PluginMarks`, `PluginPlaylist`, `PluginFrame`); they need a file open.
+    case info
+    case marks
+    case playlist
+    case frame(PluginFrameRequest)
 
     /// Why a message was refused; the text reaches the page (a rejected promise, or an `error` event).
     public struct Failure: Error, Equatable, Sendable, CustomStringConvertible {
@@ -68,6 +73,14 @@ public enum PluginMessage: Equatable, Sendable {
             return .open(try PluginOpen(args))
         case "focusPlayer":
             return .focusPlayer
+        case "info":
+            return .info
+        case "marks":
+            return .marks
+        case "playlist":
+            return .playlist
+        case "frame":
+            return .frame(try PluginFrameRequest(args))
         default:
             throw Failure("unknown command")
         }

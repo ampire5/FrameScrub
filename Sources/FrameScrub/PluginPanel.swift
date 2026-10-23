@@ -21,6 +21,16 @@ import WebKit
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
+/// Requests with an answer (they need a file open, else they reject):
+///
+///     request("info")                 {path, name, fps, duration, durationFrames, width, height, rotation, codec}
+///     request("marks")                {loop: [a, b] | null, loopFrames: [a, b] | null, segments: [{start, end,
+///                                     startFrame, endFrame}], openFrame, openStart} — the A-B range and the cut marks
+///     request("playlist")             {index, count, total, name} — the file's place in its folder (index from 0)
+///     request("frame", {t | frame, maxSize?})
+///                                     {t, frame, width, height, dataURL} — that frame as a JPEG data URL fitted into
+///                                     maxSize x maxSize pixels (16…512, default 512); decoded beside playback
+///
 /// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
 /// (`event.detail`) hear each change, at most ten times a second while frames show:
 ///
