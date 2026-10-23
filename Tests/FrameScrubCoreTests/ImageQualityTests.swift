@@ -106,6 +106,7 @@ import Testing
     }
 
     @Test(.disabled(if: isVirtualMachine, "a VM's paravirtual VideoToolbox decodes to other pixels"),
+          .disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta"),
           arguments: [Fixtures.h264, Fixtures.hevc10], [Path.videoToolbox, Path.ffmpegVideoToolbox])
     func matchesSoftwareDecoding(_ name: String, _ path: Path) throws {
         let (_, index) = try openIndexed(name)

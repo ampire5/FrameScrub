@@ -32,7 +32,7 @@ import Testing
         if let fromHeader, let fromHeaderFull { #expect(fromHeader.agrees(with: fromHeaderFull)) }
     }
 
-    @Test(arguments: [Fixtures.h264, Fixtures.hevc10, Fixtures.editList], Path.allCases)
+    @Test(arguments: [Fixtures.h264, Fixtures.hevc10, Fixtures.editList], Path.testable)
     func aSharedProbeDecodesTheSameFrames(_ name: String, _ path: Path) throws {
         let (full, shared) = try pair(name)
         let index = try MediaSource(url: full.url).buildIndex()

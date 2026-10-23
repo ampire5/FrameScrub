@@ -8,6 +8,12 @@ import VideoToolbox
 /// The decoding paths a test runs on: the own VideoToolbox session, FFmpeg's hwaccel, FFmpeg software.
 enum Path: CaseIterable { case videoToolbox, ffmpegVideoToolbox, software }
 
+extension Path {
+    /// The paths worth running here. Under Rosetta (CI's x86_64 job) there is no hardware decoder, so both
+    /// VideoToolbox paths would decode in software once more, tripling the slowest suite; an Intel Mac runs all three.
+    static let testable: [Path] = runsUnderRosetta ? [.software] : allCases
+}
+
 func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throws -> VideoDecoder {
     try VideoDecoder(source: source, index: index, preferHardware: path != .software,
                      allowVideoToolboxBackend: path == .videoToolbox)
@@ -16,7 +22,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
 @Suite struct VideoDecoderTests {
     /// Reverse playback's reference-frames level seeks to a chunk start that may be a frame it then skips: landing past
     /// the target is expected then, not a bad seek to back off from (which decoded GOPs again and again: 15 s chunks).
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func skippingFromTheTargetDoesNotBackOff(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)   // keyframes 0/250/500, B-frames
         for n in 260...270 {
@@ -37,7 +43,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         return (decoder, frames)
     }
 
-    @Test(arguments: [Fixtures.h264, Fixtures.hevc10, Fixtures.vfr, Fixtures.editList, Fixtures.fragmented], Path.allCases)
+    @Test(arguments: [Fixtures.h264, Fixtures.hevc10, Fixtures.vfr, Fixtures.editList, Fixtures.fragmented], Path.testable)
     func decodesEveryFrameInOrder(_ name: String, _ path: Path) throws {
         let (source, index) = try openIndexed(name)
         let decoder = try makeDecoder(source, index, path)
@@ -55,7 +61,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         for frame in frames { #expect(readFrameNumber(frame.pixelBuffer) == frame.number) }
     }
 
-    @Test func usesTheOwnVideoToolboxPathForH264AndHEVC() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func usesTheOwnVideoToolboxPathForH264AndHEVC() throws {
         let (h264, frames) = try decodeAll(Fixtures.h264)
         #expect(h264.backendKind == .videoToolbox && h264.isHardware)
         #expect(frames[0].dynamicRange == .sdr)
@@ -69,7 +75,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(software.backendKind == .software)
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func reportsThePictureType(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, path)
@@ -80,7 +86,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(types.isSuperset(of: ["P", "B"]), "\(types)")
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func reportsHLGAndTenBitForHEVC(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.hevc10)
         let frame = try #require(try makeDecoder(source, index, path).nextFrame())
@@ -111,7 +117,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(frames.map(\.number) == Array(0..<120))
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func seeksExactlyAcrossBFramesAndGOPs(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, path)
@@ -123,7 +129,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         }
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func seeksExactlyInOpenGOPHEVC(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.hevc10)
         let decoder = try makeDecoder(source, index, path)
@@ -135,7 +141,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         }
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func backsOffToEarlierKeyframeInOpenGOPWithApproximateIndex(_ path: Path) throws {
         let source = try MediaSource(url: Fixtures.url(Fixtures.hevc10))
         let decoder = try makeDecoder(source, source.approximateIndex(), path)
@@ -148,7 +154,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
     }
 
     /// The pre-roll from the keyframe to the target skips frames nothing refers to: they would be thrown away.
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func preRollSkipsNonReferenceFrames(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)   // keyframe 0; ~45 % of the frames are non-reference B
         let decoder = try makeDecoder(source, index, path)
@@ -164,7 +170,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
     }
 
     /// A decoder catching up with a focus ahead of it skips the non-reference frames it has already been passed by.
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func catchingUpSkipsNonReferenceFramesBehindTheFocus(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, path)
@@ -180,7 +186,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(Array(numbers.drop { $0 < 100 }) == Array(100..<110))
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func continuesSequentiallyAfterSeek(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, path)
@@ -190,7 +196,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(numbers == [300, 301, 302, 303, 304])
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func seeksWithApproximateIndex(_ path: Path) throws {
         let source = try MediaSource(url: Fixtures.url(Fixtures.h264))
         let decoder = try makeDecoder(source, source.approximateIndex(), path)
@@ -200,7 +206,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
         #expect(readFrameNumber(frame.pixelBuffer) == 420)
     }
 
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func directionalKeyframeSeekWithAnApproximateIndex(_ path: Path) throws {
         let source = try MediaSource(url: Fixtures.url(Fixtures.h264))
         let decoder = try makeDecoder(source, source.approximateIndex(), path)
@@ -214,7 +220,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
 
     /// Seeking again while frames of the previous position are still in flight: a late one is never taken for a
     /// frame of the new position.
-    @Test(arguments: Path.allCases)
+    @Test(arguments: Path.testable)
     func rapidSeeksNeverReturnAStaleFrame(_ path: Path) throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, path)
@@ -230,7 +236,7 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
     }
 
     /// The pre-roll before a seek target is decoded as reference only: the VideoToolbox session does not output it.
-    @Test func preRollIsNotOutputByVideoToolbox() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func preRollIsNotOutputByVideoToolbox() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try makeDecoder(source, index, .videoToolbox)
         let backend = try #require(decoder.backend as? VTBackend)

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds build/FrameScrub.app (release, for scripts/deps.arch: arm64 on main, x86_64 on lts/macos26). FFmpeg is
-# FrameScrub's own, linked in statically (scripts/build-deps.sh): the app needs no Homebrew.
+# Builds build/FrameScrub.app (release, for $DEPS_ARCH: the Mac's own architecture unless set, scripts/deps-env.sh).
+# FFmpeg is FrameScrub's own, linked in statically (scripts/build-deps.sh): the app needs no Homebrew.
 # Usage: scripts/make-app.sh [--install]   (--install copies the app to ~/Applications)
 set -euo pipefail
 cd "$(dirname "$0")/.."

@@ -172,7 +172,7 @@ brew install --cask ampire5/tap/framescrub
 
 Or download the zip from [Releases](https://github.com/ampire5/FrameScrub/releases).
 
-FrameScrub needs macOS 26 or later on Apple Silicon. FFmpeg is built into the app (0.1.0 still needed `brew install ffmpeg`). Intel Macs on macOS 26 get the [`lts/macos26`](https://github.com/ampire5/FrameScrub/tree/lts/macos26) line: the `-lts` releases, which the cask picks on Intel.
+FrameScrub needs macOS 26 or later: on Apple Silicon, or on an Intel Mac with macOS 26 (every release has a `macOS-x86_64` zip, which the cask picks on Intel). FFmpeg is built into the app (0.1.0 still needed `brew install ffmpeg`).
 
 **"FrameScrub can't be opened" (zip only).** Builds are not signed with an Apple Developer ID yet. The cask clears the quarantine flag for you; for the zip, try to open the app once, then click **Open Anyway** in System Settings → Privacy & Security, or run:
 
@@ -182,7 +182,7 @@ xattr -dr com.apple.quarantine /Applications/FrameScrub.app
 
 ### Edge builds
 
-The latest build that passed CI, not a release: unsigned, for testing. On Apple Silicon these are `main`'s builds, on Intel `lts/macos26`'s. The `framescrub@edge` cask replaces `framescrub` and back; your settings and data stay.
+The latest build that passed CI, not a release: unsigned, for testing. Both architectures are built from `main`. The `framescrub@edge` cask replaces `framescrub` and back; your settings and data stay.
 
 ```sh
 brew uninstall --cask framescrub                       # the release, if installed: the two casks conflict
@@ -218,9 +218,16 @@ release: `brew uninstall --cask framescrub@edge && brew install --cask ampire5/t
 
 ### Build from source
 
-macOS 26 or later on Apple Silicon and the Command Line Tools (`xcode-select --install`). FrameScrub links its own
-FFmpeg and dav1d (arm64, static): the first build downloads the prebuilt ones into `.deps/arm64` (`scripts/deps.sh`), or
-builds them from source (`scripts/build-deps.sh`, with the tools below) when the recipe has no prebuilt archive yet.
+macOS 26 or later and the Command Line Tools (`xcode-select --install`). FrameScrub links its own FFmpeg and dav1d
+(static, for the Mac's own architecture): the first build downloads the prebuilt ones into `.deps/<arch>`
+(`scripts/deps.sh`), or builds them from source (`scripts/build-deps.sh`, with the tools below) when the recipe has no
+prebuilt archive yet. `DEPS_ARCH=x86_64` before the scripts builds for Intel Macs on Apple Silicon (with `nasm` too; the
+tests then run under Rosetta).
+
+One branch, two toolchains: CI builds arm64 with the newest Xcode and x86_64 (Intel Macs, which stop at macOS 26) with
+Xcode 26. Code for a newer macOS goes under `if #available(macOS 27, *)`, and an API that only the newer SDK has also
+under a compiler check (`#if compiler(>=…)`), so the Xcode 26 build still compiles; Intel-only paths go under
+`#if arch(x86_64)` or a check of the hardware.
 
 ```sh
 brew install meson ninja pkgconf

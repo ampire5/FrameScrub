@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# The recipe of FrameScrub's own FFmpeg: FFmpeg and dav1d, static, for the architecture in scripts/deps.arch (arm64 on
-# main, x86_64 on lts/macos26), built from source into .deps/<arch> (or $FRAMESCRUB_DEPS). The app links it in and
-# needs no Homebrew at run time: Homebrew builds no Intel bottles any more, and its FFmpeg upgrades used to break the
+# The recipe of FrameScrub's own FFmpeg: FFmpeg and dav1d, static, for $DEPS_ARCH (arm64 or x86_64; the Mac's
+# own architecture unless set), built from source into .deps/<arch> (or $FRAMESCRUB_DEPS). The app links it in and needs
+# no Homebrew at run time: Homebrew builds no Intel bottles any more, and its FFmpeg upgrades used to break the
 # dynamic link. Decoders, demuxers and muxers only: FrameScrub encodes nothing, its clips are stream copies. Builds on
 # either Mac, natively or as a cross build.
 # Builds every time: scripts/deps.sh, which the build scripts call, downloads the prebuilt result of this exact
@@ -15,11 +15,11 @@ ffmpeg_version=9.0.2
 # renovate: datasource=github-tags depName=videolan/dav1d
 dav1d_version=1.5.4
 min=26.0
-arch=$(<scripts/deps.arch)
+arch=${DEPS_ARCH:-$(uname -m)}
 case $arch in
     arm64) cpu_family=aarch64 ;;
     x86_64) cpu_family=x86_64 ;;
-    *) echo "error: scripts/deps.arch names $arch, not arm64 or x86_64" >&2; exit 1 ;;
+    *) echo "error: DEPS_ARCH is $arch, not arm64 or x86_64" >&2; exit 1 ;;
 esac
 prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/$arch}
 rm -rf "$prefix"

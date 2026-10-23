@@ -18,7 +18,10 @@ import VideoToolbox
         #expect(MLUpscaler.availability(width: 3840, height: 2160) == .tooLarge)
     }
 
-    @Test func fitsAgreesWithTheSystemConfiguration() throws {
+    // Apple's super-resolution scaler is not on every Mac (not on Intel Macs); without it the app says so and
+    // saves with Lanczos.
+    @Test(.enabled(if: VTSuperResolutionScalerConfiguration.isSupported, "no VTSuperResolutionScaler on this Mac"))
+    func fitsAgreesWithTheSystemConfiguration() throws {
         for (w, h) in [(1920, 1080), (1921, 1081), (1088, 1920), (2000, 2000), (640, 360)] {
             let config = VTSuperResolutionScalerConfiguration(
                 frameWidth: w, frameHeight: h, scaleFactor: 4, inputType: .image, usePrecomputedFlow: false,
