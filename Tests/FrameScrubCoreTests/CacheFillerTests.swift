@@ -29,7 +29,7 @@ import Testing
 
     @Test func loopEndStopsForwardFilling() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
-        filler.setLoop(300...315)
+        filler.setRegions([300...315], advance: .repeating)
         filler.start()
         defer { filler.stop() }
         filler.setFocus(300, mode: .playing, direction: 1)   // the lookahead alone would reach 330
@@ -43,7 +43,7 @@ import Testing
 
     @Test func loopStartLimitsBackwardFillingToItsKeyframe() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
-        filler.setLoop(300...320)
+        filler.setRegions([300...320], advance: .repeating)
         filler.start()
         defer { filler.stop() }
         filler.setFocus(310, mode: .paused)
@@ -57,7 +57,7 @@ import Testing
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
         filler.start()
         defer { filler.stop() }
-        filler.setLoop(300...320)
+        filler.setRegions([300...320], advance: .repeating)
         filler.setFocus(310, mode: .paused)
         #expect(await eventually { (250...320).allSatisfy(cache.contains) })
         try await Task.sleep(for: .milliseconds(300))
@@ -67,18 +67,18 @@ import Testing
 
     @Test func clearingTheLoopRestoresTheNormalWindow() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
-        filler.setLoop(300...320)
+        filler.setRegions([300...320], advance: .repeating)
         filler.start()
         defer { filler.stop() }
         filler.setFocus(310, mode: .paused)
         #expect(await eventually { (250...320).allSatisfy(cache.contains) })
-        filler.setLoop(nil)
+        filler.setRegions([], advance: .repeating)
         #expect(await eventually { (240...350).allSatisfy(cache.contains) })
     }
 
     @Test func loopWiderThanTheCacheKeepsTheWindowAroundTheFocus() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 100)   // ~33 frames: far less than the loop
-        filler.setLoop(0...599)
+        filler.setRegions([0...599], advance: .repeating)
         filler.start()
         defer { filler.stop() }
         filler.setFocus(300, mode: .paused)
@@ -92,11 +92,75 @@ import Testing
 
     @Test func aFocusOutsideTheLoopGetsTheNormalWindow() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
-        filler.setLoop(300...320)
+        filler.setRegions([300...320], advance: .repeating)
         filler.start()
         defer { filler.stop() }
         filler.setFocus(100, mode: .paused)
         #expect(await eventually { (70...130).allSatisfy(cache.contains) })
+    }
+
+    // 1 GiB holds ~330 frames: room for 0...130 and 250...330 (each region down to its keyframe), not the gap between.
+    @Test func allRegionsFitAreAllCached() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 1024)
+        filler.setRegions([100...130, 300...330], advance: .repeating)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(110, mode: .paused)
+        #expect(await eventually { (0...130).allSatisfy(cache.contains) && (250...330).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!(131...249).contains(where: cache.contains))
+        #expect(!cache.contains(331))
+    }
+
+    @Test func regionsTooBigKeepTheFocusRegion() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)   // room ~116 < 0...240 and 250...450
+        filler.setRegions([100...240, 300...450], advance: .repeating)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(200, mode: .paused)
+        #expect(await eventually { (140...240).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(!(241...599).contains(where: cache.contains))
+    }
+
+    @Test func nextModePrefetchesTheNextStart() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.setRegions([100...240, 300...450], advance: .next)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(230, mode: .playing, direction: 1)   // the lookahead (30) reaches past the region's end
+        #expect(await eventually { (230...240).allSatisfy(cache.contains) && (250...280).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!(281...450).contains(where: cache.contains))   // 241...249 may be decoded through on the way to 250
+    }
+
+    @Test func clearingRegionsRestoresTheNormalWindow() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 1024)
+        filler.setRegions([100...130, 300...330], advance: .repeating)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(110, mode: .paused)
+        #expect(await eventually { (250...330).allSatisfy(cache.contains) })
+        filler.setRegions([], advance: .repeating)
+        #expect(await eventually { (131...220).allSatisfy(cache.contains) })
+    }
+
+    // Frames cached before the regions (the window around 400) must not push a far region out as it is decoded, or it
+    // would be decoded again forever: they make way for it.
+    @Test func framesOutsideTheRegionsMakeWayForThem() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(400, mode: .paused)
+        #expect(await eventually { (340...440).allSatisfy(cache.contains) })
+        filler.setRegions([260...280, 510...530], advance: .repeating)   // 250...280 and 500...530
+        filler.setFocus(520, mode: .paused)
+        #expect(await eventually { (500...530).allSatisfy(cache.contains) && (250...280).allSatisfy(cache.contains) })
+        let seeks = filler.forwardSeeks
+        try await Task.sleep(for: .milliseconds(500))
+        #expect((500...530).allSatisfy(cache.contains) && (250...280).allSatisfy(cache.contains))
+        #expect(filler.forwardSeeks == seeks)
+        #expect(cache.usedBytes <= 400 << 20)
     }
 
     @Test func nonBlockingStopInsertsNothingMore() async throws {

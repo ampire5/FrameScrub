@@ -90,11 +90,11 @@ public final class PlayerCore {
     public private(set) var loopB: Int? { didSet { syncCacheRegions() } }
     /// The segments of the open file the playhead is kept inside while `segmentsLocked` (segment lock spec §1); nil
     /// without any, or before the file has an index. Built from `segmentsSource` with the current index.
-    public private(set) var segments: SegmentSet?
+    public private(set) var segments: SegmentSet? { didSet { syncCacheRegions() } }
     /// Moves are held inside `segments` and playback repeats or advances through them. Not remembered for the file.
-    public private(set) var segmentsLocked = false
+    public private(set) var segmentsLocked = false { didSet { syncCacheRegions() } }
     /// What playback does at the end of a locked segment.
-    public private(set) var segmentAdvance: SegmentAdvance
+    public private(set) var segmentAdvance: SegmentAdvance { didSet { syncCacheRegions() } }
     /// Called on the main thread when the segment containing the playhead or the lock changes.
     public var onSegmentChange: ((_ current: Int?, _ locked: Bool) -> Void)?
     /// The segments as given, in seconds: the frames are counted again from them when the exact index arrives.
@@ -257,6 +257,7 @@ public final class PlayerCore {
         }
         filler.start()
         self.filler = filler
+        syncCacheRegions()
 
         rebuildExporter()
         if source.audioStreamIndex != nil {
@@ -481,9 +482,14 @@ public final class PlayerCore {
         indexStatus = .failed
     }
 
-    /// The cache window follows the A–B loop: frames outside it are wasted work and evict useful ones.
+    /// The cache follows the A–B loop, else the locked segments (segment lock spec §3): frames outside them are wasted
+    /// work and evict useful ones.
     private func syncCacheRegions() {
-        filler?.setLoop(loopA.flatMap { a in loopB.map { min(a, $0)...max(a, $0) } })
+        if let a = loopA, let b = loopB {
+            filler?.setRegions([min(a, b)...max(a, b)], advance: .repeating)
+        } else {
+            filler?.setRegions(lockedSegments?.ranges ?? [], advance: segmentAdvance)
+        }
     }
 
     func indexReady(_ exact: FrameIndex, session current: Int, status: IndexStatus) {
@@ -1225,7 +1231,6 @@ public final class PlayerCore {
         rebuildSegments()
         // Without an index they wait for the file; with one, ranges all past its end leave nothing to lock.
         segmentsLocked = lock && !seconds.isEmpty && (segments != nil || index == nil)
-        syncCacheRegions()
         if lockedSegments != nil {
             dropLoopOutsideSegments()
             seek(toFrame: position, direction: 0, hold: .nearest)

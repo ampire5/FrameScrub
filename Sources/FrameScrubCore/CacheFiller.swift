@@ -29,8 +29,10 @@ public final class CacheFiller {
     private var index: FrameIndex
     private var indexVersion = 0
     private var focus = 0
-    /// The A–B loop while one is active: the window stays inside it (see `windowLocked`).
-    private var loop: ClosedRange<Int>?
+    /// The ranges worth caching, sorted (an A–B loop, locked segments; see `setRegions`), and how playback goes on at
+    /// the end of one.
+    private var regions: [ClosedRange<Int>] = []
+    private var advance = SegmentAdvance.repeating
     private var mode = FillMode.paused
     private var direction = 0
     private var running = false
@@ -183,14 +185,19 @@ public final class CacheFiller {
         }
     }
 
-    /// Confines the window to an A–B loop (nil: no loop). Forward decoding stops at the loop's end; backward decoding goes
-    /// down to the keyframe at or before its start, which decoding the start needs, and no further. In flight, a frame
-    /// or a chunk finishes; nothing outside the window is started afterwards. A focus outside the loop (a seek away
-    /// from it) gets the normal window, so the loop never starves the frame on screen.
-    public func setLoop(_ range: ClosedRange<Int>?) {
+    /// Confines decoding to `regions` (segment lock spec §3): an A–B loop, or the locked segments; empty: none. Each
+    /// region reaches down to the keyframe at or before its start, which decoding the start needs. When all of them fit
+    /// in the window's room they are all cached: the window first, then the rest of the focus region, then the other
+    /// regions in play order. Otherwise the window stays inside the focus region, and with `advance` `.next` the start
+    /// of the next region is decoded too. In flight, a frame or a chunk finishes; nothing outside the regions is started
+    /// afterwards. A focus in no region (a seek away from the loop) gets the normal window, so the regions never
+    /// starve the frame on screen.
+    public func setRegions(_ regions: [ClosedRange<Int>], advance: SegmentAdvance) {
+        let sorted = regions.sorted { $0.lowerBound < $1.lowerBound }
         condition.withLock {
-            guard loop != range else { return }
-            loop = range
+            guard self.regions != sorted || self.advance != advance else { return }
+            self.regions = sorted
+            self.advance = advance
             condition.broadcast()
         }
     }
@@ -247,12 +254,29 @@ public final class CacheFiller {
         cache.budgetBytes / max(1, cache.averageFrameBytes ?? estimatedFrameBytes)
     }
 
+    /// Frames the cache holds besides the focus frame.
+    private func capacityLocked() -> Int { max(1, framesInBudgetLocked() - 1) }
+
+    /// Frames of the window besides the focus frame. The whole window (behind + focus + ahead) must fit in the budget,
+    /// or eviction would discard window-edge frames and the fillers would re-decode them forever.
+    private func roomLocked() -> Int {
+        max(0, min(max(4, Int(Double(framesInBudgetLocked()) * Self.fillRatio)), capacityLocked()) - 1)
+    }
+
+    /// The region containing the focus.
+    private func focusRegionLocked() -> Int? {
+        let f = clampedFocusLocked()
+        return regions.firstIndex { $0.contains(f) }
+    }
+
+    /// `region` down to the keyframe at or before its start, inside the file.
+    private func extendedLocked(_ region: ClosedRange<Int>) -> ClosedRange<Int> {
+        let upper = min(region.upperBound, max(index.frameCount - 1, 0))
+        return min(index.keyframe(atOrBefore: min(region.lowerBound, upper)), upper)...upper
+    }
+
     private func windowLocked() -> ClosedRange<Int> {
-        // The whole window (behind + focus + ahead) must fit in the budget, or eviction would
-        // discard window-edge frames and the fillers would re-decode them forever.
-        let capacity = max(1, framesInBudgetLocked() - 1)
-        let total = min(max(4, Int(Double(framesInBudgetLocked()) * Self.fillRatio)), capacity) - 1
-        let room = max(0, total)
+        let room = roomLocked()
         let share = backShareLocked()
         var ahead = min(room, max(2, Int(Double(room) * (1 - share))))
         if mode == .playing { ahead = min(ahead, playbackLookahead) }
@@ -261,12 +285,37 @@ public final class CacheFiller {
         let f = clampedFocusLocked()
         var lower = max(0, f - behind)
         var upper = min(max(index.frameCount - 1, 0), f + ahead)
-        // A loop wider than the budget is cut the same way: the window around the focus, inside the loop's bounds.
-        if let loop, loop.contains(f) {
-            lower = max(lower, index.keyframe(atOrBefore: loop.lowerBound))
-            upper = min(upper, loop.upperBound)
+        // A region wider than the budget is cut the same way: the window around the focus, inside the region's bounds.
+        if let i = focusRegionLocked() {
+            let region = extendedLocked(regions[i])
+            lower = max(lower, region.lowerBound)
+            upper = min(upper, region.upperBound)
         }
         return lower...upper
+    }
+
+    /// What the forward worker fills, in order (segment lock spec §3): the window, then, when every region fits in the
+    /// window's room, the rest of the focus region (above the window first) and the other regions in play order; when
+    /// they do not and playback goes on to the next region, its start. Playing, that start waits until the window
+    /// reaches the region's end: until then each new frame of the window would cost a seek back from it. The start is
+    /// cut to what the cache holds besides the window.
+    private func fillOrderLocked() -> [ClosedRange<Int>] {
+        let window = windowLocked()
+        guard mode != .reversing, let i = focusRegionLocked() else { return [window] }
+        let extended = regions.map(extendedLocked)
+        if extended.reduce(0, { $0 + $1.count }) <= roomLocked() {
+            let own = extended[i]
+            var order = [window]
+            if window.upperBound < own.upperBound { order.append(window.upperBound + 1...own.upperBound) }
+            if own.lowerBound < window.lowerBound { order.append(own.lowerBound...window.lowerBound - 1) }
+            for k in 1..<extended.count { order.append(extended[(i + k) % extended.count]) }
+            return order
+        }
+        guard advance == .next, mode != .playing || window.upperBound >= regions[i].upperBound else { return [window] }
+        let spare = capacityLocked() - window.count
+        guard spare > 0 else { return [window] }
+        let next = extended[(i + 1) % extended.count]
+        return [window, next.lowerBound...min(next.upperBound, next.lowerBound + playbackLookahead, next.lowerBound + spare - 1)]
     }
 
     /// Spec §3.3: after a jump the backward worker waits, so the file is read for the focus frame first.
@@ -289,7 +338,8 @@ public final class CacheFiller {
     }
 
     private func nextForwardFrameLocked() -> Int? {
-        let window = windowLocked()
+        let order = fillOrderLocked()
+        let window = order[0]
         var n = clampedFocusLocked()
         if let gap = backwardOwnedGapLocked() { n = gap.upperBound + 1 }
         if mode == .reversing {
@@ -301,6 +351,15 @@ public final class CacheFiller {
         while n <= window.upperBound {
             if !cache.isResolved(n) && backwardChunk?.contains(n) != true { return n }
             n += 1
+        }
+        for range in order.dropFirst() {
+            guard let target = range.first(where: { !cache.isResolved($0) && backwardChunk?.contains($0) != true }) else {
+                continue
+            }
+            // Over budget the cache evicts the frames farthest from the focus, which a far region's are: frames outside
+            // the fill order (cached before the regions) make way, or it would be decoded again forever.
+            let frameBytes = cache.averageFrameBytes ?? estimatedFrameBytes
+            return cache.makeRoom(forBytes: frameBytes, keeping: order) ? target : nil
         }
         return nil
     }

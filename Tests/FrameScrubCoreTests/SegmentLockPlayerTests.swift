@@ -360,4 +360,18 @@ import Testing
         player.perform(.toggleSegmentLock)
         #expect(delegate.messages.last == "No segments")
     }
+
+    // Segments 270...300 and 540...570 (keyframes 250 and 500) fit a 1 GiB cache: both are cached, the gap is not;
+    // unlocked, the normal window comes back.
+    @Test func lockedSegmentsAreTheCacheRegions() async throws {
+        let (player, _) = try makePlayer(configure: { $0.cacheSizeMiB = 1024 })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.setSegments(seconds: [9.0...10.0, 18.0...19.0])
+        #expect(await eventually { (250...300).allSatisfy(player.cache.contains) && (500...570).allSatisfy(player.cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!(301...499).contains(where: player.cache.contains))
+        #expect(player.setSegmentLock(false))
+        #expect(await eventually { (301...360).allSatisfy(player.cache.contains) })
+    }
 }
