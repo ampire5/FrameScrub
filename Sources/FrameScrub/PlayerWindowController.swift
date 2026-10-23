@@ -240,7 +240,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A `framescrub://open` link: the file, then its position, segment and plugin page.
     @discardableResult
     func open(_ target: OpenLink.Target) -> Bool {
-        if let plugin = target.plugin { showPlugin(plugin) }
+        if let plugin = target.plugin { showPlugin(plugin, from: .link) }
         linkTarget = target.landing.isEmpty ? nil : target.landing
         return open(target.file)
     }
@@ -2343,15 +2343,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func togglePluginPanel() {
         if pluginVisible {
             setPluginShown(false)
-        } else if let url = pluginPanel.url ?? UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
-            showPlugin(url)
+        } else if pluginPanel.url != nil {
+            setPluginShown(true)   // the page already loaded, from whichever source
+        } else if let url = UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
+            showPlugin(url, from: .settings)
         } else {
             showMessage("No plugin page: set plugin-url (defaults write) or open a link with plugin=")
         }
     }
 
-    func showPlugin(_ url: URL) {
-        pluginPanel.load(url)
+    /// Shows `url` in the panel; a page the source may not load (a `file:` page from a link) is refused with a notice.
+    func showPlugin(_ url: URL, from source: PluginPageSource) {
+        guard pluginPanel.load(url, from: source) else {
+            showMessage("Cannot show the plugin page: \(url.absoluteString)", duration: 4)
+            return
+        }
         setPluginShown(true)
     }
 
