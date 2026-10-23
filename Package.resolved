@@ -29,6 +29,15 @@
       }
     },
     {
+      "identity" : "settingskit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ampire5/SettingsKit.git",
+      "state" : {
+        "revision" : "168c85c7770153fedd5d16bfd9248d57739cbddf",
+        "version" : "0.3.0"
+      }
+    },
+    {
       "identity" : "stashkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/StashKit.git",
