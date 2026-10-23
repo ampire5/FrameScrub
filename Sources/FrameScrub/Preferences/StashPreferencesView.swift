@@ -3,7 +3,7 @@ import StashKit
 import SwiftUI
 
 /// A text field saved on Return or when it loses focus; it may be emptied (an empty `stash-url` turns Stash off).
-private struct CommitField: View {
+struct CommitField: View {
     let prompt: String
     @Binding var value: String
     var secure = false

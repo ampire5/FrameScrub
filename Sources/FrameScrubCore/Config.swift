@@ -162,6 +162,13 @@ public struct Config: Equatable, Sendable {
     /// `stash-path-map`: `stashPrefix=localPrefix` rules separated by `;`, tried before the mounted shares.
     public var stashPathMap = ""
     public var stashEnabled: Bool { URL(string: stashURL)?.host != nil }
+    /// `plugin-url`: the page View › Show Plugin Panel shows beside the video; empty = none until a link brings one.
+    public var pluginURL = ""
+    /// `plugin-width`: the plugin panel's width in points.
+    public var pluginWidth = 400
+    public static let pluginWidthRange = 240...1200
+    /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
+    public var pluginOpenAllowed = ""
     public var preview = true
     public var previewWidth = 240.0
     public var exportMode = ExportMode.all
@@ -243,7 +250,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "plugin-url", "plugin-width", "plugin-open-allowed", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -275,6 +282,9 @@ public struct Config: Equatable, Sendable {
         case "stash-url": return stashURL
         case "stash-api-key": return stashAPIKey
         case "stash-path-map": return stashPathMap
+        case "plugin-url": return pluginURL
+        case "plugin-width": return String(pluginWidth)
+        case "plugin-open-allowed": return pluginOpenAllowed
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
         case "scene-lookahead": return String(sceneLookahead)
@@ -445,6 +455,9 @@ public struct Config: Equatable, Sendable {
         case "stash-url": stashURL = value
         case "stash-api-key": stashAPIKey = value
         case "stash-path-map": stashPathMap = value
+        case "plugin-url": pluginURL = value
+        case "plugin-width": guard let v = int(Config.pluginWidthRange) else { return false }; pluginWidth = v
+        case "plugin-open-allowed": pluginOpenAllowed = value
         case "preview": guard let v = bool() else { return false }; preview = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v
         case "export-mode": guard let v = ExportMode(rawValue: value.lowercased()) else { return false }; exportMode = v

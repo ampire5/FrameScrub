@@ -100,6 +100,16 @@ import Testing
         #expect(restored.decision(forOpening: video, from: page) == .allowed)
     }
 
+    @Test func rememberedOriginsAsTheSettingsValue() {
+        var policy = PluginPolicy(trusted: [page, other])
+        policy.allowOpening(from: other)
+        policy.allowOpening(from: page)
+        #expect(policy.openAllowedText == "http://host:8000,http://other")
+        let restored = PluginPolicy(trusted: [page], openAllowedText: " http://host:8000 , junk,http://other")
+        #expect(restored.openAllowed == policy.openAllowed)
+        #expect(PluginPolicy(openAllowedText: "").openAllowed.isEmpty)
+    }
+
     @Test func mediaFilesAreTheOnesThePlaylistLists() {
         #expect(PluginPolicy.isMediaFile(URL(fileURLWithPath: "/a.mp4")))
         #expect(PluginPolicy.isMediaFile(URL(fileURLWithPath: "/a.MOV")))

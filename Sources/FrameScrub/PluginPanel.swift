@@ -37,13 +37,13 @@ import WebKit
 /// browser. The page's alerts, confirms and prompts are shown as sheets. Only pages from `trusted` origins get the
 /// bridge and are heard.
 @MainActor final class PluginPanel: NSView, WKNavigationDelegate, WKUIDelegate {
-    static let width: CGFloat = 400
-
     /// A request from the page and the origin it came from; malformed ones are answered here, ones from other
     /// origins never arrive.
     var onMessage: ((PluginRequest, PluginOrigin) -> Void)?
     /// The web view took or lost the keyboard.
     var onFocusChange: ((Bool) -> Void)?
+    /// The user drags the panel's edge: the width it asks for, in points (not yet clamped).
+    var onResize: ((CGFloat) -> Void)?
 
     /// The origins whose pages get `window.framescrub` (the next time a page loads) and whose messages are heard.
     var trusted: Set<PluginOrigin> = [] {
@@ -125,6 +125,10 @@ import WebKit
         edge.borderWidth = 0
         edge.translatesAutoresizingMaskIntoConstraints = false
         addSubview(edge)
+        let splitter = SplitterView()
+        splitter.translatesAutoresizingMaskIntoConstraints = false
+        splitter.onDrag = { [weak self] width in self?.onResize?(width) }
+        addSubview(splitter)
         crashed.target = self
         crashed.action = #selector(reloadPressed)
         crashed.bezelStyle = .rounded
@@ -142,6 +146,10 @@ import WebKit
             webView.bottomAnchor.constraint(equalTo: bottomAnchor),
             crashed.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
             crashed.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
+            splitter.leadingAnchor.constraint(equalTo: leadingAnchor),
+            splitter.topAnchor.constraint(equalTo: topAnchor),
+            splitter.bottomAnchor.constraint(equalTo: bottomAnchor),
+            splitter.widthAnchor.constraint(equalToConstant: SplitterView.width),
         ])
         handler.receive = { [weak self] message in
             guard let self, let body = message.body as? [String: Any],
@@ -310,6 +318,29 @@ import WebKit
         } else {
             completion(alert.runModal())
         }
+    }
+}
+
+/// The grab zone along the panel's leading edge: dragging it resizes the panel (it sits to the right of the video, so
+/// a drag to the left widens it).
+@MainActor private final class SplitterView: NSView {
+    static let width: CGFloat = 6
+    /// The width the drag asks for.
+    var onDrag: ((CGFloat) -> Void)?
+    private var startX: CGFloat = 0
+    private var startWidth: CGFloat = 0
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .resizeLeftRight)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        startX = event.locationInWindow.x
+        startWidth = superview?.frame.width ?? 0
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        onDrag?(startWidth + (startX - event.locationInWindow.x))
     }
 }
 

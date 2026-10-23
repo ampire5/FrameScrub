@@ -63,9 +63,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A web page beside the video that drives the player (View › Show Plugin Panel, `plugin=` in a link).
     private let pluginPanel = PluginPanel()
     /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from `plugin-url`.
-    private var pluginPolicy = PluginPolicy(
-        openAllowedStrings: UserDefaults.standard.stringArray(forKey: "plugin-open-allowed") ?? [])
+    private var pluginPolicy = PluginPolicy()
     private var videoTrailing: NSLayoutConstraint!
+    /// The panel's width (`plugin-width`); a drag of its edge writes the setting once the drag rests.
+    private var pluginWidth: NSLayoutConstraint!
+    private var pluginWidthWrite: Timer?
     /// Where a link asked to land in the file being opened: applied once the file is open.
     private var linkTarget: LinkTarget?
     private var lastPluginPush: TimeInterval = 0
@@ -744,6 +746,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             || config.stashPathMap != core.config.stashPathMap
         // The scene search's decoder follows `hwdec` too: the next press makes a new one.
         if config.hwdec != core.config.hwdec { dropSceneSearch() }
+        applyPluginConfig(config, previous: core.config)
         core.apply(config)
         sceneSearch?.threshold = config.sceneThreshold
         sceneSearch?.lookahead = config.sceneLookahead
@@ -2331,19 +2334,59 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pluginPanel.isHidden = true
         container.addSubview(pluginPanel)
         videoTrailing = videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        pluginWidth = pluginPanel.widthAnchor.constraint(equalToConstant: CGFloat(globalConfig.pluginWidth))
         NSLayoutConstraint.activate([
             videoTrailing,
+            pluginWidth,
             pluginPanel.topAnchor.constraint(equalTo: container.topAnchor),
             pluginPanel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             pluginPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            pluginPanel.widthAnchor.constraint(equalToConstant: PluginPanel.width),
         ])
-        if let url = UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
-            pluginPolicy.trust(url)
-        }
+        pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
+        if let url = pluginSettingsURL { pluginPolicy.trust(url) }
         pluginPanel.trusted = pluginPolicy.trusted
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
         pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
+        pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
+    }
+
+    /// `plugin-url` as a URL; nil when empty or unreadable.
+    private var pluginSettingsURL: URL? {
+        globalConfig.pluginURL.isEmpty ? nil : URL(string: globalConfig.pluginURL)
+    }
+
+    /// The edge is being dragged: the panel follows at once, the setting is written once the drag rests for 0.5 s.
+    private func pluginDragged(to width: CGFloat) {
+        let clamped = min(max(Int(width.rounded()), Config.pluginWidthRange.lowerBound), Config.pluginWidthRange.upperBound)
+        setPluginWidth(clamped)
+        pluginWidthWrite?.invalidate()
+        pluginWidthWrite = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                do { try self.preferences.update(["plugin-width"]) { $0.pluginWidth = clamped } } catch {
+                    self.showMessage("Cannot save plugin-width: \(error.localizedDescription)", duration: 3)
+                }
+            }
+        }
+    }
+
+    private func setPluginWidth(_ width: Int) {
+        pluginWidth.constant = CGFloat(width)
+        if pluginVisible { videoTrailing.constant = -CGFloat(width) }
+    }
+
+    /// Settings changed: the panel's width and, when the page was the settings' one (or none yet), its page.
+    private func applyPluginConfig(_ config: Config, previous: Config) {
+        if config.pluginWidth != Int(pluginWidth.constant) { setPluginWidth(config.pluginWidth) }
+        pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
+        guard config.pluginURL != previous.pluginURL else { return }
+        let old = previous.pluginURL.isEmpty ? nil : URL(string: previous.pluginURL)
+        guard let url = pluginSettingsURL else { return }
+        pluginPolicy.trust(url)
+        pluginPanel.trusted = pluginPolicy.trusted
+        if pluginPanel.url == nil || pluginPanel.url == old {
+            if pluginVisible { showPlugin(url, from: .settings) } else { pluginPanel.load(url, from: .settings) }
+        }
     }
 
     /// View › Focus Plugin Panel: the page gets the keyboard (shown first if it was hidden).
@@ -2361,10 +2404,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             setPluginShown(false)
         } else if pluginPanel.url != nil {
             setPluginShown(true)   // the page already loaded, from whichever source
-        } else if let url = UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
+        } else if let url = pluginSettingsURL {
             showPlugin(url, from: .settings)
         } else {
-            showMessage("No plugin page: set plugin-url (defaults write) or open a link with plugin=")
+            showMessage("No plugin page: set one in Settings › General or open a link with plugin=")
         }
     }
 
@@ -2381,7 +2424,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func setPluginShown(_ shown: Bool) {
         pluginPanel.isHidden = !shown
-        videoTrailing.constant = shown ? -PluginPanel.width : 0
+        videoTrailing.constant = shown ? -pluginWidth.constant : 0
         if !shown { window?.makeFirstResponder(videoView) }
         pushPluginState(force: true)
     }
@@ -2441,7 +2484,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 guard let self else { return }
                 guard response == .alertFirstButtonReturn else { pluginFailed(request, "open: not allowed by the user"); return }
                 pluginPolicy.allowOpening(from: origin)
-                UserDefaults.standard.set(pluginPolicy.openAllowedStrings, forKey: "plugin-open-allowed")
+                let allowed = pluginPolicy.openAllowedText
+                do { try preferences.update(["plugin-open-allowed"]) { $0.pluginOpenAllowed = allowed } } catch {
+                    showMessage("Cannot save plugin-open-allowed: \(error.localizedDescription)", duration: 3)
+                }
                 openIt()
             }
             if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }

@@ -195,6 +195,18 @@ struct PreferencesView: View {
                     Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
                 }
             }
+            Section {
+                LabeledContent("Page") {
+                    CommitField(prompt: "http://host:8000/page/", value: model.binding(\.pluginURL, ["plugin-url"]))
+                }
+                StepperRow(title: "Width", value: "\(model.config.pluginWidth) pt",
+                           number: model.binding(\.pluginWidth, ["plugin-width"]), range: Config.pluginWidthRange, step: 20)
+            } header: {
+                Text("Plugin panel (⌥⌘P)")
+            } footer: {
+                Text("A web page beside the video that drives the player. Pages allowed to open local files: `plugin-open-allowed` in framescrub.conf.")
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

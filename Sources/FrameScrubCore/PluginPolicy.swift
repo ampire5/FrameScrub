@@ -99,6 +99,15 @@ public struct PluginPolicy: Equatable, Sendable {
     /// The remembered origins for "plugin-open-allowed", in a stable order.
     public var openAllowedStrings: [String] { openAllowed.map(\.description).sorted() }
 
+    /// The same as the `plugin-open-allowed` value: comma-separated.
+    public var openAllowedText: String { openAllowedStrings.joined(separator: ",") }
+
+    /// From the `plugin-open-allowed` value; spaces around the commas are fine, unreadable entries are dropped.
+    public init(trusted: Set<PluginOrigin> = [], openAllowedText: String) {
+        self.init(trusted: trusted, openAllowedStrings: openAllowedText.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) })
+    }
+
     /// The question to ask before the first `open` from an origin.
     public static func consentQuestion(for origin: PluginOrigin) -> String {
         "Allow \(origin) to open files in FrameScrub?"

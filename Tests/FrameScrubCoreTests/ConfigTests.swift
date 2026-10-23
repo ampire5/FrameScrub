@@ -53,6 +53,24 @@ import Testing
         #expect(bad.startTab == .recent)
     }
 
+    @Test func parsesPluginKeys() {
+        let (c, warnings) = Config.parse("""
+        plugin-url=http://host:8000/page/
+        plugin-width=560
+        plugin-open-allowed=http://host:8000,file://
+        """)
+        #expect(warnings.isEmpty)
+        #expect(c.pluginURL == "http://host:8000/page/")
+        #expect(c.pluginWidth == 560)
+        #expect(c.pluginOpenAllowed == "http://host:8000,file://")
+        #expect(c.text(forKey: "plugin-width") == "560")
+        let (bad, badWarnings) = Config.parse("plugin-width=100\nplugin-width=2000\nplugin-width=wide")
+        #expect(badWarnings.count == 3)
+        #expect(bad.pluginWidth == 400)
+        #expect(Config().pluginURL.isEmpty && Config().pluginOpenAllowed.isEmpty)
+        #expect(Config.pluginWidthRange == 240...1200)
+    }
+
     @Test func stashOffByDefault() {
         #expect(Config().stashEnabled == false)
         #expect(Config().startTab == .recent)

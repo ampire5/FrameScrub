@@ -301,6 +301,11 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   (`K −0.80 s / +2.20 s`).
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
+- **View › Show Plugin Panel** (⌥⌘P) shows a web page (`plugin-url`, or the `plugin=` of a `framescrub://open` link)
+  beside the video; the page drives the player through `window.framescrub` (the contract is documented at the top of
+  `Sources/FrameScrub/PluginPanel.swift`). Dragging the panel's edge sets its width (`plugin-width`); **Focus Plugin
+  Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local videos
+  only after you allow its origin once (`plugin-open-allowed`).
 - **Settings** (⌘,) has six tabs: General, Scrolling, Saving, Display, Mouse & Trackpad, and Stash. Changes apply
   at once. Edits keep the comments in `framescrub.conf` / `input.conf`; default values that are not in the
   file are not added.
@@ -413,6 +418,9 @@ start-tab=recent                # start screen without a file: recent | stash
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
+plugin-url=                     # web page for View › Show Plugin Panel (⌥⌘P), e.g. http://host:8000/page/; empty = none
+plugin-width=400                # 240…1200 points, width of the plugin panel (dragging its edge writes it)
+plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video
