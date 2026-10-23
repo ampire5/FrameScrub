@@ -62,6 +62,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var statsPanel: InfoPanelController!
     /// A web page beside the video that drives the player (View › Show Plugin Panel, `plugin=` in a link).
     private let pluginPanel = PluginPanel()
+    /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from `plugin-url`.
+    private var pluginPolicy = PluginPolicy(
+        openAllowedStrings: UserDefaults.standard.stringArray(forKey: "plugin-open-allowed") ?? [])
     private var videoTrailing: NSLayoutConstraint!
     /// Where a link asked to land in the file being opened: applied once the file is open.
     private var linkTarget: LinkTarget?
@@ -2334,7 +2337,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             pluginPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             pluginPanel.widthAnchor.constraint(equalToConstant: PluginPanel.width),
         ])
-        pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0) }
+        if let url = UserDefaults.standard.string(forKey: "plugin-url").flatMap(URL.init(string:)) {
+            pluginPolicy.trust(url)
+        }
+        pluginPanel.trusted = pluginPolicy.trusted
+        pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
     }
 
     /// For View › Show Plugin Panel: the page set in Settings (`plugin-url`).
@@ -2354,6 +2361,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Shows `url` in the panel; a page the source may not load (a `file:` page from a link) is refused with a notice.
     func showPlugin(_ url: URL, from source: PluginPageSource) {
+        pluginPolicy.trust(url)
+        pluginPanel.trusted = pluginPolicy.trusted
         guard pluginPanel.load(url, from: source) else {
             showMessage("Cannot show the plugin page: \(url.absoluteString)", duration: 4)
             return
@@ -2375,7 +2384,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let start = target.start { core.seek(toSeconds: start) }
     }
 
-    private func pluginMessage(_ message: PluginMessage) {
+    private func pluginMessage(_ message: PluginMessage, from origin: PluginOrigin) {
         switch message {
         case let .seek(t): core.seek(toSeconds: t)
         case .play: if core.isPaused { core.play() }
@@ -2383,8 +2392,34 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case let .step(n): core.step(frames: n)
         case let .loop(segment): core.setLoop(seconds: segment)
         case .focusPlayer: window?.makeFirstResponder(videoView)
-        case let .open(.file(url, landing)): open(OpenLink.Target(file: url, landing: landing))
+        case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin)
         case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
+        }
+    }
+
+    /// A local file the page asked for: only a video, and only once the user has allowed the page's origin to open
+    /// files (asked the first time, remembered in `plugin-open-allowed`).
+    private func openFromPlugin(_ url: URL, landing: LinkTarget, origin: PluginOrigin) {
+        switch pluginPolicy.decision(forOpening: url, from: origin) {
+        case .allowed:
+            open(OpenLink.Target(file: url, landing: landing))
+        case .notMedia:
+            showMessage("The plugin page may only open video files: \(url.lastPathComponent)", duration: 4)
+        case .untrusted:
+            break
+        case .needsConsent:
+            let alert = NSAlert()
+            alert.messageText = PluginPolicy.consentQuestion(for: origin)
+            alert.informativeText = "The page asked to open \(url.path). Your answer is remembered for this page."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Don't Allow")
+            let decide = { [weak self] (response: NSApplication.ModalResponse) in
+                guard let self, response == .alertFirstButtonReturn else { return }
+                pluginPolicy.allowOpening(from: origin)
+                UserDefaults.standard.set(pluginPolicy.openAllowedStrings, forKey: "plugin-open-allowed")
+                open(OpenLink.Target(file: url, landing: landing))
+            }
+            if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }
         }
     }
 

@@ -14,19 +14,33 @@ import WebKit
 ///     framescrub.onstate = s => …     // {path, scene, t, frame, fps, duration, playing, loop: [a, b] | null, visible}
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default
-/// browser. The page's alerts, confirms and prompts are shown as sheets.
+/// browser. The page's alerts, confirms and prompts are shown as sheets. Only pages from `trusted` origins get the
+/// bridge and are heard.
 @MainActor final class PluginPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     static let width: CGFloat = 400
 
-    /// A command from the page; malformed ones never arrive.
-    var onMessage: ((PluginMessage) -> Void)?
+    /// A command from the page and the origin it came from; malformed ones, and ones from other origins, never arrive.
+    var onMessage: ((PluginMessage, PluginOrigin) -> Void)?
+
+    /// The origins whose pages get `window.framescrub` (the next time a page loads) and whose messages are heard.
+    var trusted: Set<PluginOrigin> = [] {
+        didSet { if trusted != oldValue { installBridge() } }
+    }
 
     private let webView: WKWebView
+    private let content = WKUserContentController()
     private let handler = MessageProxy()
     private let crashed = NSButton(title: "Reload", target: nil, action: nil)
     private(set) var url: URL?
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
+
+    /// Guarded by the trusted origins, spelled as `location.protocol + "//" + location.host` is ("file://" for a
+    /// local page): the page is the only one that could post, but a page outside the list is not given the bridge.
+    private static func bridge(for origins: Set<PluginOrigin>) -> String {
+        let list = origins.map { "\"\($0.description)\"" }.sorted().joined(separator: ", ")
+        return "if ([\(list)].includes(location.protocol + \"//\" + location.host)) {\n\(bridge)\n}"
+    }
 
     private static let bridge = """
     window.framescrub = {
@@ -50,8 +64,6 @@ import WebKit
 
     override init(frame: NSRect) {
         let config = WKWebViewConfiguration()
-        let content = WKUserContentController()
-        content.addUserScript(WKUserScript(source: Self.bridge, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.add(handler, name: "framescrub")
         config.userContentController = content
         webView = WKWebView(frame: .zero, configuration: config)
@@ -89,9 +101,17 @@ import WebKit
         ])
         handler.receive = { [weak self] message in
             guard let self, let body = message.body as? [String: Any], let command = PluginMessage(json: body),
-                  isOurPage(message.frameInfo) else { return }
-            onMessage?(command)
+                  let origin = trustedOrigin(of: message.frameInfo) else { return }
+            onMessage?(command, origin)
         }
+    }
+
+    /// Replaces the bridge script with one for the current trusted origins; pages already loaded keep theirs.
+    private func installBridge() {
+        content.removeAllUserScripts()
+        guard !trusted.isEmpty else { return }
+        content.addUserScript(WKUserScript(source: Self.bridge(for: trusted), injectionTime: .atDocumentStart,
+                                           forMainFrameOnly: true))
     }
 
     @available(*, unavailable)
@@ -122,49 +142,37 @@ import WebKit
     /// Sends the player's state to the page (no-op until the bridge exists). The JSON travels as an argument and is
     /// parsed in the page: splicing it into script source would break on U+2028 and U+2029.
     func push(_ state: PluginState) {
-        guard !isHidden, let json = state.json, isOurPage(webView.url) else { return }
+        guard !isHidden, let json = state.json, isTrusted(webView.url) else { return }
         webView.callAsyncJavaScript("if (window.framescrub) window.framescrub._state(JSON.parse(json))",
                                     arguments: ["json": json], in: nil, in: .page) { _ in }
     }
 
-    // MARK: Which page is ours
+    // MARK: Which pages are heard
 
-    /// Whether the message came from the main frame of the page the panel was asked for (and not, say, a frame
-    /// inside it or a redirect elsewhere).
-    private func isOurPage(_ frame: WKFrameInfo) -> Bool {
-        guard frame.isMainFrame, let url else { return false }
-        let origin = frame.securityOrigin
-        return origin.protocol.lowercased() == url.scheme?.lowercased()
-            && origin.host.lowercased() == (url.host ?? "").lowercased()
-            && (origin.port == 0 ? nil : origin.port) == Self.explicitPort(of: url)
+    /// The origin of a message's frame when it is the main frame of a trusted page; nil for frames inside the page,
+    /// for a page the panel was redirected to, and for anything else.
+    private func trustedOrigin(of frame: WKFrameInfo) -> PluginOrigin? {
+        guard frame.isMainFrame, let origin = PluginOrigin(scheme: frame.securityOrigin.protocol,
+                                                           host: frame.securityOrigin.host,
+                                                           port: frame.securityOrigin.port),
+              trusted.contains(origin) else { return nil }
+        return origin
     }
 
-    private func isOurPage(_ pageURL: URL?) -> Bool {
-        guard let url, let pageURL else { return false }
-        return pageURL.scheme?.lowercased() == url.scheme?.lowercased()
-            && pageURL.host?.lowercased() == url.host?.lowercased()
-            && Self.explicitPort(of: pageURL) == Self.explicitPort(of: url)
-    }
-
-    /// The port unless it is the scheme's own (80, 443), which a URL may spell or leave out.
-    private static func explicitPort(of url: URL) -> Int? {
-        guard let port = url.port else { return nil }
-        switch (url.scheme?.lowercased(), port) {
-        case ("http", 80), ("https", 443): return nil
-        default: return port
-        }
+    private func isTrusted(_ pageURL: URL?) -> Bool {
+        pageURL.flatMap(PluginOrigin.init(url:)).map(trusted.contains) ?? false
     }
 
     // MARK: WKNavigationDelegate
 
-    /// The panel stays on its page: a link to another origin opens in the default browser.
+    /// The panel stays on its page: a link to an origin that is not trusted opens in the default browser.
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  decisionHandler: @escaping @MainActor (WKNavigationActionPolicy) -> Void) {
         guard navigationAction.targetFrame?.isMainFrame != false, let target = navigationAction.request.url else {
             decisionHandler(.allow)   // a frame inside the page loads what it likes
             return
         }
-        if target.scheme?.lowercased() == "about" || isOurPage(target) {
+        if target.scheme?.lowercased() == "about" || isTrusted(target) {
             decisionHandler(.allow)
         } else {
             if ["http", "https"].contains(target.scheme?.lowercased() ?? "") { NSWorkspace.shared.open(target) }
