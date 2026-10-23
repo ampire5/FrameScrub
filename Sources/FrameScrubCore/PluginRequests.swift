@@ -15,9 +15,11 @@ public struct PluginInfo: Codable, Equatable, Sendable {
     public var rotation: Int
     /// The video codec's name as the demuxer reports it ("h264", "hevc").
     public var codec: String?
+    /// Whether the file is read from disk or from Stash's stream (then `path` is the stream's URL).
+    public var source: PluginSource
 
     public init(path: String, name: String, fps: Double, duration: Double, durationFrames: Int, width: Int, height: Int,
-                rotation: Int, codec: String?) {
+                rotation: Int, codec: String?, source: PluginSource = .file) {
         self.path = path
         self.name = name
         self.fps = fps
@@ -27,6 +29,7 @@ public struct PluginInfo: Codable, Equatable, Sendable {
         self.height = height
         self.rotation = rotation
         self.codec = codec
+        self.source = source
     }
 
     public var json: String? { PluginJSON.encode(self) }

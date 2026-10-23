@@ -161,6 +161,8 @@ public struct Config: Equatable, Sendable {
     public var stashAPIKey = ""
     /// `stash-path-map`: `stashPrefix=localPrefix` rules separated by `;`, tried before the mounted shares.
     public var stashPathMap = ""
+    /// `stash-stream`: when a scene plays from Stash's stream instead of its file on a share.
+    public var stashStream = StashStreaming.auto
     public var stashEnabled: Bool { URL(string: stashURL)?.host != nil }
     /// `plugin-url`: the page View › Show Plugin Panel shows beside the video; empty = none until a link brings one.
     public var pluginURL = ""
@@ -250,7 +252,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "plugin-url", "plugin-width", "plugin-open-allowed", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-url", "plugin-width", "plugin-open-allowed", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -282,6 +284,7 @@ public struct Config: Equatable, Sendable {
         case "stash-url": return stashURL
         case "stash-api-key": return stashAPIKey
         case "stash-path-map": return stashPathMap
+        case "stash-stream": return stashStream.rawValue
         case "plugin-url": return pluginURL
         case "plugin-width": return String(pluginWidth)
         case "plugin-open-allowed": return pluginOpenAllowed
@@ -455,6 +458,7 @@ public struct Config: Equatable, Sendable {
         case "stash-url": stashURL = value
         case "stash-api-key": stashAPIKey = value
         case "stash-path-map": stashPathMap = value
+        case "stash-stream": guard let v = StashStreaming(rawValue: value.lowercased()) else { return false }; stashStream = v
         case "plugin-url": pluginURL = value
         case "plugin-width": guard let v = int(Config.pluginWidthRange) else { return false }; pluginWidth = v
         case "plugin-open-allowed": pluginOpenAllowed = value

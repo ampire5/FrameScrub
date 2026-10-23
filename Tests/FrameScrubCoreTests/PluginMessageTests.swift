@@ -60,8 +60,10 @@ import Testing
         // A scene wins over a path when both are given.
         #expect(message(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"])
                 == .open(.stashScene(id: "1", paths: ["/x"], landing: LinkTarget())))
-        #expect(message(["cmd": "open", "scene": "42"]) == nil)
-        #expect(message(["cmd": "open", "scene": "42", "paths": []]) == nil)
+        // Without paths (or with none) they are asked of Stash.
+        #expect(message(["cmd": "open", "scene": "42"]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
+        #expect(message(["cmd": "open", "scene": "42", "paths": []]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
+        #expect(message(["cmd": "open", "scene": "42", "paths": NSNull()]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
         #expect(message(["cmd": "open", "scene": "", "paths": ["/x"]]) == nil)
         #expect(message(["cmd": "open", "scene": ["42"], "paths": ["/x"]]) == nil)
         #expect(message(["cmd": "open", "scene": "42", "paths": [1, 2]]) == nil)
@@ -94,7 +96,7 @@ import Testing
         #expect(reason(["cmd": "seek", "t": -1]) == "seek: t must not be negative")
         #expect(reason(["cmd": "loop", "a": 3, "b": 1]) == "loop: b must be above a, and a not negative")
         #expect(reason(["cmd": "open", "path": "x"]) == "open: path must be absolute")
-        #expect(reason(["cmd": "open", "scene": "1"]) == "open: paths must be a non-empty array of strings")
+        #expect(reason(["cmd": "open", "scene": "1", "paths": "x"]) == "open: paths must be an array of strings")
         #expect(reason(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == "open: seg must be [a, b] with b above a")
         #expect(reason(["cmd": "open"]) == "open: path or scene is missing")
         #expect(reason(["cmd": "play"]) == nil)
@@ -118,13 +120,15 @@ import Testing
         #expect(PluginEvent.focus.name == "focus")
         #expect(PluginEvent.focus.detail == nil)
         #expect(PluginEvent.blur.name == "blur")
-        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil).name == "fileopened")
-        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil).detail == """
-        {"path":"/a/b.mp4","scene":null}
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil, source: .file).name == "fileopened")
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil, source: .file).detail == """
+        {"path":"/a/b.mp4","scene":null,"source":"file"}
         """)
-        #expect(PluginEvent.fileOpened(path: "/x.mp4", scene: "42").detail == """
-        {"path":"/x.mp4","scene":"42"}
+        #expect(PluginEvent.fileOpened(path: "/scene/42/stream", scene: "42", source: .stream).detail == """
+        {"path":"/scene/42/stream","scene":"42","source":"stream"}
         """)
+        #expect(PluginSource(url: URL(string: "http://h:9999/scene/42/stream")!) == .stream)
+        #expect(PluginSource(url: URL(fileURLWithPath: "/a.mp4")) == .file)
         #expect(PluginEvent.error("open: path must be absolute").detail == "\"open: path must be absolute\"")
     }
 

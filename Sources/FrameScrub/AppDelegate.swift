@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var pendingURL: URL?
     /// A link's position, segment and plugin page for `pendingURL`.
     private var pendingTarget: OpenLink.Target?
+    /// The link `pendingTarget` came from, handed over as it is when it names a Stash scene (no path to pass).
+    private var pendingLink: URL?
     /// A link that could not be opened before the window existed.
     private var pendingNotice: String?
     /// True for a launch that handed over to an already running instance (single-instance=yes) and is quitting.
@@ -164,8 +166,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             if let controller { controller.showMessage(notice, duration: 4) } else if !isSecondary { pendingNotice = notice }
             return
         }
-        let url = target.file
-        if isSecondary { Self.postHandOver(path: url.path); return }
+        if isSecondary { Self.postHandOver(path: target.file?.path, link: target.file == nil ? opened : nil); return }
         if let controller {
             controller.open(target)
             // A launch brings the window forward itself (pendingURL). For a running app, macOS may refuse our own
@@ -177,8 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 NSApp.activate()
             }
         } else {
-            pendingURL = url
+            pendingURL = target.file
             pendingTarget = target
+            pendingLink = opened
         }
     }
 
@@ -263,6 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             Self.postHandOver(path: URL(fileURLWithPath: path).path)
         } else if let url = pendingURL {
             Self.postHandOver(path: url.path)
+        } else if let link = pendingLink, pendingTarget?.sceneID != nil {
+            Self.postHandOver(path: nil, link: link)
         } else {
             Self.postHandOver(path: nil)   // nothing to open: just bring the running window forward
         }
@@ -270,10 +274,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
     }
 
-    private static func postHandOver(path: String?) {
+    /// `path` for a file; `link` (a `framescrub://open?scene=` link) for a Stash scene, which has no path to pass.
+    private static func postHandOver(path: String?, link: URL? = nil) {
+        var userInfo: [String: String] = [:]
+        if let path { userInfo["path"] = path }
+        if let link { userInfo["link"] = link.absoluteString }
         DistributedNotificationCenter.default().postNotificationName(
-            openFileNotification, object: nil,
-            userInfo: path.map { ["path": $0] } ?? [:], deliverImmediately: true)
+            openFileNotification, object: nil, userInfo: userInfo, deliverImmediately: true)
     }
 
     private func observeHandOver() {
@@ -287,6 +294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 if (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
                     controller.open(url)
                 }
+            } else if let link = (note.userInfo?["link"] as? String).flatMap(URL.init(string:)),
+                      let target = OpenLink.target(from: link), target.sceneID != nil {
+                controller.open(target)   // a Stash scene by id: nothing on this Mac is named
             }
             controller.bringToFront()
             NSApp.activate()

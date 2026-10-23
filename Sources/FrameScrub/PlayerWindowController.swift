@@ -244,12 +244,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// A `framescrub://open` link: the file, then its position, segment and plugin page.
+    /// A `framescrub://open` link: the file (or the Stash scene, found or streamed as for ▶), then its position,
+    /// segment and plugin page. A scene's open is asynchronous: true means it was begun.
     @discardableResult
     func open(_ target: OpenLink.Target) -> Bool {
         if let plugin = target.plugin { showPlugin(plugin, from: .link) }
-        linkTarget = target.landing.isEmpty ? nil : target.landing
-        return open(target.file)
+        switch target.subject {
+        case let .file(url):
+            linkTarget = target.landing.isEmpty ? nil : target.landing
+            return open(url)
+        case let .stashScene(id):
+            openStashScene(id: id, paths: [], landing: target.landing)
+            return true
+        }
     }
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent): closing it goes back to Recent.
@@ -299,16 +306,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             updatePrecisionWheel()
             // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon, up to
             // 0.4 s on a NAS, and a NAS folder read competes with the file's own reads: both wait for the first picture.
+            // A stream (Stash's, no file on this Mac) has no folder, no file facts and no place in Recent.
             videoView.onNextPicture = { [weak self] in
+                guard url.isFileURL else { return }
                 self?.window?.representedURL = url
                 self?.readFolder(of: url)
                 self?.readFileFacts(of: url)
             }
             showPlaylistPosition(url, opening: true)
             positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
-            NSDocumentController.shared.noteNewRecentDocumentURL(url)
-            var hidden = HiddenRecent()
-            hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+            if url.isFileURL {
+                NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                var hidden = HiddenRecent()
+                hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+            }
             videoView.rotationClockwise = core.info?.rotationClockwise ?? 0
             gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
             updateGeometry(reshapeWindow: false)
@@ -410,21 +421,24 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    /// ▶ on a Stash scene page, or the scene a queue step asked for: find the file on the shares (mounting one if
-    /// needed) and open it.
+    /// ▶ on a Stash scene page, the scene a queue step asked for, or one a link or plugin page named: find the file on
+    /// the shares (mounting one if needed) or take Stash's stream, and open it.
     private func openStashScene(_ scene: StashScene) {
         if scene.automatic {
             // Stash also opens a page with autoplay=true on a reload: only a step of ours is answered.
             guard queueGate.isPending else { return }
             queueGate.answered()
         }
-        guard let stashSession else { return }
+        guard let stashSession = makeStashSession() else {
+            showMessage("No Stash server: set stash-url in Settings → Stash", duration: 4)
+            return
+        }
         returnTab = .stash
         stashSession.resolve(scene) { [weak self] result in
             guard let self else { return }
             stashScene = scene   // only now: during a mount the scene on screen (and ⌘⌫'s dialog) is still the old one
             switch result {
-            case let .file(url):
+            case let .file(url), let .stream(url):
                 let opened = openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
                                       fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil)
                 if opened { stashSession.began(sceneID: scene.id, duration: core.durationSeconds) }
@@ -657,14 +671,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 })
         ])
         library.onPageLoaded = { StartupTrace.markOnce("stash page loaded") }
-        let session = StashSession(config: core.config)
-        session.onStatus = { [weak self] in self?.showMessage($0, duration: 15) }
-        session.onDetails = { [weak self] sceneID, state in self?.stashDetailsChanged(sceneID, state) }
-        session.sample = { [weak self] () -> (position: Double, forward: Bool, speed: Double)? in
-            guard let core = self?.core, core.url != nil else { return nil }
-            return (core.currentSeconds, !core.isPaused && core.direction > 0, core.speed)
-        }
-        stashSession = session
+        _ = makeStashSession()
         library.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(library, positioned: .above, relativeTo: videoView)   // under the start screen's switch
         NSLayoutConstraint.activate([
@@ -675,6 +682,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         stashLibrary = library
         return library
+    }
+
+    /// The Stash session, made with the Stash page or for the first scene a link or plugin page names (that needs no
+    /// page); nil without `stash-url`.
+    private func makeStashSession() -> StashSession? {
+        if let stashSession { return stashSession }
+        guard core.config.stashEnabled else { return nil }
+        let session = StashSession(config: core.config)
+        session.onStatus = { [weak self] in self?.showMessage($0, duration: 15) }
+        session.onDetails = { [weak self] sceneID, state in self?.stashDetailsChanged(sceneID, state) }
+        session.sample = { [weak self] () -> (position: Double, forward: Bool, speed: Double)? in
+            guard let core = self?.core, core.url != nil else { return nil }
+            return (core.currentSeconds, !core.isPaused && core.direction > 0, core.speed)
+        }
+        stashSession = session
+        return session
     }
 
     /// Refreshes the start screen after the recent list changed (Clear Menu); does nothing while a file is open.
@@ -747,7 +770,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let config = effectiveConfig()
         let sortChanged = config.playlistSort != core.config.playlistSort
         let stashChanged = config.stashURL != core.config.stashURL || config.stashAPIKey != core.config.stashAPIKey
-            || config.stashPathMap != core.config.stashPathMap
+            || config.stashPathMap != core.config.stashPathMap || config.stashStream != core.config.stashStream
         // The scene search's decoder follows `hwdec` too: the next press makes a new one.
         if config.hwdec != core.config.hwdec { dropSceneSearch() }
         applyPluginConfig(config, previous: core.config)
@@ -2466,7 +2489,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .info:
             let details = PluginInfo(path: url.path, name: url.lastPathComponent, fps: info.frameRate,
                                      duration: core.durationSeconds, durationFrames: core.frameCount, width: info.width,
-                                     height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec)
+                                     height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec,
+                                     source: PluginSource(url: url))
             pluginDone(request, result: details.json)
         case .marks:
             let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
@@ -2567,7 +2591,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func pluginFileOpened() {
         var scene: String?
         if case let .stash(sceneID, _) = origin { scene = sceneID }
-        pluginPanel.dispatch(.fileOpened(path: core.url?.path, scene: scene))
+        pluginPanel.dispatch(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
     }
 
     /// The player's state for the page: at once on a state change, at most ten times a second while frames show.

@@ -78,7 +78,7 @@ final class CountingDelegate: PlayerCoreDelegate {
         var config = Config()
         config.cacheSizeMiB = 2048
         let player = PlayerCore(config: config, enableAudio: false,
-                                byteSource: { url -> ByteSource in throttled ? try SlowNASByteSource(url: url) : try FileByteSource(url: url) })
+                                byteSource: { url, _ -> ByteSource in throttled ? try SlowNASByteSource(url: url) : try FileByteSource(url: url) })
         let delegate = CountingDelegate()
         player.delegate = delegate
         defer { player.close() }

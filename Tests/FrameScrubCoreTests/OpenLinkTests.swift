@@ -48,7 +48,7 @@ import Testing
     @Test func readsTimeSegmentAndPlugin() {
         let target = OpenLink.target(from: link(
             "framescrub://open?path=%2Fa.mp4&t=12.5&seg=10-16&plugin=http%3A%2F%2Fhost%3A8000%2Fp%2F%3Fq%3D1"))
-        #expect(target?.file.path == "/a.mp4")
+        #expect(target?.file?.path == "/a.mp4")
         #expect(target?.time == 12.5)
         #expect(target?.segment == 10...16)
         #expect(target?.plugin?.absoluteString == "http://host:8000/p/?q=1")
@@ -63,10 +63,25 @@ import Testing
 
     @Test func badExtrasAreIgnoredButTheFileStillOpens() {
         let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&t=-4&seg=9-3&plugin=file%3A%2F%2F%2Fx"))
-        #expect(target?.file.path == "/a.mp4")
+        #expect(target?.file?.path == "/a.mp4")
         #expect(target?.time == nil)
         #expect(target?.segment == nil)
         #expect(target?.plugin == nil)
+    }
+
+    @Test func aSceneIsNamedByItsStashID() {
+        let target = OpenLink.target(from: link("framescrub://open?scene=42&t=3&seg=1-5"))
+        #expect(target?.subject == .stashScene(id: "42"))
+        #expect(target?.sceneID == "42")
+        #expect(target?.file == nil)
+        #expect(target?.landing == LinkTarget(time: 3, segment: 1...5))
+        #expect(OpenLink.fileURL(from: link("framescrub://open?scene=42")) == nil)
+        #expect(OpenLink.target(from: link("framescrub://open?scene=")) == nil)
+        #expect(OpenLink.target(from: link("framescrub://open?scene=%20")) == nil)
+        // A path wins over a scene; a bad path is not rescued by a scene.
+        #expect(OpenLink.target(from: link("framescrub://open?scene=7&path=%2Fa.mp4"))?.subject == .file(link("file:///a.mp4")))
+        #expect(OpenLink.target(from: link("framescrub://open?scene=7&path=rel")) == nil)
+        #expect(OpenLink.target(from: link("file:///a.mp4"))?.sceneID == nil)
     }
 
     @Test func segmentText() {

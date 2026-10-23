@@ -16,14 +16,16 @@ import WebKit
 ///     framescrub.step(n)              `n` frames forward, negative backward
 ///     framescrub.loop(a, b)           an A-B loop in seconds, `b` above `a`;  loop(null) clears it
 ///     framescrub.open(o)              o = {path, t?, seg?: [a, b]} a local video (absolute path; the first time a page's
-///                                     origin asks, the user is asked to allow it), or {scene, paths, t?, seg?} a Stash
-///                                     scene found on the shares
+///                                     origin asks, the user is asked to allow it), or {scene, paths?, t?, seg?} a Stash
+///                                     scene found on the shares or streamed from Stash (stash-stream); without `paths`
+///                                     they are asked of Stash
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
 /// Requests with an answer (they need a file open, else they reject):
 ///
-///     request("info")                 {path, name, fps, duration, durationFrames, width, height, rotation, codec}
+///     request("info")                 {path, name, fps, duration, durationFrames, width, height, rotation, codec,
+///                                     source: "file" | "stream"} — for a stream, path is Stash's stream URL
 ///     request("marks")                {loop: [a, b] | null, loopFrames: [a, b] | null, segments: [{start, end,
 ///                                     startFrame, endFrame}], openFrame, openStart} — the A-B range and the cut marks
 ///     request("playlist")             {index, count, total, name} — the file's place in its folder (index from 0)
@@ -40,7 +42,8 @@ import WebKit
 ///
 ///     focus / blur                    the panel took the keyboard / gave it back (View › Focus Plugin Panel, ⌃⌥⌘P,
 ///                                     brings keys to the page; focusPlayer() returns them)
-///     fileopened                      {path, scene} once a file is open, however it was opened
+///     fileopened                      {path, scene, source: "file" | "stream"} once a file is open, however it was
+///                                     opened
 ///     error                           a reason string, when a verb (sent without a reply) failed
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default

@@ -45,7 +45,7 @@ import Testing
                               height: 360, rotation: 0, codec: "h264")
         #expect(info.json == """
         {"codec":"h264","duration":4,"durationFrames":100,"fps":25,"height":360,"name":"b.mp4","path":"/a/b.mp4",\
-        "rotation":0,"width":640}
+        "rotation":0,"source":"file","width":640}
         """)
         #expect(PluginJSON.decode(PluginInfo.self, from: info.json!) == info)
     }

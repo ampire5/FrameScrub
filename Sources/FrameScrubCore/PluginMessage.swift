@@ -1,6 +1,7 @@
 import Foundation
 
-/// What a plugin page asks the player to open: a local file, or a Stash scene whose file is found on the shares.
+/// What a plugin page asks the player to open: a local file, or a Stash scene whose file is found on the shares (or
+/// streamed); `paths` is empty when the page gave none and they are to be asked of Stash.
 public enum PluginOpen: Equatable, Sendable {
     case file(URL, landing: LinkTarget)
     case stashScene(id: String, paths: [String], landing: LinkTarget)
@@ -144,7 +145,7 @@ struct Arguments {
 }
 
 extension PluginOpen {
-    /// `{path, t?, seg?: [a, b]}` or `{scene, paths, t?, seg?: [a, b]}`; a scene's id may come as a number.
+    /// `{path, t?, seg?: [a, b]}` or `{scene, paths?, t?, seg?: [a, b]}`; a scene's id may come as a number.
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         let landing = LinkTarget(time: try args.optionalTime("t"), segment: try args.optionalSegmentPair("seg"))
         if let scene = args.json["scene"] {
@@ -155,8 +156,10 @@ extension PluginOpen {
             default: throw PluginMessage.Failure("scene must be a string or a number")
             }
             guard !id.isEmpty else { throw PluginMessage.Failure("scene is empty") }
-            guard let paths = args.json["paths"] as? [String], !paths.isEmpty else {
-                throw PluginMessage.Failure("paths must be a non-empty array of strings")
+            var paths: [String] = []
+            if let given = args.json["paths"], !(given is NSNull) {
+                guard let list = given as? [String] else { throw PluginMessage.Failure("paths must be an array of strings") }
+                paths = list
             }
             self = .stashScene(id: id, paths: paths, landing: landing)
         } else if args.has("path") {
@@ -207,8 +210,9 @@ public enum PluginEvent: Equatable, Sendable {
     /// The panel took the keyboard / gave it back to the player.
     case focus
     case blur
-    /// A file is open (after an `open`, a link, or the user's own choice).
-    case fileOpened(path: String?, scene: String?)
+    /// A file is open (after an `open`, a link, or the user's own choice); `source` says whether it is read from a
+    /// file or from Stash's stream.
+    case fileOpened(path: String?, scene: String?, source: PluginSource)
     /// A command sent without an id failed.
     case error(String)
 
@@ -226,8 +230,8 @@ public enum PluginEvent: Equatable, Sendable {
         switch self {
         case .focus, .blur:
             return nil
-        case let .fileOpened(path, scene):
-            return PluginJSON.encode(FileOpened(path: path, scene: scene))
+        case let .fileOpened(path, scene, source):
+            return PluginJSON.encode(FileOpened(path: path, scene: scene, source: source))
         case let .error(reason):
             return PluginJSON.encode(reason)
         }
@@ -236,14 +240,27 @@ public enum PluginEvent: Equatable, Sendable {
     private struct FileOpened: Encodable {
         var path: String?
         var scene: String?
+        var source: PluginSource
 
-        enum CodingKeys: String, CodingKey { case path, scene }
+        enum CodingKeys: String, CodingKey { case path, scene, source }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(path, forKey: .path)   // nil as null, not an absent key
             try c.encode(scene, forKey: .scene)
+            try c.encode(source, forKey: .source)
         }
+    }
+}
+
+/// Where the open file's bytes come from, as the page hears it (`fileopened`, `info`).
+public enum PluginSource: String, Codable, Equatable, Sendable {
+    case file
+    case stream
+
+    /// `stream` for a URL read over HTTP.
+    public init(url: URL) {
+        self = ByteSources.isRemote(url) ? .stream : .file
     }
 }
 

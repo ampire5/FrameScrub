@@ -418,6 +418,7 @@ start-tab=recent                # start screen without a file: recent | stash
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
+stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
 plugin-url=                     # web page for View › Show Plugin Panel (⌥⌘P), e.g. http://host:8000/page/; empty = none
 plugin-width=400                # 240…1200 points, width of the plugin panel (dragging its edge writes it)
 plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
@@ -516,7 +517,12 @@ file never loads it) and kept, so going back finds the same page.
   `trackActivity` and `minimumPlayPercent` are followed).
 - ⌘⌫ asks, then has Stash delete the scene, its file and its generated files; the next scene of the list opens.
 - **Check** in Settings → Stash asks Stash for its version and shows where its first scene's file is on this Mac.
-- Not yet: playing Stash's stream when a file is on no share this Mac can reach.
+- A file on no share this Mac can reach (no mount, no rule, or the share will not mount) plays as **Stash's stream**
+  (`<stash-url>/scene/<id>/stream`, read with Range requests like a file, the API key sent along). `stash-stream=never`
+  fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
+  `source: "file" | "stream"`.
+- `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found
+  on the shares (or streamed) as for ▶. A plugin page's `open({scene})` without `paths` does the same.
 
 ### Sharp frames
 

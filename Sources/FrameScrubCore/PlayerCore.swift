@@ -114,7 +114,8 @@ public final class PlayerCore {
     private let enableAudio: Bool
     private let fallbackRoot: URL
     private let resumeStore: ResumeStore?
-    private let byteSource: (URL) throws -> ByteSource
+    /// The bytes of a URL about to open; the default reads a file, or Stash's stream with its API key.
+    private let byteSource: (URL, Config) throws -> ByteSource
     private let now: () -> Double
     private var filler: CacheFiller?
     private var exporter: FrameExporter?
@@ -171,7 +172,9 @@ public final class PlayerCore {
 
     public init(config: Config, enableAudio: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
                 now: @escaping () -> Double = CACurrentMediaTime, resumeStore: ResumeStore? = nil,
-                byteSource: @escaping (URL) throws -> ByteSource = { try ByteSources.open($0) }) {
+                byteSource: @escaping (URL, Config) throws -> ByteSource = {
+                    try ByteSources.open($0, headers: StashOpenPolicy.headers(for: $0, config: $1))
+                }) {
         self.config = config
         self.byteSource = byteSource
         self.now = now
@@ -199,7 +202,7 @@ public final class PlayerCore {
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
     /// resume point, Stash spec §2.3).
     public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
-        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url))
+        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url, config))
         let source = try MediaSource(url: url, readCache: readCache)
         StartupTrace.mark("probe done")
         readCache.probe = StreamProbe(source)

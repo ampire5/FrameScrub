@@ -48,9 +48,23 @@ import Testing
         #expect(c.stashPathMap == #"S:\Media=/Volumes/S$/Media;\\server.local\x=/Volumes/x"#)
         #expect(c.startTab == .stash)
         #expect(c.stashEnabled)
+        #expect(c.stashStream == .auto)
         let (bad, badWarnings) = Config.parse("start-tab=other")
         #expect(badWarnings.count == 1)
         #expect(bad.startTab == .recent)
+    }
+
+    @Test func parsesStashStream() {
+        for (text, value) in [("auto", StashStreaming.auto), ("never", .never), ("Always", .always)] {
+            let (c, warnings) = Config.parse("stash-stream=\(text)")
+            #expect(warnings.isEmpty)
+            #expect(c.stashStream == value)
+            #expect(c.text(forKey: "stash-stream") == text.lowercased())
+        }
+        let (bad, warnings) = Config.parse("stash-stream=sometimes")
+        #expect(warnings.count == 1)
+        #expect(bad.stashStream == .auto)
+        #expect(Config.keys.contains("stash-stream"))
     }
 
     @Test func parsesPluginKeys() {
