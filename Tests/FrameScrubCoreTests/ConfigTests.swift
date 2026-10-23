@@ -381,6 +381,17 @@ import Testing
         #expect(!Config.parse("playlist-sort=random").1.isEmpty)
     }
 
+    @Test func parsesKeepSpeed() {
+        #expect(Config().keepSpeed)
+        #expect(Config().text(forKey: "keep-speed") == "yes")
+        let (c, warnings) = Config.parse("keep-speed=no")
+        #expect(warnings.isEmpty)
+        #expect(!c.keepSpeed)
+        #expect(c.text(forKey: "keep-speed") == "no")
+        #expect(!Config.parse("keep-speed=maybe").1.isEmpty)
+        #expect(Config.keys.contains("keep-speed"))
+    }
+
     @Test func parsesOntop() {
         let (c, warnings) = Config.parse("ontop=yes")
         #expect(warnings.isEmpty)

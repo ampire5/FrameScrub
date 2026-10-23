@@ -123,6 +123,8 @@ public final class PlayerCore {
     public var isExporting: Bool { exportFlag != nil }
     public var hasAudio: Bool { audio != nil }
     var hasScrubAudio: Bool { scrubAudio != nil }
+    /// The time-pitch rate of the sound, nil without sound (tests).
+    var audioRate: Float? { audio?.rate }
     /// Tests: how often the playback sound was (re)started.
     var audioPlayCalls: Int { audio?.playCalls ?? 0 }
 
@@ -266,15 +268,21 @@ public final class PlayerCore {
             setUpAudioInBackground(url, zeroSeconds: Double(source.startPTS) * source.timeBase, readCache: readCache,
                                    session: current)
         }
-        speed = 1
+        // keep-speed: the speed the user chose goes on; the shuttle's and a hold's are only for the file they began in.
+        let kept = config.keepSpeed ? (shuttleSpeed ? 1 : heldFrom?.speed ?? speed) : 1
+        heldFrom = nil   // the hold's key-up after the open has nothing to put back
+        let willHaveSound = enableAudio && source.audioStreamIndex != nil   // the sound comes in later: its range now
+        let range = willHaveSound ? AudioOutput.rateRange : 0.01...100
+        speed = min(max(kept, range.lowerBound), range.upperBound)
         direction = 1
         shuttleSpeed = false
-        clock.rate = 1
+        clock.rate = speed   // the sound takes it when it comes in (`attachAudio`)
         clock.followsAudio = true
         buildIndexInBackground(url, readCache: readCache, session: current)
         seek(toFrame: 0)
         resumeIfRemembered(url, fallback: fallbackPosition)
         if config.autoplay { play() }
+        if speed != 1 { feedback(.speed(speed)) }   // a kept speed is shown, so a faster file is no surprise
     }
 
     public func close() {

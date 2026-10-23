@@ -136,6 +136,7 @@ struct PreferencesView: View {
                           number: model.binding(\.holdSpeed, ["hold-speed"], decimals: 2), range: 1.25...8, step: 0.25)
                 SliderRow(title: "Speed step ([ ])", value: String(format: "%g×", model.config.speedStep),
                           number: model.binding(\.speedStep, ["speed-step"], decimals: 2), range: 0.05...1, step: 0.05)
+                Toggle("Keep the speed for the next video", isOn: model.binding(\.keepSpeed, ["keep-speed"]))
                 Toggle("Sound on every frame change in pause (⌥m)", isOn: model.binding(\.scrubAudio, ["scrub-audio"]))
                 Toggle("Natural pitch while scrubbing (⇧⌥m)", isOn: naturalScrubPitch)
                 SliderRow(title: "Scrub audio length", value: "\(model.config.scrubAudioLengthMs) ms",

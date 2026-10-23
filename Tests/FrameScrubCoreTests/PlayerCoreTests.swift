@@ -643,6 +643,94 @@ final class HapticLog {
         #expect(player.speed == 1.5)
     }
 
+    // MARK: keep-speed
+
+    @Test func speedCarriesToTheNextFile() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        player.perform(.stepSpeed(1))
+        player.perform(.stepSpeed(1))
+        #expect(player.speed == 1.5)
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1.5 && player.direction == 1)
+        #expect(player.clock.rate == 1.5)
+        #expect(delegate.feedback == [.speed(1.5)])   // shown, so a faster file is no surprise
+        player.perform(.setSpeed(1))
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)            // 1×: nothing to show
+    }
+
+    @Test func reverseAndShuttleSpeedDoNotCarry() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.seek(toFrame: 300)
+        player.perform(.shuttleBack)
+        player.perform(.stepSpeed(1))                 // backward at 1.25×
+        #expect(player.direction == -1 && player.speed == 1.25 && player.clock.rate == -1.25)
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.direction == 1 && player.speed == 1.25 && player.clock.rate == 1.25)
+        #expect(await eventually { player.index?.isExact == true })
+        player.seek(toFrame: 300)
+        player.perform(.shuttleForward)
+        player.perform(.shuttleForward)
+        #expect(player.speed == 2)                    // the shuttle's speed, not one the user chose with [ ]
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.direction == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)
+    }
+
+    @Test func holdSpeedDoesNotCarry() async throws {
+        let (player, _, _) = try makePlayer(configure: { $0.holdSpeed = 3 })
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.perform(.stepSpeed(1))                 // 1.25
+        player.beginHoldSpeed()                       // paused: plays at 3× while held
+        #expect(player.speed == 3)
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1.25 && player.clock.rate == 1.25)
+        #expect(player.isPaused)                      // autoplay is off: the hold's playing stays with the old file
+        player.endHoldSpeed()                         // the key comes up after the open: nothing to put back
+        #expect(player.speed == 1.25 && player.isPaused)
+        player.beginHoldSpeed()                       // a new hold in the new file works as before
+        #expect(player.speed == 3 && !player.isPaused)
+        player.endHoldSpeed()
+        #expect(player.speed == 1.25 && player.isPaused)
+    }
+
+    @Test func keepSpeedNoResetsOnOpen() async throws {
+        let (player, delegate, _) = try makePlayer(configure: { $0.keepSpeed = false })
+        defer { player.close() }
+        player.perform(.stepSpeed(1))
+        #expect(player.speed == 1.25)
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.direction == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)
+    }
+
+    /// The sound is set up beside the video: when it comes in it plays at the kept speed. Needs an audio device.
+    @Test func keptSpeedReachesTheSound() async throws {
+        let player = PlayerCore(config: Config(), enableAudio: true, fallbackRoot: makeTemporaryDirectory())
+        defer { player.close() }
+        try player.open(Fixtures.url(Fixtures.h264))   // no sound: 50× is allowed
+        player.perform(.setSpeed(50))
+        #expect(player.speed == 50)
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        #expect(player.speed == AudioOutput.rateRange.upperBound)   // the sound's range from the start
+        #expect(player.clock.rate == AudioOutput.rateRange.upperBound)
+        player.perform(.setSpeed(1.5))
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        #expect(player.speed == 1.5 && player.clock.rate == 1.5)
+        guard await eventually(timeout: 3, { player.hasAudio }) else { return }   // no audio device here
+        #expect(player.audioRate == 1.5)
+        #expect(player.speed == 1.5 && player.clock.rate == 1.5)
+    }
+
     @Test func reachingTheEndShowsStop() async throws {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })

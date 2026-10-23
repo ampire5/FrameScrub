@@ -74,7 +74,7 @@ public enum KeyHelp {
         case .holdSpeed: return (.playback, 1, "Hold: play faster")
         case let .multiplySpeed(factor): return (.playback, factor < 1 ? 2 : 3, factor < 1 ? "Slower" : "Faster")
         case let .stepSpeed(direction): return (.playback, direction < 0 ? 2 : 3, direction < 0 ? "Slower" : "Faster")
-        case let .setSpeed(value): return (.playback, 4, value == 1 ? "Normal speed" : "Speed ×\(formatNumber(value))")
+        case let .setSpeed(value): return (.playback, 4, value == 1 ? "Normal speed (1×)" : "Speed ×\(formatNumber(value))")
         case .abLoop: return (.playback, 5, "A-B range: start, end, clear")
         case .cycleABLoopMode: return (.playback, 6, "At B: loop, pause or turn back")
         case .toggleSegmentLock: return (.playback, 7, "Segments: lock / unlock")

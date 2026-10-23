@@ -476,7 +476,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 if opened { stashSession.began(sceneID: scene.id, duration: core.durationSeconds) }
                 window?.makeFirstResponder(videoView)
                 if scene.automatic {
-                    hud.show(queueDirection > 0 ? .playlistNext : .playlistPrevious)
+                    hud.show(openedHUD(queueDirection > 0 ? .playlistNext : .playlistPrevious))
                     if opened, queuePlays, core.isPaused { core.play() }
                 }
             case let .failed(failure):
@@ -1389,6 +1389,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         runInput(command, from: .keyboard, fresh: !event.isARepeat)
     }
 
+    /// The icon for a file just opened by `event` (next / previous): a kept speed other than 1× (`keep-speed`) instead,
+    /// so a faster or slower file is never a surprise.
+    private func openedHUD(_ event: Feedback) -> Feedback {
+        core.url != nil && core.speed != 1 ? .speed(core.speed) : event
+    }
+
     /// The key held for hold-speed (backlog 4.5); its key-up, the window losing focus, or the keyboard moving between
     /// the video and the plugin panel ends the hold.
     private var holdKeyCode: UInt16?
@@ -1463,7 +1469,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let previous = playlist?.previous {
                 _ = playlistEndBump.stepped(moved: true, direction: -1, fresh: core.inputIsFresh)
                 openFile(previous)
-                hud.show(.playlistPrevious)
+                hud.show(openedHUD(.playlistPrevious))
             } else {
                 showMessage("First file")
                 if playlistEndBump.stepped(moved: false, direction: -1, fresh: core.inputIsFresh) { haptics.play(.end) }
@@ -1474,7 +1480,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let next = playlist?.next {
                 _ = playlistEndBump.stepped(moved: true, direction: 1, fresh: core.inputIsFresh)
                 openFile(next)
-                hud.show(.playlistNext)
+                hud.show(openedHUD(.playlistNext))
             } else {
                 showMessage("Last file")
                 if playlistEndBump.stepped(moved: false, direction: 1, fresh: core.inputIsFresh) { haptics.play(.end) }

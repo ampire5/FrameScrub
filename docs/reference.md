@@ -102,7 +102,7 @@ modes and Play Marks Only work mirrored.
 | Shift+↑ / Shift+↓ | Next scene / start of this scene (again within 1 s: the previous one). Keyframes are compared, then the frames between them, so the jump lands on the first frame of the new scene; presses during a search add up; Shift+Backspace comes back |
 | `Shift+Backspace` | Back to where the last seek started (seeks less than a second apart count as one); again to undo that. Frame steps are not seeks |
 | `<` / `>`, PgUp / PgDn | Previous / next video in the folder |
-| `[` `]` `Backspace` | Speed −/+ `speed-step` (0.25 by default: 1 → 1.25 → 1.5, never below one step), reset |
+| `[` `]` `Backspace` | Speed −/+ `speed-step` (0.25 by default: 1 → 1.25 → 1.5, never below one step), reset to 1× (also Playback → Normal Speed). The speed stays for the next video opened in the window and is shown when that video opens (`keep-speed`) |
 | Hold `/` | Play at `hold-speed` (2× by default) while held, also from pause; on release the speed and pause come back |
 | `9` `0` `m` | Volume down, up, mute |
 | `⌥m` | Scrub audio on / off: in pause a step plays a short piece of sound, scrubbing plays it like tape — pitch follows the speed, backward is reversed (`scrub-audio`) |
@@ -461,6 +461,7 @@ ontop=no                        # yes: the player window floats above other apps
 stats-font-size=12              # 8…40 points, text size of the stats panel (i)
 hold-speed=2                    # 0.1…16, speed while the hold key (w, or / in classic) is held
 speed-step=0.25                 # 0.01…4, what [ ] add to or take from the speed
+keep-speed=yes                  # yes: the speed set with [ ] stays for the next video in the window (shown when it opens; Backspace resets to 1×); no: every video starts at 1×. Reverse, the shuttle's speeds and the hold speed never carry over
 scrub-audio=yes                 # yes: sound in pause — a piece per step, tape while scrubbing (⌥m toggles it)
 scrub-audio-length=80           # 20…500 ms, length of the piece a single step plays
 scrub-audio-pitch=tape          # tape: the scrub pitch follows the speed; natural: the sound's own pitch (⇧⌥m toggles it)

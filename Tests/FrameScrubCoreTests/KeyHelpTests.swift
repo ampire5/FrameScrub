@@ -120,6 +120,15 @@ import Testing
         #expect(KeyHelp.menuHint(for: .quit, in: none) == nil)
     }
 
+    @Test func normalSpeedIsFoundUnderItsKeys() {
+        let classic = InputMap(layout: .classic)
+        #expect(KeyHelp.menuHint(for: .setSpeed(1), in: classic) == "⌫")
+        let all = KeyHelp.sections(for: classic).flatMap(\.entries)
+        #expect(all.contains { $0.action == "Normal speed (1×)" && $0.keys.contains("⌫") })
+        let leftHand = KeyHelp.sections(for: InputMap(layout: .leftHand)).flatMap(\.entries)
+        #expect(leftHand.contains { $0.action == "Normal speed (1×)" })
+    }
+
     @Test func leftHandHintsShowTheLeftHandKey() {
         let map = InputMap(layout: .leftHand)
         #expect(KeyHelp.menuHint(for: .seek(5, .byConfig), in: map) == "c")

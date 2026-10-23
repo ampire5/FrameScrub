@@ -228,6 +228,9 @@ public struct Config: Equatable, Sendable {
     public var statsFontSize = 12
     /// Speed while the hold-speed key (`/`) is held.
     public var holdSpeed = 2.0
+    /// `keep-speed`: the speed chosen with `[` / `]` (or `set speed`) stays for the next file opened in the window;
+    /// the direction, the shuttle's speeds and a hold-speed in progress do not. `no`: every file starts at 1×.
+    public var keepSpeed = true
     /// What `[` / `]` (step-speed) add to or take from the speed.
     public var speedStep = 0.25
     /// A short piece of sound on every frame change in pause (`⌥m` toggles it).
@@ -262,7 +265,7 @@ public struct Config: Equatable, Sendable {
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
         "preview", "preview-width", "scale", "sharpen", "sr-still", "save-scale", "save-upscaler",
         "vibrance", "vibrance-on", "auto-color", "auto-color-strength", "auto-color-filters", "auto-color-vibrance-gain", "auto-color-interval", "auto-color-threshold", "auto-color-full", "save-color", "ontop", "stats-font-size",
-        "hold-speed", "speed-step", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "segment-advance", "key-layout",
+        "hold-speed", "speed-step", "keep-speed", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "segment-advance", "key-layout",
         "app-icon",
     ]
 
@@ -356,6 +359,7 @@ public struct Config: Equatable, Sendable {
         case "stats-font-size": return String(statsFontSize)
         case "hold-speed": return formatNumber(holdSpeed)
         case "speed-step": return formatNumber(speedStep)
+        case "keep-speed": return yesNo(keepSpeed)
         case "scrub-audio": return yesNo(scrubAudio)
         case "scrub-audio-length": return String(scrubAudioLengthMs)
         case "scrub-audio-pitch": return scrubAudioPitch.rawValue
@@ -505,6 +509,7 @@ public struct Config: Equatable, Sendable {
         case "stats-font-size": guard let v = int(8...40) else { return false }; statsFontSize = v
         case "hold-speed": guard let v = double(0.1...16) else { return false }; holdSpeed = v
         case "speed-step": guard let v = double(0.01...4), v > 0 else { return false }; speedStep = v
+        case "keep-speed": guard let v = bool() else { return false }; keepSpeed = v
         case "scrub-audio": guard let v = bool() else { return false }; scrubAudio = v
         case "scrub-audio-length": guard let v = int(20...500) else { return false }; scrubAudioLengthMs = v
         case "scrub-audio-pitch": guard let v = ScrubPitch(rawValue: value.lowercased()) else { return false }; scrubAudioPitch = v
