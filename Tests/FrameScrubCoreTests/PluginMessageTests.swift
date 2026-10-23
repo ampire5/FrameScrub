@@ -155,6 +155,31 @@ import Testing
         #expect(message(["cmd": "open", "path": "/a.mp4", "advance": "x"]) == nil)
     }
 
+    /// A message as the page's bridge posts it: JSON text decoded as WebKit does, so booleans and nulls are real.
+    private func posted(_ json: String) -> [String: Any] {
+        (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+    }
+
+    private func reason(_ json: [String: Any]) -> String? {
+        if case let .failure(failure) = PluginMessage.parse(json) { return failure.reason }
+        return nil
+    }
+
+    /// Final review item 6: booleans are not times, a segment index is whole, and a null list is no list.
+    @Test func segmentArgumentsAreCheckedStrictly() {
+        #expect(reason(posted(#"{"cmd":"segments","segments":[[true,2]]}"#)) == "segments: each segment must be [a, b] with b above a")
+        #expect(reason(posted(#"{"cmd":"segments","segments":[[0,true]]}"#)) == "segments: each segment must be [a, b] with b above a")
+        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","seg":[false,true]}"#)) == nil)
+        #expect(message(posted(#"{"cmd":"segments","segments":[[0,2]]}"#)) == .segments([0...2], lock: nil, advance: nil))
+        #expect(reason(posted(#"{"cmd":"goSegment","i":1.5}"#)) == "goSegment: i must be a whole number")
+        #expect(message(posted(#"{"cmd":"goSegment","i":1.0}"#)) == .goSegment(1))
+        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null}"#))
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget())))
+        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null,"seg":[7,8]}"#))
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
+        #expect(reason(posted(#"{"cmd":"segments","segments":null}"#)) == "segments: segments is missing")
+    }
+
     @Test func segmentEvent() {
         #expect(PluginEvent.segment(current: 1, locked: true).name == "segment")
         #expect(PluginEvent.segment(current: 1, locked: true).detail == #"{"current":1,"locked":true}"#)

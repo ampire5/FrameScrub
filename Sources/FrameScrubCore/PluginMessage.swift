@@ -83,6 +83,7 @@ public enum PluginMessage: Equatable, Sendable {
             return .lock(try args.bool("on"))
         case "goSegment":
             let i = try args.number("i")
+            guard i == i.rounded() else { throw Failure("i must be a whole number") }
             guard i >= 0, abs(i) < Double(Int32.max) else { throw Failure("i must not be negative") }
             return .goSegment(Int(i))
         case "open":
@@ -111,6 +112,16 @@ struct Arguments {
     typealias Failure = PluginMessage.Failure
 
     func has(_ key: String) -> Bool { json[key] != nil }
+
+    /// Present and not JSON `null`.
+    func given(_ key: String) -> Bool { json[key].map { !($0 is NSNull) } ?? false }
+
+    /// `a...b` from a JSON pair of numbers (booleans are not numbers); nil when it is not one.
+    private static func pair(_ value: Any) -> ClosedRange<Double>? {
+        guard let pair = value as? [NSNumber], pair.count == 2,
+              pair.allSatisfy({ CFGetTypeID($0) != CFBooleanGetTypeID() }) else { return nil }
+        return LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue)
+    }
 
     /// A finite number; nil when absent.
     func optionalNumber(_ key: String) throws(Failure) -> Double? {
@@ -145,34 +156,28 @@ struct Arguments {
     /// `a...b` from a `[a, b]` pair; nil when absent.
     func optionalSegmentPair(_ key: String) throws(Failure) -> ClosedRange<Double>? {
         guard let value = json[key] else { return nil }
-        guard let pair = value as? [NSNumber], pair.count == 2,
-              let segment = LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue) else {
-            throw Failure("\(key) must be [a, b] with b above a")
-        }
+        guard let segment = Self.pair(value) else { throw Failure("\(key) must be [a, b] with b above a") }
         return segment
     }
 
-    /// `[[a, b], …]`; nil when absent. Any bad pair refuses the whole list.
+    /// `[[a, b], …]`; nil when absent or `null`. Any bad pair refuses the whole list.
     func segmentList(_ key: String) throws(Failure) -> [ClosedRange<Double>]? {
-        guard let value = json[key] else { return nil }
+        guard given(key), let value = json[key] else { return nil }
         guard let pairs = value as? [Any] else { throw Failure("each segment must be [a, b] with b above a") }
         var list: [ClosedRange<Double>] = []
         for item in pairs {
-            guard let pair = item as? [NSNumber], pair.count == 2,
-                  let segment = LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue) else {
-                throw Failure("each segment must be [a, b] with b above a")
-            }
+            guard let segment = Self.pair(item) else { throw Failure("each segment must be [a, b] with b above a") }
             list.append(segment)
         }
         return list
     }
 
-    /// A JSON boolean (a plain number is not one).
     func requiredSegmentList(_ key: String) throws(Failure) -> [ClosedRange<Double>] {
         guard let list = try segmentList(key) else { throw Failure("\(key) is missing") }
         return list
     }
 
+    /// A JSON boolean (a plain number is not one).
     func bool(_ key: String) throws(Failure) -> Bool {
         guard let value = json[key] else { throw Failure("\(key) is missing") }
         guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {
@@ -204,10 +209,10 @@ struct Arguments {
 
 extension PluginOpen {
     /// `{path, t?, segments?, lock?, advance?}` or `{scene, paths?, t?, …}`; a scene's id may come as a number. The older
-    /// single `seg: [a, b]` counts as a one-item `segments` when that is absent.
+    /// single `seg: [a, b]` counts as a one-item `segments` when that is absent (or `null`).
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         var segments = try args.segmentList("segments") ?? []
-        if !args.has("segments"), let pair = try args.optionalSegmentPair("seg") { segments = [pair] }
+        if !args.given("segments"), let pair = try args.optionalSegmentPair("seg") { segments = [pair] }
         let landing = LinkTarget(time: try args.optionalTime("t"), segments: segments, lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
         if let scene = args.json["scene"] {
