@@ -76,6 +76,12 @@ import WebKit
 ///                                     repeated while held); t and frame are those on screen, not a seek's target
 ///     error                           a reason string, when a verb (sent without a reply) failed
 ///
+/// Keys. While the panel has the keyboard, a key the page does not handle goes on to the player as if the player had
+/// it (its auto-repeat and key-up included; a page action's key fires `action`): one that no `keydown` listener
+/// prevented and that typed nothing. Space, the arrows, Page Up/Down, Home and End go to the player rather than
+/// scroll the page. So a page calls `preventDefault()` on the keys it handles itself. While a text field, textarea,
+/// select, contenteditable or a frame inside the page has the focus, no key goes to the player.
+///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default
 /// browser. The page's alerts, confirms and prompts are shown as sheets. Only pages from `trusted` origins get the
 /// bridge and are heard.
@@ -90,15 +96,22 @@ import WebKit
     var onPageReplaced: (() -> Void)?
     /// The user drags the panel's edge: the width it asks for, in points (not yet clamped).
     var onResize: ((CGFloat) -> Void)?
+    /// A key-down the page left unhandled, for the player's keys, and whether its key is still held (WebKit answers
+    /// after the page has seen the key, which can be after its key-up).
+    var onUnhandledKey: ((NSEvent, _ stillDown: Bool) -> Void)?
+    /// Every key-up in the web view, whatever the page did with it (a key-up never comes back from WebKit).
+    var onKeyUp: ((NSEvent) -> Void)?
 
     /// The origins whose pages get `window.framescrub` (the next time a page loads) and whose messages are heard.
     var trusted: Set<PluginOrigin> = [] {
         didSet { if trusted != oldValue { installBridge() } }
     }
 
-    private let webView: WKWebView
+    private let webView: PanelWebView
     private let content = WKUserContentController()
     private let handler = MessageProxy()
+    private let keyHandler = MessageProxy()
+    private var keys = PluginKeyState()
     private let crashed = NSButton(title: "Reload", target: nil, action: nil)
     /// Why the page is not there (a failed load), above the Reload button.
     private let failure = NSTextField(wrappingLabelWithString: "")
@@ -159,16 +172,64 @@ import WebKit
       onstate: null,
       _state(s) { this.state = s; this._event("state", s); },
     };
+    \(keyScript)
+    """
+
+    /// Keys for the player: before the page's listeners, whether its focus takes typing (sent when that changes); after
+    /// them (a listener added to window while the event is still capturing runs after every page listener), a
+    /// scrolling key nobody prevented is kept from scrolling and reported. Other keys come back from WebKit unhandled.
+    private static let keyScript = """
+    (() => {
+      const post = body => window.webkit.messageHandlers.framescrubKeys.postMessage(body);
+      const scrollKeys = [\(PluginKeyMessage.scrollKeys.keys.sorted().map { "\"\($0)\"" }.joined(separator: ", "))];
+      const plain = ["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"];
+      const focused = () => {
+        let el = document.activeElement;
+        while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+        return el;
+      };
+      const typing = el => !!el && (el.isContentEditable || ["TEXTAREA", "SELECT", "IFRAME"].includes(el.tagName) ||
+                                    (el.tagName === "INPUT" && !plain.includes(el.type)));
+      let editing = false, last = null;
+      const update = () => { if (typing(focused()) !== editing) { editing = !editing; post({editing}); } };
+      window.addEventListener("focusin", update, true);
+      window.addEventListener("blur", () => setTimeout(update), true);   // into a frame: its keys never come here
+      window.addEventListener("keydown", e => {
+        if (!e.isTrusted) return;
+        update();
+        const el = focused();
+        if (last) window.removeEventListener("keydown", last);
+        last = null;
+        if (e.metaKey || e.isComposing || !scrollKeys.includes(e.code) || editing ||
+            (el && ["INPUT", "BUTTON"].includes(el.tagName))) return;
+        last = ev => {
+          last = null;
+          if (ev.defaultPrevented) return;
+          ev.preventDefault();
+          post({key: ev.code, shift: ev.shiftKey, control: ev.ctrlKey, option: ev.altKey, repeat: ev.repeat});
+        };
+        window.addEventListener("keydown", last, {once: true});
+      }, true);
+    })();
     """
 
     override init(frame: NSRect) {
         let config = WKWebViewConfiguration()
         content.add(handler, name: "framescrub")
         config.userContentController = content
+        content.add(keyHandler, name: "framescrubKeys")
         let webView = PanelWebView(frame: .zero, configuration: config)
         self.webView = webView
         super.init(frame: frame)
-        webView.onFocusChange = { [weak self] in self?.onFocusChange?($0) }
+        webView.onFocusChange = { [weak self] in
+            self?.keys.focusMoved()
+            self?.onFocusChange?($0)
+        }
+        webView.onPress = { [weak self] in self?.keys.pressed($0.keyCode) }
+        webView.onRelease = { [weak self] in
+            self?.keys.released($0.keyCode)
+            self?.onKeyUp?($0)
+        }
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -226,7 +287,50 @@ import WebKit
             case let .failure(failure): fail(id: id, failure.reason)
             }
         }
+        keyHandler.receive = { [weak self] message in
+            guard let self, let body = message.body as? [String: Any], trustedOrigin(of: message.frameInfo) != nil,
+                  let keyMessage = PluginKeyMessage.parse(body) else { return }
+            keys.apply(keyMessage)
+            if case let .key(key) = keyMessage { pageLetThrough(key) }
+        }
     }
+
+    // MARK: Keys the page leaves to the player
+
+    /// WebKit sends a key-down the page did not handle (no listener prevented it, nothing typed or scrolled with it)
+    /// back to the web view's `super.keyDown`, after the page has seen it; from there it climbs the responder chain to
+    /// here. Taking it here also keeps the window from beeping at a key nobody wanted.
+    override func keyDown(with event: NSEvent) {
+        webView.keyCameBack()
+        guard isTrusted(webView.url), keys.forwards(event.keyCode, isRepeat: event.isARepeat) else { return }
+        onUnhandledKey?(event, keys.isDown(event.keyCode))
+    }
+
+    /// A scrolling key the page let through: the bridge kept it from scrolling the page, and it goes to the player as
+    /// the key event it came from.
+    private func pageLetThrough(_ key: PluginKey) {
+        guard keys.forwards(key.keyCode, isRepeat: key.isRepeat) else { return }
+        var flags: NSEvent.ModifierFlags = []
+        if key.shift { flags.insert(.shift) }
+        if key.control { flags.insert(.control) }
+        if key.option { flags.insert(.option) }
+        let characters = Self.scrollKeyCharacters[key.keyCode] ?? ""
+        guard let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                           timestamp: ProcessInfo.processInfo.systemUptime,
+                                           windowNumber: window?.windowNumber ?? 0, context: nil,
+                                           characters: characters, charactersIgnoringModifiers: characters,
+                                           isARepeat: key.isRepeat, keyCode: key.keyCode) else { return }
+        onUnhandledKey?(event, keys.isDown(key.keyCode))
+    }
+
+    private static let scrollKeyCharacters: [UInt16: String] = [
+        49: " ", 123: function(NSLeftArrowFunctionKey), 124: function(NSRightArrowFunctionKey),
+        125: function(NSDownArrowFunctionKey), 126: function(NSUpArrowFunctionKey),
+        116: function(NSPageUpFunctionKey), 121: function(NSPageDownFunctionKey),
+        115: function(NSHomeFunctionKey), 119: function(NSEndFunctionKey),
+    ]
+
+    private static func function(_ key: Int) -> String { UnicodeScalar(key).map { String(Character($0)) } ?? "" }
 
     /// Replaces the bridge script with one for the current trusted origins; pages already loaded keep theirs.
     private func installBridge() {
@@ -331,11 +435,13 @@ import WebKit
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        keys.pageReplaced()
         onPageReplaced?()
     }
 
     /// The page's web content process died: once, the page is simply loaded again; after that a button offers it.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        keys.pageReplaced()
         onPageReplaced?()
         if reloadedAfterCrash {
             crashed.isHidden = false
@@ -434,9 +540,31 @@ import WebKit
     }
 }
 
-/// Reports when the web view takes or gives back the keyboard.
-private final class PanelWebView: WKWebView {
+/// Reports when the web view takes or gives back the keyboard, and the keys pressed in it.
+@MainActor private final class PanelWebView: WKWebView {
     var onFocusChange: ((Bool) -> Void)?
+    /// A key went down: its first sight, not WebKit sending back one the page left unhandled.
+    var onPress: ((NSEvent) -> Void)?
+    /// A key came up, whatever the page did with it.
+    var onRelease: ((NSEvent) -> Void)?
+    private var cameBack = false
+
+    /// WebKit sends an unhandled key-down back through this method too; it then reaches the panel's `keyDown`
+    /// (`keyCameBack`) before `super` returns.
+    override func keyDown(with event: NSEvent) {
+        let outer = cameBack
+        cameBack = false
+        super.keyDown(with: event)
+        if !cameBack { onPress?(event) }
+        cameBack = outer
+    }
+
+    func keyCameBack() { cameBack = true }
+
+    override func keyUp(with event: NSEvent) {
+        onRelease?(event)
+        super.keyUp(with: event)
+    }
 
     override func becomeFirstResponder() -> Bool {
         let became = super.becomeFirstResponder()

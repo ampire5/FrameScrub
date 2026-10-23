@@ -1361,7 +1361,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Input
 
-    private func handleKey(_ event: NSEvent) {
+    /// A key for the player, from the video view or one the plugin page left unhandled; `stillDown` is false when the
+    /// page's answer came after the key-up (a hold must not start then).
+    private func handleKey(_ event: NSEvent, stillDown: Bool = true) {
         hideCursorOverVideo()
         if event.keyCode == 53, core.edgeDrag != nil {   // Esc cancels a live edge drag, and only that
             edgeDragSuppressed = edgeDragOwner
@@ -1378,7 +1380,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
               let command = inputMap.command(for: chord) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
-            guard holdKeyCode == nil else { return }
+            guard holdKeyCode == nil, stillDown else { return }
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -1387,7 +1389,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         runInput(command, from: .keyboard, fresh: !event.isARepeat)
     }
 
-    /// The key held for hold-speed (backlog 4.5); its key-up, or the window losing focus, ends the hold.
+    /// The key held for hold-speed (backlog 4.5); its key-up, the window losing focus, or the keyboard moving between
+    /// the video and the plugin panel ends the hold.
     private var holdKeyCode: UInt16?
 
     private func endHoldSpeed() {
@@ -2441,7 +2444,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             pushPluginState(force: true)
         }
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
-        pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
+        pluginPanel.onFocusChange = { [weak self] in
+            self?.endHoldSpeed()   // the key-up may go elsewhere
+            self?.pluginPanel.dispatch($0 ? .focus : .blur)
+        }
+        pluginPanel.onUnhandledKey = { [weak self] in self?.handleKey($0, stillDown: $1) }
+        pluginPanel.onKeyUp = { [weak self] in
+            if $0.keyCode == self?.holdKeyCode { self?.endHoldSpeed() }
+        }
         pluginPanel.onPageReplaced = { [weak self] in self?.clearPluginActions() }
         pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
     }

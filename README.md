@@ -154,6 +154,7 @@ A plugin is a web page that sits in a panel beside the video and drives the play
 
 - **Set one** with `plugin-url=` in `framescrub.conf` (or Settings → General → Plugin panel); `plugin-width=` (240…1200 points) is the panel's width, and dragging its edge writes it. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too.
 - **Show it** with View › Show Plugin Panel (`⌥⌘P`, a toggle). View › Focus Plugin Panel (`⌃⌥⌘P`) gives the page the keyboard; the page's `focusPlayer()` (usually on Esc) gives it back.
+- **Keys.** While the page has the keyboard, a key it does not handle falls through to the player, as if the video had the keyboard (Space and the arrows included, rather than scrolling the page). So a page should call `preventDefault()` on the keys it handles itself. Nothing typed into a text field, textarea or editable element reaches the player.
 - **Trust.** Only pages from an origin you configured get the bridge and are heard: the origin (scheme, host and port) of `plugin-url`, and of any `plugin=` link you open. A `file:` page works from `plugin-url` only, not from a link. Links to other origins and new windows open in your default browser.
 - **Opening local files** is a step further: a page may open only video files, by absolute path, and the first time an origin asks you are asked to allow it. The answer is kept in `plugin-open-allowed=` (comma-separated origins, e.g. `http://localhost:8000`).
 
