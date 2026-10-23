@@ -406,7 +406,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func closeFile() {
         guard hasOpenFile else { window?.performClose(nil); return }
         recentThumbnailer.cancel()
-        saveThumbnail()
+        saveThumbnail(wait: true)   // the start screen shows it next
         cancelStashTitleWait()
         stashSession?.leave()
         dropSceneSearch()
@@ -747,16 +747,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private lazy var recentThumbnailer = RecentThumbnailer(store: thumbnails)
 
     /// Keeps the picture on screen (as shown: upright, cut, square pixels) for the start screen's recent files.
-    private func saveThumbnail() {
+    /// The picture of the file being left, for the start screen. Scaling and encoding it took the main thread at
+    /// every switch of file; it runs in the background now (`wait`: at quit, so it is written before the app ends).
+    private func saveThumbnail(wait: Bool = false) {
         guard let url = core.url, let image = videoView.displayedImage else { return }
-        thumbnails.save(videoView.geometry.applied(to: image), for: url, context: Self.thumbnailContext)
+        let picture = videoView.geometry.applied(to: image)
+        let thumbnails = thumbnails
+        let work = { thumbnails.save(picture, for: url, context: Self.thumbnailContext) }
+        if wait { thumbnailQueue.sync(execute: work) } else { thumbnailQueue.async(execute: work) }
     }
+    private let thumbnailQueue = DispatchQueue(label: "framescrub.thumbnail-save", qos: .utility)
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
         stashSession?.flushBeforeQuit()
         recentThumbnailer.cancel()
-        saveThumbnail()
+        saveThumbnail(wait: true)
         memoryPressure?.cancel()
         memoryPressure = nil
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)

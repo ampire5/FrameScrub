@@ -127,4 +127,44 @@ import Testing
         output.stop()
         #expect(sawTime)
     }
+
+    /// The main thread never waits for the engine: while a call into AVFAudio hangs (an output that stalls), play,
+    /// pause, the rate, the volume, a scrub piece and the time heard all return at once.
+    @Test func mainThreadCallsNeverWaitForTheEngine() throws {
+        let decoder = try AudioDecoder(url: Fixtures.url(Fixtures.withAudio), zeroSeconds: 0)
+        let output: AudioOutput
+        do { output = try AudioOutput(decoder: decoder) } catch { return }   // no audio engine here: skip
+        output.volume = 0
+        defer { output.stop() }
+        output.occupyEngineQueue(seconds: 1)
+        let started = CACurrentMediaTime()
+        output.play(fromSeconds: 1)
+        output.rate = 1.5
+        output.volume = 0
+        _ = output.currentSeconds
+        _ = output.isStarting
+        output.playSnippet(StereoSamples(left: [Float](repeating: 0, count: 480), right: [Float](repeating: 0, count: 480)),
+                           sampleRate: 48_000) {}
+        output.pause()
+        output.play(fromSeconds: 2)
+        #expect(CACurrentMediaTime() - started < 0.1)
+    }
+
+    /// AVFAudio raising inside a call (Swift cannot catch it; it ended the app) is caught: the engine is rebuilt, the
+    /// player is asked to start again, and the sound comes back.
+    @Test func aRaiseInsideTheEngineIsCaughtAndTheSoundComesBack() async throws {
+        let decoder = try AudioDecoder(url: Fixtures.url(Fixtures.withAudio), zeroSeconds: 0)
+        let output: AudioOutput
+        do { output = try AudioOutput(decoder: decoder) } catch { return }   // no audio engine here: skip
+        output.volume = 0
+        defer { output.stop() }
+        nonisolated(unsafe) var restarts = 0
+        output.onRestart = { restarts += 1; output.play(fromSeconds: 1) }
+        output.play(fromSeconds: 0)
+        #expect(await eventually(timeout: 3) { output.currentSeconds != nil })
+        output.simulateRaise()
+        #expect(await eventually(timeout: 3) { restarts == 1 })
+        #expect(await eventually(timeout: 3) { (output.currentSeconds ?? 0) >= 1 })
+        #expect(output.isEngineRunning)
+    }
 }
