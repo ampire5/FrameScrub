@@ -341,7 +341,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             updateColorCorrection()
             updateScreenPixelSize()
             configurePreview(force: true)
-            applyWindowSize(.initial)
+            // The window keeps its size: the picture fits into it (⌘1–⌘4 and aspect changes still size the window).
+            window?.resizeIncrements = NSSize(width: 1, height: 1)   // no aspect left from the previous file
             revealSeekBar()
             statsFileChanged()
             StartupTrace.mark("open returned")
@@ -1321,9 +1322,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// spin. Settings binds to the same key.
     static let wheelFreeSpinKey = "wheelFreeSpin"
 
-    /// The start screen's own frame (Recent and Stash): a closed file gives the window back its size.
-    private static let startFrameKey = "StartScreenFrame"
-
     private static var savedFrame: CGRect? { frame(forKey: frameKey) }
 
     private static func frame(forKey key: String) -> CGRect? {
@@ -1336,19 +1334,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The start screen is showing Recent or Stash (not why a file failed).
     private var showsStartTabs: Bool { !startScreen.isHidden && failedURL == nil && failedScene == nil }
 
-    /// Back on the start screen: its own frame (960 × 540 around the window's centre the first time), and no video
-    /// shape holding the window's aspect.
+    /// Back on the start screen: the window keeps its size and place; only the video shape stops holding its aspect.
     private func applyStartScreenFrame() {
         guard let window, !isFullScreen else { return }
         window.resizeIncrements = NSSize(width: 1, height: 1)   // drops the video's contentAspectRatio
-        let screens = NSScreen.screens.map(\.visibleFrame)
-        let main = NSScreen.main?.visibleFrame ?? screens.first ?? .zero
-        let fallback = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 960, height: 540)).size
-        let saved = Self.frame(forKey: Self.startFrameKey)
-            ?? CGRect(x: window.frame.midX - fallback.width / 2, y: window.frame.midY - fallback.height / 2,
-                      width: fallback.width, height: fallback.height)
-        let frame = WindowPlacement.frame(saved: saved, fallbackSize: fallback, screens: screens, main: main)
-        if frame != window.frame { window.setFrame(frame, display: true, animate: false) }
     }
 
     private func restoreFrame(of window: NSWindow) {
@@ -1367,7 +1356,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func rememberFrame() {
         guard let window, window.isVisible, !isFullScreen else { return }
-        if showsStartTabs { UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.startFrameKey) }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameKey)
     }
 
