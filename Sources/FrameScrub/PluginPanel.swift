@@ -7,9 +7,10 @@ import WebKit
 ///
 /// The bridge, version 1 (`framescrub.version`):
 ///
-/// Commands. Each verb posts a command and forgets it; `request(cmd, args)` posts the same command and returns a
-/// Promise that resolves with the command's result (undefined for the verbs below) or rejects with an Error whose
-/// message says what was wrong (unknown command, missing or mistyped argument, a refused open).
+/// Commands. Each verb posts a command and forgets it; one that fails fires the `error` event with the reason.
+/// `request(cmd, args)` posts the same command and returns a Promise that resolves with the command's result (undefined
+/// for the verbs below) or rejects with an Error whose message says what was wrong (unknown command, missing or mistyped
+/// argument, a refused open, the failures named below).
 ///
 ///     framescrub.seek(t)              seek to `t` seconds (not negative)
 ///     framescrub.play()  .pause()
@@ -18,9 +19,11 @@ import WebKit
 ///     framescrub.segments(list, {lock?, advance?})
 ///                                     lock playback and scrubbing to segments = [[a, b], …] in seconds (each `b` above
 ///                                     `a`); lock (default true), advance "repeat" | "next" (default: segment-advance);
-///                                     list [] clears the set (request("segments", {segments, lock?, advance?}) too)
-///     framescrub.lock(on)             lock to the segments or release them; rejects "no segments" without any
-///     framescrub.goSegment(i)         seek to the start of segment i (from 0); rejects "no such segment" out of range
+///                                     list [] clears the set (request("segments", {segments, lock?, advance?}) too);
+///                                     fails "no segment inside the file" when none falls inside the open file
+///     framescrub.lock(on)             lock to the segments or release them; fails "no segments" without any
+///     framescrub.goSegment(i)         seek to the start of segment i (from 0, a whole number); fails "no such
+///                                     segment" out of range
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
@@ -51,7 +54,8 @@ import WebKit
 ///     focus / blur                    the panel took the keyboard / gave it back (View › Focus Plugin Panel, ⌃⌥⌘P,
 ///                                     brings keys to the page; focusPlayer() returns them)
 ///     fileopened                      {path, scene, source: "file" | "stream"} once a file is open, however it was
-///                                     opened
+///                                     opened; always before any `segment` event for that file (a link's or open's
+///                                     segments are applied after it)
 ///     segment                         {current: i | null, locked} when the current segment or the lock changes, playback
 ///                                     included
 ///     error                           a reason string, when a verb (sent without a reply) failed

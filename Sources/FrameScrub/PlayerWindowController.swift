@@ -70,8 +70,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var pluginWidthWrite: Timer?
     /// Decodes frames for the page's `frame` requests; made on the first request for the open file.
     private var pluginGrabber: PluginFrameGrabber?
-    /// Where a link asked to land in the file being opened: applied once the file is open.
-    private var linkTarget: LinkTarget?
+    /// While `core.open` runs: segment events wait until the page has heard `fileopened` (Ruling R20).
+    private var holdsSegmentEvents = false
+    /// The last segment event raised while held; dispatched right after `fileopened`.
+    private var heldSegmentEvent: PluginEvent?
     private var lastPluginPush: TimeInterval = 0
     /// The open file's name and folder at once, its size and date once read off the main thread.
     private var fileFacts: FileFacts?
@@ -251,26 +253,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let plugin = target.plugin { showPlugin(plugin, from: .link) }
         switch target.subject {
         case let .file(url):
-            linkTarget = target.landing.isEmpty ? nil : target.landing
-            return open(url)
+            return open(url, landing: target.landing)
         case let .stashScene(id):
             openStashScene(id: id, paths: [], landing: target.landing)
             return true
         }
     }
 
-    /// Opens a file from outside the folder (Finder, ⌘O, Recent): closing it goes back to Recent.
+    /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
+    /// where a link asked to land in it.
     @discardableResult
-    func open(_ url: URL) -> Bool {
+    func open(_ url: URL, landing: LinkTarget? = nil) -> Bool {
         returnTab = .recent
         stashScene = nil
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
-        return openFile(url)
+        return openFile(url, landing: landing)
     }
 
     /// Opens `url`; `fallbackPosition` is where to start when nothing is remembered for it (Stash's resume point).
+    /// `landing` (a link's or plugin's position and segments) is applied once it is open; it goes with this open only,
+    /// so a failed open or the user's next file never inherits it.
     @discardableResult
-    private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil) -> Bool {
+    private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
+                          landing: LinkTarget? = nil) -> Bool {
         StartupTrace.beginOpen(url.lastPathComponent)
         cancelEdgeDrag()   // the marks it moves are this file's
         cancelStashTitleWait()
@@ -297,9 +302,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         do {
             openedAt = ProcessInfo.processInfo.systemUptime
             indexingShownAt = nil
-            try core.open(url, fallbackPosition: fallbackPosition)
+            try openCore(url, fallbackPosition: fallbackPosition)
             StartupTrace.mark("core opened")
-            applyLinkTarget()
+            if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
             colorFileChanged()   // before anything below reads the colour
             startScreen.isHidden = true
             stashLibrary?.isHidden = true
@@ -333,12 +338,32 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             applyWindowSize(.initial)
             revealSeekBar()
             statsFileChanged()
-            pluginFileOpened()
             StartupTrace.mark("open returned")
             return true
         } catch {
             showFailure(OpenFailure(error), url: url)
             return false
+        }
+    }
+
+    /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
+    /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
+    private func openCore(_ url: URL, fallbackPosition: Double?) throws {
+        holdsSegmentEvents = true
+        heldSegmentEvent = nil
+        do {
+            try core.open(url, fallbackPosition: fallbackPosition)
+        } catch {
+            holdsSegmentEvents = false
+            heldSegmentEvent = nil
+            throw error
+        }
+        holdsSegmentEvents = false
+        pluginFileOpened()
+        if let held = heldSegmentEvent {
+            heldSegmentEvent = nil
+            pluginPanel.dispatch(held)
+            pushPluginState(force: true)
         }
     }
 
@@ -423,7 +448,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// ▶ on a Stash scene page, the scene a queue step asked for, or one a link or plugin page named: find the file on
     /// the shares (mounting one if needed) or take Stash's stream, and open it.
-    private func openStashScene(_ scene: StashScene) {
+    private func openStashScene(_ scene: StashScene, landing: LinkTarget? = nil) {
         if scene.automatic {
             // Stash also opens a page with autoplay=true on a reload: only a step of ours is answered.
             guard queueGate.isPending else { return }
@@ -440,7 +465,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             switch result {
             case let .file(url), let .stream(url):
                 let opened = openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
-                                      fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil)
+                                      fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil, landing: landing)
                 if opened { stashSession.began(sceneID: scene.id, duration: core.durationSeconds) }
                 window?.makeFirstResponder(videoView)
                 if scene.automatic {
@@ -455,7 +480,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A scene whose file was not found on the shares: the reason stays on screen until another file opens.
     private func showStashFailure(_ failure: OpenFailure, scene: StashScene) {
-        linkTarget = nil   // meant for this scene's file, not the next one opened
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -2374,8 +2398,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let url = pluginSettingsURL { pluginPolicy.trust(url) }
         pluginPanel.trusted = pluginPolicy.trusted
         core.onSegmentChange = { [weak self] current, locked in
-            self?.pluginPanel.dispatch(.segment(current: current, locked: locked))
-            self?.pushPluginState(force: true)
+            guard let self else { return }
+            if holdsSegmentEvents {
+                heldSegmentEvent = .segment(current: current, locked: locked)   // after fileopened (`openCore`)
+                return
+            }
+            pluginPanel.dispatch(.segment(current: current, locked: locked))
+            pushPluginState(force: true)
         }
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
         pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
@@ -2461,15 +2490,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pushPluginState(force: true)
     }
 
-    private func applyLinkTarget() {
-        guard let target = linkTarget else { return }
-        linkTarget = nil
-        if !target.segments.isEmpty {
-            core.setSegments(seconds: target.segments, lock: target.lock ?? true, advance: target.advance)
-        }
-        if let time = target.time { core.seek(toSeconds: time) }
-    }
-
     private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {
         switch request.message {
         case let .seek(t): core.seek(toSeconds: t)
@@ -2477,7 +2497,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .pause: if !core.isPaused { core.pause() }
         case let .step(n): core.step(frames: n)
         case let .loop(segment): core.setLoop(seconds: segment)
-        case let .segments(list, lock, advance): core.setSegments(seconds: list, lock: lock ?? true, advance: advance)
+        case let .segments(list, lock, advance):
+            guard core.setSegments(seconds: list, lock: lock ?? true, advance: advance) else {
+                pluginFailed(request, "no segment inside the file")
+                return
+            }
         case let .lock(on):
             guard core.setSegmentLock(on) else { pluginFailed(request, "no segments"); return }
         case let .goSegment(i):
@@ -2594,8 +2618,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
     /// applied once it is open.
     private func openStashScene(id: String, paths: [String], landing: LinkTarget) {
-        linkTarget = landing.isEmpty ? nil : landing
-        openStashScene(StashScene(id: id, paths: paths))
+        openStashScene(StashScene(id: id, paths: paths), landing: landing)
     }
 
     /// The page hears of every file that opens, whoever opened it.
