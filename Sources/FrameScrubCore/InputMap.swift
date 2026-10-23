@@ -130,6 +130,8 @@ public enum Command: Equatable, Sendable {
     case holdSpeed
     case showKeys
     case quit
+    /// `plugin-action <name>`: runs the plugin page's declared action `name` (see `PluginAction`).
+    case pluginAction(String)
     case ignore
 
     /// Whether holding the key down repeats the command. Toggles and one-shot actions would
@@ -222,6 +224,7 @@ public enum Command: Equatable, Sendable {
         case .holdSpeed: return "hold-speed"
         case .showKeys: return "show-keys"
         case .quit: return "quit"
+        case let .pluginAction(name): return "plugin-action \(name)"
         case .ignore: return "ignore"
         }
     }
@@ -324,6 +327,7 @@ public enum Command: Equatable, Sendable {
         case ("hold-speed", nil): return .holdSpeed
         case ("show-keys", nil): return .showKeys
         case ("quit", _): return .quit
+        case let ("plugin-action", name?): return args.count == 1 && PluginActions.isValidName(name) ? .pluginAction(name) : nil
         case ("ignore", nil): return .ignore
         default: return nil
         }
@@ -650,6 +654,26 @@ extension InputMap {
     public func hasChords(heldWith b: MouseButton) -> Bool {
         guard let modifier = b.modifier else { return false }
         return bindings.contains { $0.key.modifiers.contains(modifier) && $0.value != .ignore }
+    }
+
+    /// The map with the page's action keys added where free: a chord with any binding (even `ignore`) refuses the page
+    /// key (`key taken`), and a name the map already binds keeps that key instead (`user binding`). Actions without a
+    /// key are in neither list: only the user's bindings reach them.
+    public func merging(_ actions: [PluginAction]) -> (map: InputMap, bound: [PluginBinding], refused: [PluginBinding]) {
+        var map = self
+        var bound: [PluginBinding] = [], refused: [PluginBinding] = []
+        for action in actions {
+            guard let key = action.key else { continue }
+            if bindings.values.contains(.pluginAction(action.name)) {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "user binding"))
+            } else if map.bindings[key] != nil {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "key taken"))
+            } else {
+                map.bindings[key] = .pluginAction(action.name)
+                bound.append(PluginBinding(name: action.name, key: key, reason: nil))
+            }
+        }
+        return (map, bound, refused)
     }
 
     /// The control IDs of the Logitech buttons with any binding: those are taken over from macOS while bound.

@@ -54,7 +54,7 @@ import Testing
 
     @Test func groupsTheDefaultsBySectionWithAllTheirKeys() {
         let sections = KeyHelp.sections(for: InputMap(layout: .classic))
-        #expect(sections.map(\.section) == KeyHelp.Section.allCases)
+        #expect(sections.map(\.section) == KeyHelp.Section.allCases.filter { $0 != .plugin })   // no page actions declared
         let playback = sections[0].entries
         #expect(playback.first == KeyHelp.Entry(keys: ["Space", "p", "Right click"], action: "Play / pause"))
         let all = sections.flatMap(\.entries)
@@ -150,5 +150,28 @@ import Testing
         #expect(KeyHelp.menuHint(for: .shuttleBack, in: map) == "a")
         let playback = KeyHelp.sections(for: map).first { $0.section == .playback }!.entries.map(\.action)
         #expect(playback.contains("Shuttle back") && playback.contains("Stop") && playback.contains("Shuttle forward"))
+    }
+
+    @Test func pluginSectionListsTheDeclaredActionsLast() {
+        var base = InputMap(layout: .classic)
+        base.apply("Alt+9 plugin-action next")
+        let actions = [PluginAction(name: "mark", label: "Mark here", key: KeyChord.parse("Alt+1")),
+                       PluginAction(name: "next", label: "Next item", key: KeyChord.parse("Alt+2")),
+                       PluginAction(name: "skip", label: "Skip", key: nil)]
+        let map = base.merging(actions).map
+        let sections = KeyHelp.sections(for: map, plugin: actions)
+        #expect(sections.last?.section == .plugin)
+        #expect(KeyHelp.Section.plugin.title == "Plugin")
+        #expect(sections.last?.entries == [KeyHelp.Entry(keys: ["⌥1"], action: "Mark here"),
+                                           KeyHelp.Entry(keys: ["⌥9"], action: "Next item"),
+                                           KeyHelp.Entry(keys: [], action: "Skip")])
+        #expect(!sections.dropLast().flatMap(\.entries).contains { $0.action.contains("plugin") })
+    }
+
+    @Test func noPluginSectionWithoutActions() {
+        var map = InputMap()
+        map.apply("Alt+9 plugin-action mark")
+        #expect(!KeyHelp.sections(for: map).contains { $0.section == .plugin })
+        #expect(!KeyHelp.sections(for: map, plugin: []).contains { $0.section == .plugin })
     }
 }

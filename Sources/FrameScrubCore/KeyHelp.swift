@@ -44,6 +44,8 @@ extension KeyChord {
 public enum KeyHelp {
     public enum Section: Int, CaseIterable, Sendable {
         case playback, frames, navigation, saving, picture, window, audio
+        /// The plugin page's declared actions (`PluginAction`), titled by the page's labels.
+        case plugin
 
         public var title: String {
             switch self {
@@ -54,6 +56,7 @@ public enum KeyHelp {
             case .picture: "Picture"
             case .window: "Window"
             case .audio: "Sound"
+            case .plugin: "Plugin"
             }
         }
     }
@@ -135,17 +138,25 @@ public enum KeyHelp {
         case .toggleScrubAudio: return (.audio, 3, "Scrub audio on / off")
         case .toggleScrubAudioPitch: return (.audio, 4, "Scrub pitch: tape / natural")
         case .setFullscreen(true), .zoom, .zoomReset, .ignore: return nil   // zoom is bound but not available yet
+        case .pluginAction: return nil   // the plugin section lists them under the page's labels
         }
     }
 
-    /// The bound commands by section, each with all its keys (keys first, then mouse and trackpad).
-    public static func sections(for map: InputMap) -> [(section: Section, entries: [Entry])] {
+    /// The bound commands by section, each with all its keys (keys first, then mouse and trackpad); last the plugin
+    /// page's declared `actions` in their order, each with the keys bound to it (none when nothing reaches it).
+    public static func sections(for map: InputMap, plugin actions: [PluginAction] = []) -> [(section: Section, entries: [Entry])] {
         var grouped: [String: (section: Section, rank: Int, chords: [KeyChord])] = [:]
         for (chord, command) in map.bindings {
             guard let (section, rank, action) = describe(command) else { continue }
             grouped[action, default: (section, rank, [])].chords.append(chord)
         }
+        let plugin = actions.map { action in
+            Entry(keys: condensed(map.bindings.filter { $0.value == .pluginAction(action.name) }.keys
+                    .sorted { order($0, $1, in: map) }.map(\.displayName)),
+                  action: action.label)
+        }
         return Section.allCases.compactMap { section in
+            if section == .plugin { return plugin.isEmpty ? nil : (section, plugin) }
             let entries = grouped.filter { $0.value.section == section }
                 .sorted { ($0.value.rank, $0.key) < ($1.value.rank, $1.key) }
                 .map { Entry(keys: condensed($0.value.chords.sorted { order($0, $1, in: map) }.map(\.displayName)),

@@ -731,7 +731,7 @@ public final class PlayerCore {
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .cycleAspect, .windowScale, .windowFit,
-             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge: break
+             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
         case .shuttleForward: shuttle(.forward)

@@ -240,6 +240,27 @@ import Testing
         }
     }
 
+    @Test func pluginActionParsesAndRoundTrips() {
+        #expect(Command.parse("plugin-action mark") == .pluginAction("mark"))
+        #expect(Command.pluginAction("next-2_b").configText == "plugin-action next-2_b")
+        #expect(Command.parse(Command.pluginAction("next").configText) == .pluginAction("next"))
+        #expect(!Command.pluginAction("mark").repeatsWhenHeld)
+        #expect(!Command.pluginAction("mark").isToggle)
+        for bad in ["plugin-action", "plugin-action A", "plugin-action " + String(repeating: "a", count: 33),
+                    "plugin-action a b", "plugin-action m.k"] {
+            #expect(Command.parse(bad) == nil, "\(bad)")
+        }
+        var map = InputMap()
+        #expect(map.apply("Alt+9 plugin-action mark").isEmpty)
+        #expect(map.command(for: KeyChord.parse("Alt+9")!) == .pluginAction("mark"))
+    }
+
+    @Test func noBuiltInLayoutBindsAPluginAction() {
+        for layout: KeyLayout in [.classic, .leftHand] {
+            #expect(!InputMap(layout: layout).bindings.values.contains { if case .pluginAction = $0 { true } else { false } })
+        }
+    }
+
     @Test func onlyContinuousCommandsRepeatWhenHeld() {
         for command: Command in [.seek(5, .byConfig), .frameStep, .frameBackStep, .multiplySpeed(1.1),
                                  .setSpeed(1), .addVolume(2)] {
