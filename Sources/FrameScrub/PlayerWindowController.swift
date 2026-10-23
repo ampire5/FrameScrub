@@ -64,7 +64,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let pluginPanel = PluginPanel()
     private var videoTrailing: NSLayoutConstraint!
     /// Where a link asked to land in the file being opened: applied once the file is open.
-    private var linkTarget: OpenLink.Target?
+    private var linkTarget: LinkTarget?
     private var lastPluginPush: TimeInterval = 0
     /// The open file's name and folder at once, its size and date once read off the main thread.
     private var fileFacts: FileFacts?
@@ -241,7 +241,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     @discardableResult
     func open(_ target: OpenLink.Target) -> Bool {
         if let plugin = target.plugin { showPlugin(plugin) }
-        linkTarget = target.start != nil || target.segment != nil ? target : nil
+        linkTarget = target.landing.isEmpty ? nil : target.landing
         return open(target.file)
     }
 
@@ -431,6 +431,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A scene whose file was not found on the shares: the reason stays on screen until another file opens.
     private func showStashFailure(_ failure: OpenFailure, scene: StashScene) {
+        linkTarget = nil   // meant for this scene's file, not the next one opened
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -2379,21 +2380,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let a = number("a"), let b = number("b"), b > a { core.setLoop(seconds: a...b) } else { core.setLoop(seconds: nil) }
         case "focusPlayer": window?.makeFirstResponder(videoView)
         case "open":
-            let seg = (body["seg"] as? [NSNumber]).flatMap { $0.count == 2 && $0[1].doubleValue > $0[0].doubleValue
-                ? $0[0].doubleValue...$0[1].doubleValue : nil }
+            let seg = (body["seg"] as? [NSNumber]).flatMap { $0.count == 2
+                ? LinkTarget.segment($0[0].doubleValue, $0[1].doubleValue) : nil }
+            let landing = LinkTarget(time: number("t").flatMap(LinkTarget.time), segment: seg)
             if let id = body["scene"].map({ "\($0)" }), let paths = body["paths"] as? [String] {
-                // A Stash scene: its file is found on the shares as for ▶ on a scene page.
-                linkTarget = OpenLink.Target(file: URL(fileURLWithPath: "/"), time: number("t"), segment: seg)
-                guard let scene = StashScene(message: ["type": "open", "sceneID": id, "paths": paths]) else { return }
-                openStashScene(scene)
+                openStashScene(id: id, paths: paths, landing: landing)
             } else if let path = body["path"] as? String, path.hasPrefix("/") {
-                open(OpenLink.Target(file: URL(fileURLWithPath: path), time: number("t"), segment: seg))
+                open(OpenLink.Target(file: URL(fileURLWithPath: path), landing: landing))
             }
         default: break
         }
     }
 
     /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
+    /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
+    /// applied once it is open. The scene is built the way the Stash page's own message would build it; a direct
+    /// initializer is a later step.
+    private func openStashScene(id: String, paths: [String], landing: LinkTarget) {
+        guard let scene = StashScene(message: ["type": "open", "sceneID": id, "paths": paths]) else { return }
+        linkTarget = landing.isEmpty ? nil : landing
+        openStashScene(scene)
+    }
+
     private func pushPluginState(force: Bool) {
         guard pluginVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime

@@ -77,3 +77,19 @@ import Testing
         #expect(OpenLink.segment(from: "4-4") == nil)
     }
 }
+
+extension OpenLinkTests {
+    @Test func landingCarriesTimeAndSegment() {
+        let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&t=2&seg=1-5"))
+        #expect(target?.landing == LinkTarget(time: 2, segment: 1...5))
+        #expect(OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4"))?.landing.isEmpty == true)
+    }
+
+    @Test func timeAndSegmentWriteThroughToTheLanding() {
+        var target = OpenLink.Target(file: link("file:///a.mp4"))
+        target.time = 4
+        target.segment = 1...9
+        #expect(target.landing == LinkTarget(time: 4, segment: 1...9))
+        #expect(target == OpenLink.Target(file: link("file:///a.mp4"), time: 4, segment: 1...9))
+    }
+}
