@@ -86,8 +86,8 @@ public final class PlayerCore {
     private var shownTimes: [Double] = []
     public private(set) var volume: Double
     public private(set) var isMuted = false
-    public private(set) var loopA: Int?
-    public private(set) var loopB: Int?
+    public private(set) var loopA: Int? { didSet { syncLoopWindow() } }
+    public private(set) var loopB: Int? { didSet { syncLoopWindow() } }
     /// Cut marks of the open file (cut marks spec §2) and their ⌘Z history.
     public private(set) var marks = CutMarks()
     private var marksHistory = CutHistory()
@@ -440,6 +440,11 @@ public final class PlayerCore {
     private func indexFailed(session current: Int) {
         guard current == session else { return }
         indexStatus = .failed
+    }
+
+    /// The cache window follows the A–B loop: frames outside it are wasted work and evict useful ones.
+    private func syncLoopWindow() {
+        filler?.setLoop(loopA.flatMap { a in loopB.map { min(a, $0)...max(a, $0) } })
     }
 
     func indexReady(_ exact: FrameIndex, session current: Int, status: IndexStatus) {

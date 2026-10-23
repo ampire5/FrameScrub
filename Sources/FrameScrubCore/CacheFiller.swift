@@ -29,6 +29,8 @@ public final class CacheFiller {
     private var index: FrameIndex
     private var indexVersion = 0
     private var focus = 0
+    /// The A–B loop while one is active: the window stays inside it (see `windowLocked`).
+    private var loop: ClosedRange<Int>?
     private var mode = FillMode.paused
     private var direction = 0
     private var running = false
@@ -181,6 +183,18 @@ public final class CacheFiller {
         }
     }
 
+    /// Confines the window to an A–B loop (nil: no loop). Forward decoding stops at the loop's end; backward decoding goes
+    /// down to the keyframe at or before its start, which decoding the start needs, and no further. In flight, a frame
+    /// or a chunk finishes; nothing outside the window is started afterwards. A focus outside the loop (a seek away
+    /// from it) gets the normal window, so the loop never starves the frame on screen.
+    public func setLoop(_ range: ClosedRange<Int>?) {
+        condition.withLock {
+            guard loop != range else { return }
+            loop = range
+            condition.broadcast()
+        }
+    }
+
     /// Reversing: the speed (magnitude) and the file's frame rate, so the backward worker can choose how many frames to
     /// decode (spec §5). The level restarts from the measured decode rate, or from the speed when there is none.
     public func setReverseDemand(speed: Double, framesPerSecond: Double) {
@@ -245,7 +259,14 @@ public final class CacheFiller {
         if mode == .reversing { ahead = min(room, Self.reverseAhead) }
         let behind = mode == .playing ? 0 : mode == .reversing ? room - ahead : min(room - ahead, Int(Double(room) * share))
         let f = clampedFocusLocked()
-        return max(0, f - behind)...min(max(index.frameCount - 1, 0), f + ahead)
+        var lower = max(0, f - behind)
+        var upper = min(max(index.frameCount - 1, 0), f + ahead)
+        // A loop wider than the budget is cut the same way: the window around the focus, inside the loop's bounds.
+        if let loop, loop.contains(f) {
+            lower = max(lower, index.keyframe(atOrBefore: loop.lowerBound))
+            upper = min(upper, loop.upperBound)
+        }
+        return lower...upper
     }
 
     /// Spec §3.3: after a jump the backward worker waits, so the file is read for the focus frame first.

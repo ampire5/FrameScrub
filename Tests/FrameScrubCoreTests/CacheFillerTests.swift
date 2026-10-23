@@ -24,6 +24,81 @@ import Testing
         #expect(cache.usedBytes <= 400 << 20)
     }
 
+    // The h264 fixture has keyframes at 0, 250 and 500; 400 MiB holds ~130 frames, a paused window ~70 behind the focus
+    // and ~46 ahead of it.
+
+    @Test func loopEndStopsForwardFilling() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.setLoop(300...315)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .playing, direction: 1)   // the lookahead alone would reach 330
+        #expect(await eventually { (300...315).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!cache.contains(316))
+        filler.setFocus(310, mode: .paused)
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!cache.contains(316))
+    }
+
+    @Test func loopStartLimitsBackwardFillingToItsKeyframe() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.setLoop(300...320)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(310, mode: .paused)
+        #expect(await eventually { (250...320).allSatisfy(cache.contains) })   // 250: the keyframe that decodes 300
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!cache.contains(249))
+        #expect(!cache.contains(321))
+    }
+
+    @Test func settingTheLoopOnARunningFillerConfinesNewWork() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.start()
+        defer { filler.stop() }
+        filler.setLoop(300...320)
+        filler.setFocus(310, mode: .paused)
+        #expect(await eventually { (250...320).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!cache.contains(321))
+        #expect(!cache.contains(249))
+    }
+
+    @Test func clearingTheLoopRestoresTheNormalWindow() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.setLoop(300...320)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(310, mode: .paused)
+        #expect(await eventually { (250...320).allSatisfy(cache.contains) })
+        filler.setLoop(nil)
+        #expect(await eventually { (240...350).allSatisfy(cache.contains) })
+    }
+
+    @Test func loopWiderThanTheCacheKeepsTheWindowAroundTheFocus() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 100)   // ~33 frames: far less than the loop
+        filler.setLoop(0...599)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .paused)
+        #expect(await eventually { (290...310).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(cache.usedBytes <= 100 << 20)
+        #expect(!cache.contains(100) && !cache.contains(500))
+        filler.setFocus(450, mode: .paused)   // the window follows the focus through the loop
+        #expect(await eventually { (440...460).allSatisfy(cache.contains) })
+    }
+
+    @Test func aFocusOutsideTheLoopGetsTheNormalWindow() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
+        filler.setLoop(300...320)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(100, mode: .paused)
+        #expect(await eventually { (70...130).allSatisfy(cache.contains) })
+    }
+
     @Test func nonBlockingStopInsertsNothingMore() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)
         filler.start()

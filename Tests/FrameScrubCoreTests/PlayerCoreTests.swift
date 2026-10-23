@@ -401,6 +401,23 @@ final class HapticLog {
         #expect(delegate.messages.last?.hasPrefix("Frame 127") == true)
     }
 
+    @Test func abLoopConfinesTheCacheAndClearingItReleasesIt() async throws {
+        let (player, _, _) = try makePlayer()   // keyframes 0/250/500
+        defer { player.close() }
+        player.seek(toFrame: 320)
+        player.perform(.abLoop)
+        player.seek(toFrame: 300)
+        player.perform(.abLoop)
+        #expect(player.loopA == 300 && player.loopB == 320)
+        player.seek(toFrame: 310)
+        #expect(await eventually { (250...320).allSatisfy(player.cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!player.cache.contains(321) && !player.cache.contains(249))
+        player.perform(.abLoop)   // clears
+        #expect(player.loopA == nil)
+        #expect(await eventually { player.cache.contains(321) && player.cache.contains(249) })
+    }
+
     @Test func abLoopAndRangeExport() async throws {
         let (player, delegate, root) = try makePlayer()
         defer { player.close() }
