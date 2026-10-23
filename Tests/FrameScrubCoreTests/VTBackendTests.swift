@@ -24,7 +24,7 @@ import VideoToolbox
         }
     }
 
-    @Test func lostSessionIsRecreatedAndResumesExactly() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func lostSessionIsRecreatedAndResumesExactly() throws {
         let injection = VTBackend.StatusInjection()
         try VTBackend.$injection.withValue(injection) {
             let (source, index) = try openIndexed(Fixtures.h264)
@@ -63,7 +63,7 @@ import VideoToolbox
     }
 
     /// Parameter sets repeated in a packet's side data at an IDR (as muxers do at a resolution or profile change).
-    @Test func followsNewExtradataInSideData() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func followsNewExtradataInSideData() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let backend = try VTBackend(stream: source.videoStream)
         let parameters = source.videoStream.pointee.codecpar.pointee
@@ -105,7 +105,7 @@ import VideoToolbox
     }
 
     /// A VideoToolbox session's pool keeps as many buffers as were ever out at once (measured 2026-10-15).
-    @Test func poolSurplusCountsHardwareFramesGivenUp() throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta")) func poolSurplusCountsHardwareFramesGivenUp() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try VideoDecoder(source: source, index: index)
         #expect(decoder.backendKind == .videoToolbox)

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Runs the tests for scripts/deps.arch against FrameScrub's own FFmpeg. Arguments go to the testing library
-# (`--filter`, `--skip`, `--no-parallel`, as for `swift test`). Needs the fixtures (scripts/make-fixtures.sh, which uses
+# Runs the tests for $DEPS_ARCH (scripts/deps-env.sh) against FrameScrub's own FFmpeg. Arguments go to the testing
+# library (`--filter`, `--skip`, `--no-parallel`, as for `swift test`). Needs the fixtures (scripts/make-fixtures.sh, which uses
 # Homebrew's ffmpeg tool, or the `fixtures` artifact of a CI run).
 # On screen: build errors, the failing expectations as they happen and a summary of the failed tests; the whole
 # output is in .build/test.log (scripts/test-report.sh). TEST_VERBOSE=1 shows everything, as CI does.
-# For the Mac's own architecture, `swift test`. For x86_64 on Apple Silicon (lts/macos26's CI) the build is native (a
-# cross build) and only the test bundle runs under Rosetta, through SwiftPM's own swift-testing helper: `swift test`
+# For the Mac's own architecture, `swift test`. For x86_64 on Apple Silicon (`DEPS_ARCH=x86_64`, CI's x86_64 job) the
+# build is native (a cross build) and only the test bundle runs under Rosetta, through SwiftPM's own swift-testing helper: `swift test`
 # itself under Rosetta spent minutes compiling the manifests again.
 set -euo pipefail
 cd "$(dirname "$0")/.."

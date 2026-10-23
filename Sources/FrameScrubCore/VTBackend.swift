@@ -111,8 +111,20 @@ final class VTBackend: DecoderBackend {
         return description
     }
 
+    /// Hardware sessions VideoToolbox refused, by codec and bit depth, until when that answer is believed. Without a
+    /// hardware decoder for a format (Intel Macs without HEVC 10-bit) every new decoder would spend about a
+    /// second asking again before software takes over; a minute lets a decoder that was only busy (after sleep) back.
+    private static let refusalLock = NSLock()
+    private static var refusedUntil: [String: TimeInterval] = [:]
+    static let refusalMemory: TimeInterval = 60
+
     private static func makeSession(_ format: CMVideoFormatDescription, tenBit: Bool) throws -> VTDecompressionSession {
         if let makeSessionOverride { return try makeSessionOverride(format) }
+        let key = "\(CMFormatDescriptionGetMediaSubType(format)) \(tenBit ? 10 : 8)"
+        let now = ProcessInfo.processInfo.systemUptime
+        if refusalLock.withLock({ (refusedUntil[key] ?? 0) > now }) {
+            throw FFmpegError(kVTCouldNotFindVideoDecoderErr, "VideoToolbox session (refused within the last minute)")
+        }
         let specification = [kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true] as CFDictionary
         let attributes = [kCVPixelBufferPixelFormatTypeKey: tenBit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
                                                                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
@@ -123,7 +135,10 @@ final class VTBackend: DecoderBackend {
                                                   decoderSpecification: specification,
                                                   imageBufferAttributes: attributes, outputCallback: nil,
                                                   decompressionSessionOut: &session)
-        guard status == noErr, let session else { throw FFmpegError(status, "VideoToolbox session") }
+        guard status == noErr, let session else {
+            refusalLock.withLock { refusedUntil[key] = now + refusalMemory }
+            throw FFmpegError(status, "VideoToolbox session")
+        }
         return session
     }
 

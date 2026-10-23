@@ -31,5 +31,5 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 ## Not planned
 
 - **Developer ID signing and notarization** — not for now. Install with Homebrew (it clears the quarantine flag) or allow the app once in System Settings.
-- **Intel Macs and macOS before 26.** FrameScrub's pipeline is built on VideoToolbox and Metal on Apple Silicon.
+- **macOS before 26.** Intel Macs are built for as long as they get macOS 26; nothing newer runs on them.
 - **Zoom and pan inside the video, bookmarks, chapters.** FrameScrub stays a keyboard-first scrubber.
