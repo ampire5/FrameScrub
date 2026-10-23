@@ -18,6 +18,7 @@ let package = Package(
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.1.0"),
+        .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.3.0"),
     ],
     targets: [
         .systemLibrary(
@@ -43,6 +44,7 @@ let package = Package(
                 .product(name: "InfoPanelKit", package: "InfoPanelKit"),
                 .product(name: "StashKitUI", package: "StashKit"),
                 .product(name: "HomeScreenKit", package: "HomeScreenKit"),
+                .product(name: "SettingsKit", package: "SettingsKit"),
             ]
         ),
         .testTarget(
