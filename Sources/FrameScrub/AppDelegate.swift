@@ -19,6 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private(set) var gestureBindings: GesturePreferences!
     private var preferencesWindow: PreferencesWindowController?
     private let appIcon = AppIconSwitcher()
+
+    /// View › App Icon…: the Dock icon picker (AppIconSwitcher).
+    @MainActor @objc private func showIconPicker(_ sender: Any?) { appIcon.showPicker(preferences: preferences) }
     private var pendingURL: URL?
     /// True for a launch that handed over to an already running instance (single-instance=yes) and is quitting.
     private var isSecondary = false
@@ -133,6 +136,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // framescrub.conf may have been edited meanwhile (a text editor, icon-mode): its changes apply on switching back.
+        if !isSecondary { preferences.reload() }
         guard raiseOnActivate else { return }
         raiseOnActivate = false
         controller?.bringToFront()
@@ -554,6 +559,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Fit to Screen", .windowFit, key: "4"))
         viewMenu.addItem(commandItem("Float on Top", .cycleOntop, key: "", modifiers: []))   // T stays an input.conf binding
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
+        let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
+        icon.keyEquivalentModifierMask = [.control, .option, .command]
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
