@@ -64,6 +64,8 @@ import WebKit
     private let content = WKUserContentController()
     private let handler = MessageProxy()
     private let crashed = NSButton(title: "Reload", target: nil, action: nil)
+    /// Why the page is not there (a failed load), above the Reload button.
+    private let failure = NSTextField(wrappingLabelWithString: "")
     private(set) var url: URL?
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
@@ -145,7 +147,16 @@ import WebKit
         crashed.isHidden = true
         crashed.translatesAutoresizingMaskIntoConstraints = false
         addSubview(crashed)
+        failure.isHidden = true
+        failure.alignment = .center
+        failure.textColor = .secondaryLabelColor
+        failure.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        failure.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(failure)
         NSLayoutConstraint.activate([
+            failure.leadingAnchor.constraint(equalTo: webView.leadingAnchor, constant: 16),
+            failure.trailingAnchor.constraint(equalTo: webView.trailingAnchor, constant: -16),
+            failure.bottomAnchor.constraint(equalTo: crashed.topAnchor, constant: -12),
             edge.leadingAnchor.constraint(equalTo: leadingAnchor),
             edge.topAnchor.constraint(equalTo: topAnchor),
             edge.bottomAnchor.constraint(equalTo: bottomAnchor),
@@ -192,6 +203,7 @@ import WebKit
         self.url = url
         reloadedAfterCrash = false
         crashed.isHidden = true
+        failure.isHidden = true
         webView.load(URLRequest(url: url))
         return true
     }
@@ -200,6 +212,7 @@ import WebKit
     func reload() {
         guard let url else { return }
         crashed.isHidden = true
+        failure.isHidden = true
         webView.load(URLRequest(url: url))
     }
 
@@ -280,6 +293,23 @@ import WebKit
             reloadedAfterCrash = true
             reload()
         }
+    }
+
+    /// The page could not be loaded (no route, refused connection, App Transport Security…): the reason and a button.
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        showFailure(error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        showFailure(error)
+    }
+
+    private func showFailure(_ error: Error) {
+        let nsError = error as NSError
+        guard nsError.code != NSURLErrorCancelled else { return }   // a navigation replaced by another
+        failure.stringValue = "\(url?.absoluteString ?? "")\n\(nsError.localizedDescription)"
+        failure.isHidden = false
+        crashed.isHidden = false
     }
 
     // MARK: WKUIDelegate

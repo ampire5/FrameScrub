@@ -18,6 +18,8 @@
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key><true/>
+        <!-- A plugin page (plugin-url) may be plain HTTP on a VPN address, which ATS does not count as local. -->
+        <key>NSAllowsArbitraryLoads</key><true/>
     </dict>
     <key>CFBundleURLTypes</key>
     <array>
