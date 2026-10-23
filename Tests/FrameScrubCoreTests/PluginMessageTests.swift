@@ -82,6 +82,52 @@ import Testing
         #expect(message([:]) == nil)
     }
 
+    @Test func refusalsCarryAReason() {
+        func reason(_ json: [String: Any]) -> String? {
+            if case let .failure(failure) = PluginMessage.parse(json) { return failure.reason }
+            return nil
+        }
+        #expect(reason(["cmd": "jump"]) == "jump: unknown command")
+        #expect(reason([:]) == "cmd must be a string")
+        #expect(reason(["cmd": "seek"]) == "seek: t is missing")
+        #expect(reason(["cmd": "seek", "t": "1"]) == "seek: t must be a number")
+        #expect(reason(["cmd": "seek", "t": -1]) == "seek: t must not be negative")
+        #expect(reason(["cmd": "loop", "a": 3, "b": 1]) == "loop: b must be above a, and a not negative")
+        #expect(reason(["cmd": "open", "path": "x"]) == "open: path must be absolute")
+        #expect(reason(["cmd": "open", "scene": "1"]) == "open: paths must be a non-empty array of strings")
+        #expect(reason(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == "open: seg must be [a, b] with b above a")
+        #expect(reason(["cmd": "open"]) == "open: path or scene is missing")
+        #expect(reason(["cmd": "play"]) == nil)
+    }
+
+    @Test func requestIDIsANumberOrNothing() {
+        #expect(PluginRequest.id(of: ["cmd": "play", "id": 7]) == 7)
+        #expect(PluginRequest.id(of: ["cmd": "play", "id": 7.0]) == 7)
+        #expect(PluginRequest.id(of: ["cmd": "play"]) == nil)
+        #expect(PluginRequest.id(of: ["cmd": "play", "id": "7"]) == nil)
+        #expect(PluginRequest.id(of: ["cmd": "play", "id": Double.nan]) == nil)
+    }
+
+    @Test func replies() {
+        #expect(PluginReply.success(3) == PluginReply(id: 3, result: nil, error: nil))
+        #expect(PluginReply.success(3, result: "{}") == PluginReply(id: 3, result: "{}", error: nil))
+        #expect(PluginReply.failure(4, "no file") == PluginReply(id: 4, result: nil, error: "no file"))
+    }
+
+    @Test func eventsHaveANameAndJSONDetail() {
+        #expect(PluginEvent.focus.name == "focus")
+        #expect(PluginEvent.focus.detail == nil)
+        #expect(PluginEvent.blur.name == "blur")
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil).name == "fileopened")
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil).detail == """
+        {"path":"/a/b.mp4","scene":null}
+        """)
+        #expect(PluginEvent.fileOpened(path: "/x.mp4", scene: "42").detail == """
+        {"path":"/x.mp4","scene":"42"}
+        """)
+        #expect(PluginEvent.error("open: path must be absolute").detail == "\"open: path must be absolute\"")
+    }
+
     @Test func openLanding() {
         let landing = LinkTarget(time: 1, segment: 0...2)
         #expect(PluginOpen.file(URL(fileURLWithPath: "/a"), landing: landing).landing == landing)
@@ -93,22 +139,23 @@ import Testing
     @Test func jsonHasEveryKeyInOrderWithNullsForNothing() {
         let state = PluginState(t: 1.5, frame: 36, fps: 24, duration: 10, playing: false, visible: true)
         #expect(state.json == """
-        {"duration":10,"fps":24,"frame":36,"loop":null,"path":null,"playing":false,"scene":null,"t":1.5,"visible":true}
+        {"duration":10,"durationFrames":0,"fps":24,"frame":36,"loop":null,"name":null,"path":null,"playing":false,\
+        "ready":false,"scene":null,"t":1.5,"visible":true}
         """)
     }
 
     @Test func pathSceneAndLoopAreWritten() {
-        let state = PluginState(path: "/Volumes/V/a b.mp4", scene: "42", t: 2, frame: 50, fps: 25, duration: 60,
-                                playing: true, loop: 1...3, visible: false)
+        let state = PluginState(ready: true, path: "/Volumes/V/a b.mp4", name: "a b.mp4", scene: "42", t: 2, frame: 50,
+                                fps: 25, duration: 60, durationFrames: 1500, playing: true, loop: 1...3, visible: false)
         #expect(state.json == """
-        {"duration":60,"fps":25,"frame":50,"loop":[1,3],"path":"/Volumes/V/a b.mp4","playing":true,"scene":"42",\
-        "t":2,"visible":false}
+        {"duration":60,"durationFrames":1500,"fps":25,"frame":50,"loop":[1,3],"name":"a b.mp4","path":"/Volumes/V/a b.mp4",\
+        "playing":true,"ready":true,"scene":"42","t":2,"visible":false}
         """)
     }
 
     @Test func roundTrips() {
-        let state = PluginState(path: "/a.mp4", scene: "7", t: 2.25, frame: 54, fps: 24, duration: 100,
-                                playing: true, loop: 1.5...3, visible: true)
+        let state = PluginState(ready: true, path: "/a.mp4", name: "a.mp4", scene: "7", t: 2.25, frame: 54, fps: 24,
+                                duration: 100, durationFrames: 2400, playing: true, loop: 1.5...3, visible: true)
         #expect(state.json.flatMap(PluginState.init(json:)) == state)
         let bare = PluginState()
         #expect(bare.json.flatMap(PluginState.init(json:)) == bare)
@@ -116,7 +163,8 @@ import Testing
 
     @Test func aLoopThatDoesNotGoForwardIsRefused() {
         #expect(PluginState(json: """
-        {"duration":1,"fps":1,"frame":0,"loop":[3,1],"path":null,"playing":false,"scene":null,"t":0,"visible":true}
+        {"duration":1,"durationFrames":1,"fps":1,"frame":0,"loop":[3,1],"name":null,"path":null,"playing":false,\
+        "ready":true,"scene":null,"t":0,"visible":true}
         """) == nil)
     }
 

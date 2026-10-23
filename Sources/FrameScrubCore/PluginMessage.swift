@@ -13,8 +13,8 @@ public enum PluginOpen: Equatable, Sendable {
 }
 
 /// A command from a plugin page, decoded from the JSON object its `window.framescrub` bridge posts: `cmd` plus the
-/// command's arguments. Anything malformed is refused as a whole: a missing or mistyped argument, a negative time, a
-/// segment that does not go forward, a relative path, an unknown command.
+/// command's arguments. Anything malformed is refused as a whole, with a reason: a missing or mistyped argument, a
+/// negative time, a segment that does not go forward, a relative path, an unknown command.
 public enum PluginMessage: Equatable, Sendable {
     case seek(Double)
     case play
@@ -27,69 +27,222 @@ public enum PluginMessage: Equatable, Sendable {
     /// Keys go to the player again.
     case focusPlayer
 
+    /// Why a message was refused; the text reaches the page (a rejected promise, or an `error` event).
+    public struct Failure: Error, Equatable, Sendable, CustomStringConvertible {
+        public let reason: String
+        public init(_ reason: String) { self.reason = reason }
+        public var description: String { reason }
+    }
+
     public init?(json: [String: Any]) {
-        guard let cmd = json["cmd"] as? String else { return nil }
-        let number = { (key: String) -> Double? in
-            guard let value = json[key] else { return nil }
-            guard let number = value as? NSNumber, number.doubleValue.isFinite else { return .nan }
-            return number.doubleValue
+        guard case let .success(message) = Self.parse(json) else { return nil }
+        self = message
+    }
+
+    public static func parse(_ json: [String: Any]) -> Result<PluginMessage, Failure> {
+        guard let cmd = json["cmd"] as? String else { return .failure(Failure("cmd must be a string")) }
+        do {
+            return .success(try parse(cmd, json))
+        } catch {
+            return .failure(Failure("\(cmd): \(error.reason)"))
         }
+    }
+
+    private static func parse(_ cmd: String, _ json: [String: Any]) throws(Failure) -> PluginMessage {
+        let args = Arguments(json)
         switch cmd {
         case "seek":
-            guard let t = number("t"), let time = LinkTarget.time(t) else { return nil }
-            self = .seek(time)
+            return .seek(try args.time("t"))
         case "play":
-            self = .play
+            return .play
         case "pause":
-            self = .pause
+            return .pause
         case "step":
-            guard let n = number("n"), n.isFinite, abs(n) < Double(Int32.max) else { return nil }
-            self = .step(Int(n))
+            let n = try args.number("n")
+            guard abs(n) < Double(Int32.max) else { throw Failure("n is out of range") }
+            return .step(Int(n))
         case "loop":
-            if json["a"] == nil && json["b"] == nil {
-                self = .loop(nil)
-            } else {
-                guard let a = number("a"), let b = number("b"), let segment = LinkTarget.segment(a, b) else { return nil }
-                self = .loop(segment)
-            }
+            if json["a"] == nil && json["b"] == nil { return .loop(nil) }
+            return .loop(try args.segment("a", "b"))
         case "open":
-            guard let open = PluginOpen(json: json) else { return nil }
-            self = .open(open)
+            return .open(try PluginOpen(args))
         case "focusPlayer":
-            self = .focusPlayer
+            return .focusPlayer
         default:
-            return nil
+            throw Failure("unknown command")
         }
+    }
+}
+
+/// The JSON arguments of a message, read with the checks every command shares.
+struct Arguments {
+    let json: [String: Any]
+    init(_ json: [String: Any]) { self.json = json }
+
+    typealias Failure = PluginMessage.Failure
+
+    func has(_ key: String) -> Bool { json[key] != nil }
+
+    /// A finite number; nil when absent.
+    func optionalNumber(_ key: String) throws(Failure) -> Double? {
+        guard let value = json[key] else { return nil }
+        guard let number = value as? NSNumber, number.doubleValue.isFinite else { throw Failure("\(key) must be a number") }
+        return number.doubleValue
+    }
+
+    func number(_ key: String) throws(Failure) -> Double {
+        guard let value = try optionalNumber(key) else { throw Failure("\(key) is missing") }
+        return value
+    }
+
+    /// A position in seconds: finite, not negative.
+    func time(_ key: String) throws(Failure) -> Double {
+        guard let time = LinkTarget.time(try number(key)) else { throw Failure("\(key) must not be negative") }
+        return time
+    }
+
+    func optionalTime(_ key: String) throws(Failure) -> Double? {
+        try has(key) ? time(key) : nil
+    }
+
+    /// `a...b` from two numbers.
+    func segment(_ a: String, _ b: String) throws(Failure) -> ClosedRange<Double> {
+        guard let segment = LinkTarget.segment(try number(a), try number(b)) else {
+            throw Failure("\(b) must be above \(a), and \(a) not negative")
+        }
+        return segment
+    }
+
+    /// `a...b` from a `[a, b]` pair; nil when absent.
+    func optionalSegmentPair(_ key: String) throws(Failure) -> ClosedRange<Double>? {
+        guard let value = json[key] else { return nil }
+        guard let pair = value as? [NSNumber], pair.count == 2,
+              let segment = LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue) else {
+            throw Failure("\(key) must be [a, b] with b above a")
+        }
+        return segment
+    }
+
+    func string(_ key: String) throws(Failure) -> String {
+        guard let value = json[key] else { throw Failure("\(key) is missing") }
+        guard let text = value as? String else { throw Failure("\(key) must be a string") }
+        return text
     }
 }
 
 extension PluginOpen {
     /// `{path, t?, seg?: [a, b]}` or `{scene, paths, t?, seg?: [a, b]}`; a scene's id may come as a number.
-    init?(json: [String: Any]) {
-        var landing = LinkTarget()
-        if let t = json["t"] {
-            guard let number = t as? NSNumber, let time = LinkTarget.time(number.doubleValue) else { return nil }
-            landing.time = time
-        }
-        if let seg = json["seg"] {
-            guard let pair = seg as? [NSNumber], pair.count == 2,
-                  let segment = LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue) else { return nil }
-            landing.segment = segment
-        }
-        if let scene = json["scene"] {
+    init(_ args: Arguments) throws(PluginMessage.Failure) {
+        let landing = LinkTarget(time: try args.optionalTime("t"), segment: try args.optionalSegmentPair("seg"))
+        if let scene = args.json["scene"] {
             let id: String
             switch scene {
             case let text as String: id = text
             case let number as NSNumber: id = number.stringValue
-            default: return nil
+            default: throw PluginMessage.Failure("scene must be a string or a number")
             }
-            guard !id.isEmpty, let paths = json["paths"] as? [String], !paths.isEmpty else { return nil }
+            guard !id.isEmpty else { throw PluginMessage.Failure("scene is empty") }
+            guard let paths = args.json["paths"] as? [String], !paths.isEmpty else {
+                throw PluginMessage.Failure("paths must be a non-empty array of strings")
+            }
             self = .stashScene(id: id, paths: paths, landing: landing)
-        } else if let path = json["path"] {
-            guard let path = path as? String, path.hasPrefix("/") else { return nil }
+        } else if args.has("path") {
+            let path = try args.string("path")
+            guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
             self = .file(URL(fileURLWithPath: path), landing: landing)
         } else {
-            return nil
+            throw PluginMessage.Failure("path or scene is missing")
         }
+    }
+}
+
+/// A message with the id the page's `request()` gave it; a message sent with a verb has none and expects no reply.
+public struct PluginRequest: Equatable, Sendable {
+    public var id: Int?
+    public var message: PluginMessage
+
+    public init(id: Int? = nil, message: PluginMessage) {
+        self.id = id
+        self.message = message
+    }
+
+    /// The id of a posted object, when it carries one (`id` as a number).
+    public static func id(of json: [String: Any]) -> Int? {
+        guard let number = json["id"] as? NSNumber, number.doubleValue.isFinite,
+              abs(number.doubleValue) < Double(Int32.max) else { return nil }
+        return number.intValue
+    }
+}
+
+/// The answer to a `request()`: its id with a result (JSON text, or nothing) or a reason it failed.
+public struct PluginReply: Equatable, Sendable {
+    public let id: Int
+    public let result: String?
+    public let error: String?
+
+    public static func success(_ id: Int, result: String? = nil) -> PluginReply {
+        PluginReply(id: id, result: result, error: nil)
+    }
+
+    public static func failure(_ id: Int, _ reason: String) -> PluginReply {
+        PluginReply(id: id, result: nil, error: reason)
+    }
+}
+
+/// What the player tells the page besides its state: `framescrub.on<name>` and a `framescrub<name>` window event.
+public enum PluginEvent: Equatable, Sendable {
+    /// The panel took the keyboard / gave it back to the player.
+    case focus
+    case blur
+    /// A file is open (after an `open`, a link, or the user's own choice).
+    case fileOpened(path: String?, scene: String?)
+    /// A command sent without an id failed.
+    case error(String)
+
+    public var name: String {
+        switch self {
+        case .focus: "focus"
+        case .blur: "blur"
+        case .fileOpened: "fileopened"
+        case .error: "error"
+        }
+    }
+
+    /// The event's detail as JSON; nil for an event without one.
+    public var detail: String? {
+        switch self {
+        case .focus, .blur:
+            return nil
+        case let .fileOpened(path, scene):
+            return PluginJSON.encode(FileOpened(path: path, scene: scene))
+        case let .error(reason):
+            return PluginJSON.encode(reason)
+        }
+    }
+
+    private struct FileOpened: Encodable {
+        var path: String?
+        var scene: String?
+
+        enum CodingKeys: String, CodingKey { case path, scene }
+
+        func encode(to encoder: Encoder) throws {
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode(path, forKey: .path)   // nil as null, not an absent key
+            try c.encode(scene, forKey: .scene)
+        }
+    }
+}
+
+/// JSON as the bridge sends it: sorted keys, slashes as they are; nil when a number is not finite.
+public enum PluginJSON {
+    public static func encode<T: Encodable>(_ value: T) -> String? {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return (try? encoder.encode(value)).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    public static func decode<T: Decodable>(_ type: T.Type, from json: String) -> T? {
+        json.data(using: .utf8).flatMap { try? JSONDecoder().decode(type, from: $0) }
     }
 }

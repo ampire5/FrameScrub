@@ -316,6 +316,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             applyWindowSize(.initial)
             revealSeekBar()
             statsFileChanged()
+            pluginFileOpened()
             StartupTrace.mark("open returned")
             return true
         } catch {
@@ -2342,6 +2343,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         pluginPanel.trusted = pluginPolicy.trusted
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
+        pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
+    }
+
+    /// View › Focus Plugin Panel: the page gets the keyboard (shown first if it was hidden).
+    func focusPluginPanel() {
+        if !pluginVisible { togglePluginPanel() }
+        guard pluginVisible else { return }
+        pluginPanel.focus()
     }
 
     /// For View › Show Plugin Panel: the page set in Settings (`plugin-url`).
@@ -2384,29 +2393,44 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let start = target.start { core.seek(toSeconds: start) }
     }
 
-    private func pluginMessage(_ message: PluginMessage, from origin: PluginOrigin) {
-        switch message {
+    private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {
+        switch request.message {
         case let .seek(t): core.seek(toSeconds: t)
         case .play: if core.isPaused { core.play() }
         case .pause: if !core.isPaused { core.pause() }
         case let .step(n): core.step(frames: n)
         case let .loop(segment): core.setLoop(seconds: segment)
         case .focusPlayer: window?.makeFirstResponder(videoView)
-        case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin)
+        case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
         case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
         }
+        pluginDone(request)
+    }
+
+    /// A request carried out: a `request()` resolves (with `result`, JSON), a verb hears nothing.
+    private func pluginDone(_ request: PluginRequest, result: String? = nil) {
+        if let id = request.id { pluginPanel.reply(.success(id, result: result)) }
+    }
+
+    private func pluginFailed(_ request: PluginRequest, _ reason: String) {
+        pluginPanel.fail(id: request.id, reason)
     }
 
     /// A local file the page asked for: only a video, and only once the user has allowed the page's origin to open
     /// files (asked the first time, remembered in `plugin-open-allowed`).
-    private func openFromPlugin(_ url: URL, landing: LinkTarget, origin: PluginOrigin) {
+    private func openFromPlugin(_ url: URL, landing: LinkTarget, origin: PluginOrigin, request: PluginRequest) {
+        let openIt = { [self] in
+            if open(OpenLink.Target(file: url, landing: landing)) { pluginDone(request) }
+            else { pluginFailed(request, "open: cannot open \(url.path)") }
+        }
         switch pluginPolicy.decision(forOpening: url, from: origin) {
         case .allowed:
-            open(OpenLink.Target(file: url, landing: landing))
+            openIt()
         case .notMedia:
             showMessage("The plugin page may only open video files: \(url.lastPathComponent)", duration: 4)
+            pluginFailed(request, "open: not a video file")
         case .untrusted:
-            break
+            pluginFailed(request, "open: the page is not trusted")
         case .needsConsent:
             let alert = NSAlert()
             alert.messageText = PluginPolicy.consentQuestion(for: origin)
@@ -2414,10 +2438,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             alert.addButton(withTitle: "Allow")
             alert.addButton(withTitle: "Don't Allow")
             let decide = { [weak self] (response: NSApplication.ModalResponse) in
-                guard let self, response == .alertFirstButtonReturn else { return }
+                guard let self else { return }
+                guard response == .alertFirstButtonReturn else { pluginFailed(request, "open: not allowed by the user"); return }
                 pluginPolicy.allowOpening(from: origin)
                 UserDefaults.standard.set(pluginPolicy.openAllowedStrings, forKey: "plugin-open-allowed")
-                open(OpenLink.Target(file: url, landing: landing))
+                openIt()
             }
             if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }
         }
@@ -2432,13 +2457,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         openStashScene(scene)
     }
 
+    /// The page hears of every file that opens, whoever opened it.
+    private func pluginFileOpened() {
+        var scene: String?
+        if case let .stash(sceneID, _) = origin { scene = sceneID }
+        pluginPanel.dispatch(.fileOpened(path: core.url?.path, scene: scene))
+    }
+
+    /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
     private func pushPluginState(force: Bool) {
         guard pluginVisible else { return }
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastPluginPush >= 0.1 else { return }
         lastPluginPush = now
-        var state = PluginState(path: core.url?.path, t: core.positionSeconds, frame: core.position,
-                                fps: core.info?.frameRate ?? 0, duration: core.durationSeconds, playing: !core.isPaused,
+        var state = PluginState(ready: core.url != nil, path: core.url?.path, name: core.url?.lastPathComponent,
+                                t: core.positionSeconds, frame: core.position, fps: core.info?.frameRate ?? 0,
+                                duration: core.durationSeconds, durationFrames: core.frameCount, playing: !core.isPaused,
                                 loop: core.loopSeconds, visible: pluginVisible)
         if case let .stash(sceneID, _) = origin { state.scene = sceneID }
         pluginPanel.push(state)

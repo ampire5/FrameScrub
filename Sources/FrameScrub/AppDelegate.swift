@@ -129,6 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller?.togglePluginPanel()
     }
 
+    @objc private func focusPluginPanel(_ sender: Any?) {
+        controller?.focusPluginPanel()
+    }
+
     /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
     func application(_ application: NSApplication, open urls: [URL]) {
         guard let opened = urls.first else { return }
@@ -585,6 +589,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")
         plugin.keyEquivalentModifierMask = [.command, .option]
         plugin.target = self
+        let focusPlugin = viewMenu.addItem(withTitle: "Focus Plugin Panel", action: #selector(focusPluginPanel(_:)), keyEquivalent: "p")
+        focusPlugin.keyEquivalentModifierMask = [.command, .option, .control]
+        focusPlugin.target = self
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding

@@ -5,13 +5,33 @@ import WebKit
 /// A web page beside the video: a plugin. The page drives the player through `window.framescrub` and hears the
 /// player's state through it; the player knows nothing of what the page is for.
 ///
-/// In the page:
+/// The bridge, version 1 (`framescrub.version`):
 ///
-///     framescrub.seek(seconds)        framescrub.play()          framescrub.pause()
-///     framescrub.step(frames)         framescrub.loop(a, b)      framescrub.loop(null)
-///     framescrub.open({path, t, seg: [a, b]})   or   framescrub.open({scene, paths, t, seg})   (a Stash scene)
-///     framescrub.focusPlayer()        // keys go to the player again
-///     framescrub.onstate = s => …     // {path, scene, t, frame, fps, duration, playing, loop: [a, b] | null, visible}
+/// Commands. Each verb posts a command and forgets it; `request(cmd, args)` posts the same command and returns a
+/// Promise that resolves with the command's result (undefined for the verbs below) or rejects with an Error whose
+/// message says what was wrong (unknown command, missing or mistyped argument, a refused open).
+///
+///     framescrub.seek(t)              seek to `t` seconds (not negative)
+///     framescrub.play()  .pause()
+///     framescrub.step(n)              `n` frames forward, negative backward
+///     framescrub.loop(a, b)           an A-B loop in seconds, `b` above `a`;  loop(null) clears it
+///     framescrub.open(o)              o = {path, t?, seg?: [a, b]} a local video (absolute path; the first time a page's
+///                                     origin asks, the user is asked to allow it), or {scene, paths, t?, seg?} a Stash
+///                                     scene found on the shares
+///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
+///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
+///
+/// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
+/// (`event.detail`) hear each change, at most ten times a second while frames show:
+///
+///     {ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null, visible}
+///
+/// Events. `framescrub.on<name> = detail => …`, or the window event "framescrub<name>" with `event.detail`:
+///
+///     focus / blur                    the panel took the keyboard / gave it back (View › Focus Plugin Panel, ⌃⌥⌘P,
+///                                     brings keys to the page; focusPlayer() returns them)
+///     fileopened                      {path, scene} once a file is open, however it was opened
+///     error                           a reason string, when a verb (sent without a reply) failed
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default
 /// browser. The page's alerts, confirms and prompts are shown as sheets. Only pages from `trusted` origins get the
@@ -19,8 +39,11 @@ import WebKit
 @MainActor final class PluginPanel: NSView, WKNavigationDelegate, WKUIDelegate {
     static let width: CGFloat = 400
 
-    /// A command from the page and the origin it came from; malformed ones, and ones from other origins, never arrive.
-    var onMessage: ((PluginMessage, PluginOrigin) -> Void)?
+    /// A request from the page and the origin it came from; malformed ones are answered here, ones from other
+    /// origins never arrive.
+    var onMessage: ((PluginRequest, PluginOrigin) -> Void)?
+    /// The web view took or lost the keyboard.
+    var onFocusChange: ((Bool) -> Void)?
 
     /// The origins whose pages get `window.framescrub` (the next time a page loads) and whose messages are heard.
     var trusted: Set<PluginOrigin> = [] {
@@ -44,7 +67,30 @@ import WebKit
 
     private static let bridge = """
     window.framescrub = {
-      send(cmd, args) { window.webkit.messageHandlers.framescrub.postMessage(Object.assign({cmd}, args || {})); },
+      version: 1,
+      _next: 1,
+      _pending: {},
+      _post(body) { window.webkit.messageHandlers.framescrub.postMessage(body); },
+      send(cmd, args) { this._post(Object.assign({cmd}, args || {})); },
+      request(cmd, args) {
+        return new Promise((resolve, reject) => {
+          const id = this._next++;
+          this._pending[id] = {resolve, reject};
+          this._post(Object.assign({cmd, id}, args || {}));
+        });
+      },
+      _reply(id, result, error) {
+        const p = this._pending[id];
+        if (!p) return;
+        delete this._pending[id];
+        if (error == null) p.resolve(result == null ? undefined : JSON.parse(result));
+        else p.reject(new Error(error));
+      },
+      _event(name, detail) {
+        const handler = this["on" + name];
+        if (handler) handler(detail);
+        window.dispatchEvent(new CustomEvent("framescrub" + name, {detail}));
+      },
       seek(t) { this.send("seek", {t}); },
       play() { this.send("play"); },
       pause() { this.send("pause"); },
@@ -54,11 +100,7 @@ import WebKit
       focusPlayer() { this.send("focusPlayer"); },
       state: null,
       onstate: null,
-      _state(s) {
-        this.state = s;
-        if (this.onstate) this.onstate(s);
-        window.dispatchEvent(new CustomEvent("framescrubstate", {detail: s}));
-      },
+      _state(s) { this.state = s; this._event("state", s); },
     };
     """
 
@@ -66,8 +108,10 @@ import WebKit
         let config = WKWebViewConfiguration()
         content.add(handler, name: "framescrub")
         config.userContentController = content
-        webView = WKWebView(frame: .zero, configuration: config)
+        let webView = PanelWebView(frame: .zero, configuration: config)
+        self.webView = webView
         super.init(frame: frame)
+        webView.onFocusChange = { [weak self] in self?.onFocusChange?($0) }
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
         webView.translatesAutoresizingMaskIntoConstraints = false
@@ -100,9 +144,13 @@ import WebKit
             crashed.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
         ])
         handler.receive = { [weak self] message in
-            guard let self, let body = message.body as? [String: Any], let command = PluginMessage(json: body),
+            guard let self, let body = message.body as? [String: Any],
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
-            onMessage?(command, origin)
+            let id = PluginRequest.id(of: body)
+            switch PluginMessage.parse(body) {
+            case let .success(command): onMessage?(PluginRequest(id: id, message: command), origin)
+            case let .failure(failure): fail(id: id, failure.reason)
+            }
         }
     }
 
@@ -142,9 +190,35 @@ import WebKit
     /// Sends the player's state to the page (no-op until the bridge exists). The JSON travels as an argument and is
     /// parsed in the page: splicing it into script source would break on U+2028 and U+2029.
     func push(_ state: PluginState) {
-        guard !isHidden, let json = state.json, isTrusted(webView.url) else { return }
-        webView.callAsyncJavaScript("if (window.framescrub) window.framescrub._state(JSON.parse(json))",
-                                    arguments: ["json": json], in: nil, in: .page) { _ in }
+        guard !isHidden, let json = state.json else { return }
+        call("if (window.framescrub) window.framescrub._state(JSON.parse(json))", ["json": json])
+    }
+
+    /// Answers a `request()`.
+    func reply(_ reply: PluginReply) {
+        call("if (window.framescrub) window.framescrub._reply(id, result, error)",
+             ["id": reply.id, "result": reply.result as Any? ?? NSNull(), "error": reply.error as Any? ?? NSNull()])
+    }
+
+    /// Tells the page something happened.
+    func dispatch(_ event: PluginEvent) {
+        call("if (window.framescrub) window.framescrub._event(name, detail == null ? undefined : JSON.parse(detail))",
+             ["name": event.name, "detail": event.detail as Any? ?? NSNull()])
+    }
+
+    /// A request failed: the page hears it as a rejection when it asked for a reply, else as an `error` event.
+    func fail(id: Int?, _ reason: String) {
+        if let id { reply(.failure(id, reason)) } else { dispatch(.error(reason)) }
+    }
+
+    /// Keys go to the page.
+    func focus() {
+        window?.makeFirstResponder(webView)
+    }
+
+    private func call(_ script: String, _ arguments: [String: Any]) {
+        guard isTrusted(webView.url) else { return }
+        webView.callAsyncJavaScript(script, arguments: arguments, in: nil, in: .page) { _ in }
     }
 
     // MARK: Which pages are heard
@@ -236,6 +310,23 @@ import WebKit
         } else {
             completion(alert.runModal())
         }
+    }
+}
+
+/// Reports when the web view takes or gives back the keyboard.
+private final class PanelWebView: WKWebView {
+    var onFocusChange: ((Bool) -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onFocusChange?(true) }
+        return became
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned { onFocusChange?(false) }
+        return resigned
     }
 }
 
