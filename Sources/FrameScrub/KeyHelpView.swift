@@ -47,6 +47,24 @@ final class KeyHelpView: NSView {
 
     /// Lays the sheet out in three columns, or two, at the largest text size (12…9 pt) that fits the view.
     func show(_ map: InputMap, pluginActions: [PluginAction] = []) {
+        layOut(map, pluginActions)
+        isHidden = false
+        alphaValue = 0
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; animator().alphaValue = 1 }
+    }
+
+    /// Lays an open sheet out again, without the fade, when the bindings or the page's actions differ from what it shows.
+    func refresh(_ map: InputMap, pluginActions: [PluginAction]) {
+        guard isShown, shownBindings != map.bindings || shownActions != pluginActions else { return }
+        layOut(map, pluginActions)
+    }
+
+    private var shownBindings: [KeyChord: Command] = [:]
+    private var shownActions: [PluginAction] = []
+
+    private func layOut(_ map: InputMap, _ pluginActions: [PluginAction]) {
+        shownBindings = map.bindings
+        shownActions = pluginActions
         let sections = KeyHelp.sections(for: map, plugin: pluginActions)
         let room = CGSize(width: bounds.width - 66, height: bounds.height - 58)   // the backdrop's padding and a margin
         layout: for size in stride(from: 12.0, through: 9, by: -1) {
@@ -56,9 +74,6 @@ final class KeyHelpView: NSView {
                 if needed.width <= room.width && needed.height <= room.height { break layout }
             }
         }
-        isHidden = false
-        alphaValue = 0
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; animator().alphaValue = 1 }
     }
 
     private func fill(_ sections: [(section: KeyHelp.Section, entries: [KeyHelp.Entry])], columns count: Int, size: CGFloat) {

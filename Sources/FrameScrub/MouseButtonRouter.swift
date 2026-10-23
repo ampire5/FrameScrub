@@ -34,16 +34,22 @@ import FrameScrubCore
     private var source: Source
 
     init(map: InputMap, longPressMilliseconds: Int) {
-        source = Source(bindings: map.bindings, longPressMilliseconds: longPressMilliseconds,
+        source = Source(bindings: Self.pointerBindings(map), longPressMilliseconds: longPressMilliseconds,
                         doubleInterval: NSEvent.doubleClickInterval)
         gestures = ButtonGestures(map: map, longPress: Double(longPressMilliseconds) / 1000,
                                   doubleInterval: NSEvent.doubleClickInterval)
     }
 
+    /// The bindings a button recogniser reads: those on a mouse input; a keyboard binding changing (a plugin page's keys
+    /// coming and going) must not rebuild it and drop a held button's state.
+    private static func pointerBindings(_ map: InputMap) -> [KeyChord: Command] {
+        map.bindings.filter { $0.key.isPointer || !$0.key.modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton)) }
+    }
+
     /// After a reload of input.conf or framescrub.conf: a new recogniser when the layout, `mouse-long-press` or the
     /// system's double-click interval changed (presses in flight dropped), else nothing.
     func update(map: InputMap, longPressMilliseconds: Int) {
-        let now = Source(bindings: map.bindings, longPressMilliseconds: longPressMilliseconds,
+        let now = Source(bindings: Self.pointerBindings(map), longPressMilliseconds: longPressMilliseconds,
                          doubleInterval: NSEvent.doubleClickInterval)
         guard now != source else { return }
         source = now

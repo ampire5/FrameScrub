@@ -1005,7 +1005,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         gestures.inputMap = inputMap
         buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
         mouseBridge?.apply(config: core.config, map: inputMap)
-        if keyHelp.isShown { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
+        keyHelp.refresh(inputMap, pluginActions: shownPluginActions)
     }
 
     /// The declared actions as the key help lists them: only while the panel is shown.
@@ -1020,7 +1020,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return PluginActionsReply(bound: outcome.bound, refused: outcome.refused)
     }
 
-    /// A new page is loading (or the same one again): what the old one declared is void.
+    /// A new page committed (or the same one again, or the page process died): what the old one declared is void.
     private func clearPluginActions() {
         guard !pluginActions.isEmpty else { return }
         pluginActions = []
@@ -2452,7 +2452,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
         pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
-        pluginPanel.onNavigationStart = { [weak self] in self?.clearPluginActions() }
+        pluginPanel.onPageReplaced = { [weak self] in self?.clearPluginActions() }
         pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
     }
 

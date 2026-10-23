@@ -30,8 +30,9 @@ import WebKit
 ///                                     free; a name the user bound to `plugin-action <name>` in input.conf keeps their key.
 ///                                     An unknown key name is accepted but may never be pressable. The actions are listed
 ///                                     in the key help. They belong to the loaded page: they stay while the panel is hidden
-///                                     (keys are bound only while it is shown) and are dropped when the page navigates or
-///                                     reloads. A reply sent while the panel is hidden says what the keys will become
+///                                     (keys are bound only while it is shown) and are dropped when a new page commits
+///                                     (a link, a reload) or the page's process dies; a navigation that fails or is cancelled
+///                                     leaves them. A reply sent while the panel is hidden says what the keys will become
 ///                                     once it is shown. Only keyboard chords bind: a mouse button, wheel, swipe or pinch
 ///                                     is refused with reason "not a key"
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
@@ -84,8 +85,9 @@ import WebKit
     var onMessage: ((PluginRequest, PluginOrigin) -> Void)?
     /// The web view took or lost the keyboard.
     var onFocusChange: ((Bool) -> Void)?
-    /// The panel starts loading a page (a first load, a link, a reload): what the old page declared is void.
-    var onNavigationStart: (() -> Void)?
+    /// A page committed in the panel (a first load, a link, a reload) or its process died: what the old page declared
+    /// is void. A navigation that is cancelled or fails leaves the old page, and its declarations, in place.
+    var onPageReplaced: (() -> Void)?
     /// The user drags the panel's edge: the width it asks for, in points (not yet clamped).
     var onResize: ((CGFloat) -> Void)?
 
@@ -101,9 +103,6 @@ import WebKit
     /// Why the page is not there (a failed load), above the Reload button.
     private let failure = NSTextField(wrappingLabelWithString: "")
     private(set) var url: URL?
-    /// False from the moment a navigation starts until the new page commits (or the navigation fails): the outgoing
-    /// page's messages are not heard.
-    private var hearingPage = true
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
 
@@ -219,7 +218,7 @@ import WebKit
             splitter.widthAnchor.constraint(equalToConstant: SplitterView.width),
         ])
         handler.receive = { [weak self] message in
-            guard let self, hearingPage, let body = message.body as? [String: Any],
+            guard let self, let body = message.body as? [String: Any],
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
             let id = PluginRequest.id(of: body)
             switch PluginMessage.parse(body) {
@@ -331,17 +330,13 @@ import WebKit
         }
     }
 
-    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        hearingPage = false
-        onNavigationStart?()
-    }
-
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
-        hearingPage = true
+        onPageReplaced?()
     }
 
     /// The page's web content process died: once, the page is simply loaded again; after that a button offers it.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        onPageReplaced?()
         if reloadedAfterCrash {
             crashed.isHidden = false
         } else {
@@ -352,7 +347,6 @@ import WebKit
 
     /// The page could not be loaded (no route, refused connection, App Transport Security…): the reason and a button.
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        if (error as NSError).code != NSURLErrorCancelled { hearingPage = true }   // the old page stays
         showFailure(error)
     }
 
