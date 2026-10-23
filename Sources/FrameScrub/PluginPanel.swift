@@ -1,4 +1,5 @@
 import AppKit
+import FrameScrubCore
 import WebKit
 
 /// A web page beside the video: a plugin. The page drives the player through `window.framescrub` and hears the
@@ -14,8 +15,8 @@ import WebKit
 @MainActor final class PluginPanel: NSView {
     static let width: CGFloat = 400
 
-    /// A message from the page: `cmd` plus its arguments.
-    var onMessage: (([String: Any]) -> Void)?
+    /// A command from the page; malformed ones never arrive.
+    var onMessage: ((PluginMessage) -> Void)?
 
     private let webView: WKWebView
     private let handler = MessageProxy()
@@ -71,8 +72,8 @@ import WebKit
             webView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         handler.receive = { [weak self] body in
-            guard let body = body as? [String: Any], body["cmd"] is String else { return }
-            self?.onMessage?(body)
+            guard let body = body as? [String: Any], let message = PluginMessage(json: body) else { return }
+            self?.onMessage?(message)
         }
     }
 
@@ -86,9 +87,8 @@ import WebKit
     }
 
     /// Sends the player's state to the page (no-op until the bridge exists).
-    func push(_ state: [String: Any]) {
-        guard !isHidden, let data = try? JSONSerialization.data(withJSONObject: state),
-              let json = String(data: data, encoding: .utf8) else { return }
+    func push(_ state: PluginState) {
+        guard !isHidden, let json = state.json else { return }
         webView.evaluateJavaScript("window.framescrub && window.framescrub._state(\(json))")
     }
 }

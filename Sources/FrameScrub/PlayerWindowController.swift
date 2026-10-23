@@ -2369,30 +2369,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let start = target.start { core.seek(toSeconds: start) }
     }
 
-    private func pluginMessage(_ body: [String: Any]) {
-        let number = { (key: String) in (body[key] as? NSNumber)?.doubleValue }
-        switch body["cmd"] as? String {
-        case "seek": if let t = number("t") { core.seek(toSeconds: t) }
-        case "play": if core.isPaused { core.play() }
-        case "pause": if !core.isPaused { core.pause() }
-        case "step": core.step(frames: Int(number("n") ?? 1))
-        case "loop":
-            if let a = number("a"), let b = number("b"), b > a { core.setLoop(seconds: a...b) } else { core.setLoop(seconds: nil) }
-        case "focusPlayer": window?.makeFirstResponder(videoView)
-        case "open":
-            let seg = (body["seg"] as? [NSNumber]).flatMap { $0.count == 2
-                ? LinkTarget.segment($0[0].doubleValue, $0[1].doubleValue) : nil }
-            let landing = LinkTarget(time: number("t").flatMap(LinkTarget.time), segment: seg)
-            if let id = body["scene"].map({ "\($0)" }), let paths = body["paths"] as? [String] {
-                openStashScene(id: id, paths: paths, landing: landing)
-            } else if let path = body["path"] as? String, path.hasPrefix("/") {
-                open(OpenLink.Target(file: URL(fileURLWithPath: path), landing: landing))
-            }
-        default: break
+    private func pluginMessage(_ message: PluginMessage) {
+        switch message {
+        case let .seek(t): core.seek(toSeconds: t)
+        case .play: if core.isPaused { core.play() }
+        case .pause: if !core.isPaused { core.pause() }
+        case let .step(n): core.step(frames: n)
+        case let .loop(segment): core.setLoop(seconds: segment)
+        case .focusPlayer: window?.makeFirstResponder(videoView)
+        case let .open(.file(url, landing)): open(OpenLink.Target(file: url, landing: landing))
+        case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
         }
     }
 
-    /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
     /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
     /// applied once it is open. The scene is built the way the Stash page's own message would build it; a direct
     /// initializer is a later step.
@@ -2407,13 +2396,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let now = ProcessInfo.processInfo.systemUptime
         guard force || now - lastPluginPush >= 0.1 else { return }
         lastPluginPush = now
-        var state: [String: Any] = [
-            "t": core.positionSeconds, "frame": core.position, "fps": core.info?.frameRate ?? 0,
-            "duration": core.durationSeconds, "playing": !core.isPaused,
-            "loop": core.loopSeconds.map { [$0.lowerBound, $0.upperBound] } ?? NSNull(),
-        ]
-        state["path"] = core.url?.path ?? NSNull()
-        if case let .stash(sceneID, _) = origin { state["scene"] = sceneID }
+        var state = PluginState(path: core.url?.path, t: core.positionSeconds, frame: core.position,
+                                fps: core.info?.frameRate ?? 0, duration: core.durationSeconds, playing: !core.isPaused,
+                                loop: core.loopSeconds, visible: pluginVisible)
+        if case let .stash(sceneID, _) = origin { state.scene = sceneID }
         pluginPanel.push(state)
     }
 
