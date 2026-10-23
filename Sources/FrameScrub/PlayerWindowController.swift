@@ -1030,28 +1030,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             startScreen.topAnchor.constraint(equalTo: container.topAnchor),
             startScreen.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             hud.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hud.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hud.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             hud.topAnchor.constraint(equalTo: container.topAnchor),
             hud.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             keyHelp.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            keyHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keyHelp.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             keyHelp.topAnchor.constraint(equalTo: container.topAnchor),
             keyHelp.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            goToField.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            goToField.centerXAnchor.constraint(equalTo: videoView.centerXAnchor),
             goToField.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
             osd.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            osd.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
+            osd.trailingAnchor.constraint(lessThanOrEqualTo: videoView.trailingAnchor, constant: -16),
             seekBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            seekBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            seekBar.trailingAnchor.constraint(equalTo: videoView.trailingAnchor, constant: -16),
             seekBar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
             seekBar.heightAnchor.constraint(equalToConstant: 44),
             backButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
-            playlistPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            playlistPanel.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             playlistPanel.topAnchor.constraint(equalTo: container.topAnchor),
             playlistPanel.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -8),
-            playlistZone.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            playlistZone.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             playlistZone.topAnchor.constraint(equalTo: playlistPanel.topAnchor),
             playlistZone.bottomAnchor.constraint(equalTo: playlistPanel.bottomAnchor),
             playlistZone.widthAnchor.constraint(equalTo: playlistPanel.widthAnchor),
@@ -2434,6 +2434,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func setPluginWidth(_ width: Int) {
         pluginWidth.constant = CGFloat(width)
         if pluginVisible { videoTrailing.constant = -CGFloat(width) }
+        videoAreaChanged()
+    }
+
+    /// The video's part of the window changed (the plugin panel came, went or was resized): the stats panel keeps to
+    /// it like the seek bar, whose constraints follow the video by themselves.
+    private func videoAreaChanged() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        statsPanel.place()
     }
 
     /// Settings changed: the panel's width and, when the page was the settings' one (or none yet), its page.
@@ -2486,6 +2494,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func setPluginShown(_ shown: Bool) {
         pluginPanel.isHidden = !shown
         videoTrailing.constant = shown ? -pluginWidth.constant : 0
+        videoAreaChanged()
         if !shown { window?.makeFirstResponder(videoView) }
         pushPluginState(force: true)
     }
@@ -2658,9 +2667,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let panel = InfoPanelController(
             host: container, below: seekBar, keyPrefix: "statsPanel", defaultOrder: StatsContent.defaultOrder,
             defaultPlacement: PanelPlacement(corner: .topRight, dx: 12, dy: 12),
-            area: { [weak container] in
+            area: { [weak container, weak videoView] in
+                // The video's part of the window: the plugin panel, when shown, takes the rest on the right.
                 guard let bounds = container?.bounds else { return .zero }
-                return CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - seekBarZone, 0))
+                let width = videoView?.frame.maxX ?? bounds.width
+                return CGRect(x: 0, y: 0, width: width, height: max(bounds.height - seekBarZone, 0))
             })
         panel.middleTruncated = ["Folder"]
         // A held button with the wheel is one of the player's chords (MBTN_RIGHT+WHEEL, MBTN_BACK+WHEEL_UP and the
