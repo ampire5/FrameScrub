@@ -234,9 +234,9 @@ public final class PlayerCore {
         index = approximate
         if let pendingSegments {
             segmentsSource = pendingSegments.seconds
-            segmentsLocked = pendingSegments.locked
             segmentAdvance = pendingSegments.advance
             rebuildSegments()
+            segmentsLocked = pendingSegments.locked && segments != nil   // all past the end: nothing to lock to
         }
         revertPoint = nil
         lastSeekAt = -.infinity
@@ -564,7 +564,8 @@ public final class PlayerCore {
         showCurrent()
     }
 
-    /// While the segments are locked the target is held inside them (`SegmentHold.glued`).
+    /// While the segments are locked the target is held inside them (`SegmentHold.glued`: relative moves such as a
+    /// step, a seek by some seconds or a revert). Absolute targets (`seek(toSeconds:)`, `goTo`) take the nearest edge.
     public func seek(toFrame n: Int, direction: Int = 0) {
         seek(toFrame: n, direction: direction, hold: .glued)
     }
@@ -1033,7 +1034,7 @@ public final class PlayerCore {
         seekTimer.start(at: now())
         let target = min(max(frame, 0), max(index.frameCount - 1, 0))
         seekDirection = target < position ? -1 : 1
-        seek(toFrame: target, direction: seekDirection)
+        seek(toFrame: target, direction: seekDirection, hold: .nearest)   // absolute: no move to count along the segments
         frameOSDPending = !cache.contains(position)
         osd(frameText)
     }
@@ -1144,10 +1145,10 @@ public final class PlayerCore {
         scrubAudio?.audible = !isMuted && volume > 0
     }
 
-    /// Seeks to a time in seconds (links, plugins).
+    /// Seeks to a time in seconds (links, plugins); a time outside the locked segments takes the nearest edge.
     public func seek(toSeconds seconds: Double) {
         guard let index else { return }
-        seek(toFrame: index.frameNumber(forSeconds: seconds))
+        seek(toFrame: index.frameNumber(forSeconds: seconds), direction: 0, hold: .nearest)
     }
 
     /// Steps by whole frames, as the frame-step keys do (plugins).
@@ -1222,21 +1223,43 @@ public final class PlayerCore {
         return segments.ranges.map { index.seconds(forFrame: $0.lowerBound)...index.seconds(forFrame: $0.upperBound) }
     }
 
+    /// Where a link or a plugin's `open` lands in the file just opened (Ruling R19): its segments (locked unless `lock`
+    /// is false), then its time, else the start of the first segment — over the remembered position and Stash's resume
+    /// point. Without segments, only the time. Announced once, where it lands.
+    public func applyLanding(_ landing: LinkTarget) {
+        if !landing.segments.isEmpty {
+            assignSegments(seconds: landing.segments, lock: landing.lock ?? true, advance: landing.advance)
+        }
+        if let index, let time = landing.time {
+            seek(toFrame: index.frameNumber(forSeconds: time), direction: 0, hold: .nearest)
+        } else if !landing.segments.isEmpty, let first = segments?.ranges.first {
+            seek(toFrame: first.lowerBound, direction: 0, hold: .nearest)
+        }
+        announceSegment()
+        delegate?.playerStateDidChange(self)
+    }
+
     /// Gives the open file its segments (links, plugins); an empty list clears them. `advance` nil takes the config's
     /// `segment-advance`. Locking moves the playhead to the nearest frame of a segment. Given while no file is open,
-    /// they apply to the next one opened. Not remembered for the file.
-    public func setSegments(seconds: [ClosedRange<Double>], lock: Bool = true, advance: SegmentAdvance? = nil) {
+    /// they apply to the next one opened. Not remembered for the file. False when a file is open and none of the
+    /// segments falls inside it (nothing is set then but an empty set).
+    @discardableResult
+    public func setSegments(seconds: [ClosedRange<Double>], lock: Bool = true, advance: SegmentAdvance? = nil) -> Bool {
+        assignSegments(seconds: seconds, lock: lock, advance: advance)
+        if lockedSegments != nil { seek(toFrame: position, direction: 0, hold: .nearest) }
+        announceSegment()
+        delegate?.playerStateDidChange(self)
+        return seconds.isEmpty || index == nil || segments != nil
+    }
+
+    /// The segments, the lock and the advance set, and a loop across a gap dropped; the playhead is left where it is.
+    private func assignSegments(seconds: [ClosedRange<Double>], lock: Bool, advance: SegmentAdvance?) {
         segmentsSource = seconds
         segmentAdvance = advance ?? config.segmentAdvance
         rebuildSegments()
         // Without an index they wait for the file; with one, ranges all past its end leave nothing to lock.
         segmentsLocked = lock && !seconds.isEmpty && (segments != nil || index == nil)
-        if lockedSegments != nil {
-            dropLoopOutsideSegments()
-            seek(toFrame: position, direction: 0, hold: .nearest)
-        }
-        announceSegment()
-        delegate?.playerStateDidChange(self)
+        if lockedSegments != nil { dropLoopOutsideSegments() }
     }
 
     /// Locks or unlocks the segments; false when there are none. Locking moves the playhead into them.
@@ -1675,6 +1698,7 @@ public final class PlayerCore {
         guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
         loopB = entry.loopB.map(index.frameNumber(forSeconds:))
+        dropLoopOutsideSegments()   // segments given before the open are locked already
         if let saved = entry.marks {
             marks = CutMarks(segments: saved.filter { $0.count == 2 }.map {
                                  CutSegment(start: index.frameNumber(forSeconds: $0[0]), end: index.frameNumber(forSeconds: $0[1]))
@@ -1682,7 +1706,7 @@ public final class PlayerCore {
                              open: saved.first { $0.count == 1 }.map { index.frameNumber(forSeconds: $0[0]) })
         }
         guard entry.position > 0, durationSeconds - entry.position >= 5 else { return }
-        seek(toFrame: index.frameNumber(forSeconds: entry.position))
+        seek(toFrame: index.frameNumber(forSeconds: entry.position), direction: 0, hold: .nearest)
         osd("Resumed at \(FrameNaming.timecode(entry.position))")
     }
 

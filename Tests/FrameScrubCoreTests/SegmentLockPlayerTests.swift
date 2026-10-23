@@ -9,16 +9,18 @@ import Testing
 
     private func makePlayer(now: @escaping () -> Double = CACurrentMediaTime,
                             configure: (inout Config) -> Void = { _ in }, fixture: String = Fixtures.h264,
+                            resumeStore: ResumeStore? = nil, fallbackPosition: Double? = nil,
                             beforeOpen: (PlayerCore) -> Void = { _ in }) throws -> (PlayerCore, RecordingDelegate) {
         var config = Config()
         config.cacheSizeMiB = 400
         configure(&config)
         let player = PlayerCore(config: config, enableAudio: false,
-                                fallbackRoot: makeTemporaryDirectory().appendingPathComponent("fallback"), now: now)
+                                fallbackRoot: makeTemporaryDirectory().appendingPathComponent("fallback"), now: now,
+                                resumeStore: resumeStore)
         let delegate = RecordingDelegate()
         player.delegate = delegate
         beforeOpen(player)
-        try player.open(Fixtures.url(fixture))
+        try player.open(Fixtures.url(fixture), fallbackPosition: fallbackPosition)
         return (player, delegate)
     }
 
@@ -54,15 +56,21 @@ import Testing
         let segments = try #require(player.segments)
         let index = try #require(player.index)
 
-        let gap = index.frameNumber(forSeconds: 3.0)
-        let glued = segments.glued(from: player.position, to: gap)
-        player.seek(toSeconds: 3.0)
-        #expect(player.position == glued)
-        #expect(ranges[1].contains(player.position))
+        // An absolute seek into the gap takes the nearest edge (Ruling R21): 3.4 s is nearer to 4 s than to 2 s. Glued,
+        // 1.4 s past the end of the first segment would have run on into the second.
+        let gap = index.frameNumber(forSeconds: 3.4)
+        #expect(segments.glued(from: player.position, to: gap) != ranges[1].lowerBound)
+        player.seek(toSeconds: 3.4)
+        #expect(player.position == ranges[1].lowerBound)
+        player.seek(toSeconds: 0)
+        player.goTo(.seconds(2.6))                    // nearer to 2 s
+        #expect(player.position == ranges[0].upperBound)
+        player.seek(toSeconds: 4.5)
 
         player.perform(.seek(-60, .exact))
         #expect(player.position == ranges[0].lowerBound)
 
+        player.seek(toSeconds: 0)
         player.seekFromBar(toFrame: index.frameNumber(forSeconds: 3.1))   // nearer to 4 s than to 2 s
         #expect(player.position == ranges[1].lowerBound)
 
@@ -386,5 +394,130 @@ import Testing
         #expect(!(301...499).contains(where: player.cache.contains))
         #expect(player.setSegmentLock(false))
         #expect(await eventually { (301...360).allSatisfy(player.cache.contains) })
+    }
+    private func temporaryStore() -> ResumeStore {
+        ResumeStore(url: makeTemporaryDirectory().appendingPathComponent("positions.json"))
+    }
+
+    /// Ruling R19: a landing with segments and no time starts at the first segment, over a remembered position inside
+    /// the second (and over Stash's resume point); the remembered position is not announced on the way.
+    @Test func landingStartsAtTheFirstSegmentOverTheResumePosition() throws {
+        for lock in [true, false] {
+            let store = temporaryStore()
+            store.save(ResumeEntry(position: 4.5), for: Fixtures.url(Fixtures.h264))
+            let (player, _) = try makePlayer(resumeStore: store)
+            defer { player.close() }
+            #expect(player.position == player.index?.frameNumber(forSeconds: 4.5))
+            var calls: [(Int?, Bool)] = []
+            player.onSegmentChange = { calls.append(($0, $1)) }
+            player.applyLanding(LinkTarget(segments: [4.0...5.0, 1.0...2.0], lock: lock))   // not in order
+            let ranges = try frames(player)
+            #expect(player.position == ranges[0].lowerBound)
+            #expect(player.segmentsLocked == lock)
+            #expect(calls.count == 1 && calls.last.map { $0.0 == 0 && $0.1 == lock } == true)
+        }
+        let (stash, _) = try makePlayer(resumeStore: temporaryStore(), fallbackPosition: 4.5)
+        defer { stash.close() }
+        stash.applyLanding(LinkTarget(segments: twoSegments, advance: .next))
+        #expect(try stash.position == frames(stash)[0].lowerBound && stash.segmentAdvance == .next)
+    }
+
+    /// A landing's time wins over the first segment; in a gap it takes the nearest edge; alone it is a plain seek.
+    @Test func landingTimeIsHeldToTheNearestEdge() throws {
+        let store = temporaryStore()
+        store.save(ResumeEntry(position: 1.5), for: Fixtures.url(Fixtures.h264))
+        let (player, _) = try makePlayer(resumeStore: store)
+        defer { player.close() }
+        let index = try #require(player.index)
+        player.applyLanding(LinkTarget(time: 4.5, segments: twoSegments))
+        #expect(player.position == index.frameNumber(forSeconds: 4.5))
+        player.applyLanding(LinkTarget(time: 3.4, segments: twoSegments))
+        #expect(try player.position == frames(player)[1].lowerBound)
+        player.applyLanding(LinkTarget(segments: []))
+        #expect(player.segments != nil)               // nothing to apply: the set stays
+        player.setSegments(seconds: [])
+        player.applyLanding(LinkTarget(time: 7))
+        #expect(player.position == index.frameNumber(forSeconds: 7) && player.segments == nil)
+    }
+
+    /// Segments given before opening and a remembered position in the gap with a loop across it: the loop goes, the
+    /// position takes the nearest edge (not counted along the segments from the first).
+    @Test func pendingSegmentsHoldTheResumePosition() throws {
+        let store = temporaryStore()
+        store.save(ResumeEntry(position: 3.4, loopA: 1.5, loopB: 4.5), for: Fixtures.url(Fixtures.h264))
+        let (player, _) = try makePlayer(resumeStore: store, beforeOpen: { $0.setSegments(seconds: twoSegments) })
+        defer { player.close() }
+        let ranges = try frames(player)
+        #expect(player.segmentsLocked)
+        #expect(player.loopA == nil && player.loopB == nil)
+        #expect(player.position == ranges[1].lowerBound)
+    }
+
+    /// Segments given before opening that all fall past the end of the file leave nothing locked.
+    @Test func pendingSegmentsPastTheEndDoNotLock() throws {
+        let (player, _) = try makePlayer(beforeOpen: { $0.setSegments(seconds: [100.0...200.0]) })
+        defer { player.close() }
+        #expect(player.segments == nil && !player.segmentsLocked)
+    }
+
+    /// `setSegments` says whether anything of the set falls inside the open file (the plugin's request fails when not).
+    @Test func setSegmentsReportsASetOutsideTheFile() throws {
+        let unopened = PlayerCore(config: Config(), enableAudio: false, fallbackRoot: makeTemporaryDirectory())
+        #expect(unopened.setSegments(seconds: [100.0...200.0]))   // no file yet: it waits for one
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        #expect(!player.setSegments(seconds: [100.0...200.0]))
+        #expect(player.setSegments(seconds: [1.0...2.0, 100.0...200.0]))
+        #expect(player.setSegments(seconds: []))
+    }
+
+    /// Repeat with `ab-loop=once`: playback pauses at the end of the segment; playing on starts it over.
+    @Test func repeatWithOncePausesAtTheSegmentEnd() async throws {
+        var now = 1000.0
+        let (player, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .once })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.setSegments(seconds: twoSegments)
+        let ranges = try frames(player)
+        player.seek(toFrame: ranges[0].upperBound - 5)
+        player.perform(.cyclePause)
+        now += 0.5                                    // 15 frames on: past the end of the first segment
+        player.tick()
+        #expect(player.position == ranges[0].upperBound && player.isPaused)
+        player.perform(.cyclePause)                   // from the end: over again from the start
+        #expect(player.position == ranges[0].lowerBound && !player.isPaused)
+    }
+
+    /// Repeat with `ab-loop=ping-pong`: playback turns at both ends of the segment.
+    @Test func repeatWithPingPongTurnsAtTheSegmentEnds() async throws {
+        var now = 1000.0
+        let (player, _) = try makePlayer(now: { now }, configure: { $0.abLoop = .pingPong })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.setSegments(seconds: twoSegments)
+        let ranges = try frames(player)
+        player.seek(toFrame: ranges[0].upperBound - 5)
+        player.perform(.cyclePause)
+        now += 0.5                                    // past the end: turn there
+        player.tick()
+        #expect(player.position == ranges[0].upperBound && player.direction == -1 && !player.isPaused)
+        now += 1.5                                    // 45 frames back: before the start, turn there
+        player.tick()
+        #expect(player.position == ranges[0].lowerBound && player.direction == 1 && !player.isPaused)
+    }
+
+    /// An A–B loop inside a locked segment is the cache's only region: the other segment is not cached (spec §3).
+    @Test func anABLoopIsCachedInsteadOfTheSegments() async throws {
+        let (player, _) = try makePlayer(configure: { $0.cacheSizeMiB = 1024 })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.seek(toSeconds: 18.5)                  // in the loop: the cache's focus
+        player.setLoop(seconds: 18.2...18.8)          // frames 546...564, keyframe 500
+        player.setSegments(seconds: [9.0...10.0, 18.0...19.0])
+        #expect(player.currentSegment == 1 && player.loopA != nil)
+        #expect(await eventually { (500...564).allSatisfy(player.cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!(250...300).contains(where: player.cache.contains))
+        #expect(!(565...570).contains(where: player.cache.contains))
     }
 }
