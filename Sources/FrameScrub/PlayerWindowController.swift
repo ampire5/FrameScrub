@@ -1033,7 +1033,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage("No plugin action: \(name)")
             return
         }
-        pluginPanel.dispatch(.action(name: name))
+        let frame = core.displayedFrame ?? core.position   // what is on screen, not a seek in flight
+        let t = core.index?.seconds(forFrame: frame) ?? core.positionSeconds
+        pluginPanel.dispatch(.action(name: name, t: t, frame: frame))
     }
 
     /// Shows scan progress once the scan has run for a second and the OSD is free, then refreshes it at most

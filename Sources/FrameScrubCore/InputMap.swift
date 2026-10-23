@@ -51,6 +51,27 @@ public struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         return (parts + [key]).joined(separator: "+")
     }
 
+    /// A mouse button, wheel, swipe or pinch, or any chord needing a mouse button held: no keyboard key.
+    public var isPointerChord: Bool {
+        isPointer || !modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton))
+    }
+
+    /// The ⌘ chords owned by the app's menu items: AppKit gives the menu the key before the player sees it, so no
+    /// binding, the page's included, could ever fire.
+    public static let menuOwned: Set<KeyChord> = {
+        var set: Set<KeyChord> = []
+        for key in [",", "q", "o", "c", "w", "z", "x", "v", "a", "m", "g", "f", "1", "2", "3", "4", "BS"] {
+            set.insert(KeyChord(key: key, modifiers: .meta))
+        }
+        set.insert(KeyChord(key: "o", modifiers: [.meta, .shift]))
+        set.insert(KeyChord(key: "z", modifiers: [.meta, .shift]))
+        set.insert(KeyChord(key: "c", modifiers: [.meta, .alt]))
+        set.insert(KeyChord(key: "p", modifiers: [.meta, .alt]))
+        set.insert(KeyChord(key: "p", modifiers: [.meta, .alt, .ctrl]))
+        set.insert(KeyChord(key: "f", modifiers: [.meta, .ctrl]))
+        return set
+    }()
+
     /// Parses mpv key syntax: "Shift+LEFT", "Ctrl+s", "S", "Ctrl++"; `MBTN_RIGHT+`, `MBTN_BACK+`, `MX_PANEL+`… hold a button.
     public static func parse(_ spec: String) -> KeyChord? {
         var modifiers: Modifiers = []
@@ -657,19 +678,19 @@ extension InputMap {
     }
 
     /// The map with the page's action keys added where free: a chord with any binding (even `ignore`) refuses the page
-    /// key (`key taken`), a name the map already binds keeps that key instead (`user binding`), and a mouse button, wheel,
-    /// swipe or pinch is no key (`not a key`). Actions without a key are in neither list: only the user's bindings
+    /// key (`key taken`), a name the map already binds keeps that key instead (`user binding`), and a ⌘ chord of a menu item
+    /// is `key taken` too, and a mouse button, wheel, swipe or pinch is no key (`not a key`). Actions without a key are in neither list: only the user's bindings
     /// reach them.
     public func merging(_ actions: [PluginAction]) -> (map: InputMap, bound: [PluginBinding], refused: [PluginBinding]) {
         var map = self
         var bound: [PluginBinding] = [], refused: [PluginBinding] = []
         for action in actions {
             guard let key = action.key else { continue }
-            if key.isPointer || !key.modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton)) {
+            if key.isPointerChord {
                 refused.append(PluginBinding(name: action.name, key: key, reason: "not a key"))
             } else if bindings.values.contains(.pluginAction(action.name)) {
                 refused.append(PluginBinding(name: action.name, key: key, reason: "user binding"))
-            } else if map.bindings[key] != nil {
+            } else if map.bindings[key] != nil || KeyChord.menuOwned.contains(key) {
                 refused.append(PluginBinding(name: action.name, key: key, reason: "key taken"))
             } else {
                 map.bindings[key] = .pluginAction(action.name)

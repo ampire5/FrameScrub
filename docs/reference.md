@@ -135,6 +135,9 @@ Rebind keys in `~/.config/framescrub/input.conf` using mpv syntax (`KEY command`
 `Ctrl+e export-range` or `s ignore`. In both config files `#` starts a comment only at the
 start of a line or after whitespace.
 
+A page's actions can be bound too: `Alt+9 plugin-action mark` runs the plugin page's action `mark`; the key help (`?`)
+lists the actions a page declares under "Plugin".
+
 Menu items own their ⌘ keys: ⌘1–⌘4, ⌘C, ⌘F, ⌘⌫, ⇧⌘O and ⌘, cannot be rebound in `input.conf`. The Playlist item in
 the menu has no key of its own; `F8` comes from the default `input.conf`.
 

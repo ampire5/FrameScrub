@@ -43,7 +43,7 @@ import FrameScrubCore
     /// The bindings a button recogniser reads: those on a mouse input; a keyboard binding changing (a plugin page's keys
     /// coming and going) must not rebuild it and drop a held button's state.
     private static func pointerBindings(_ map: InputMap) -> [KeyChord: Command] {
-        map.bindings.filter { $0.key.isPointer || !$0.key.modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton)) }
+        map.bindings.filter { $0.key.isPointerChord }
     }
 
     /// After a reload of input.conf or framescrub.conf: a new recogniser when the layout, `mouse-long-press` or the

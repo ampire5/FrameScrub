@@ -298,8 +298,8 @@ public enum PluginEvent: Equatable, Sendable {
     case error(String)
     /// The current segment or the lock changed (also by playback); `current` is nil outside any segment.
     case segment(current: Int?, locked: Bool)
-    /// The user pressed (or ran) a key bound to the page's action `name`.
-    case action(name: String)
+    /// The user pressed (or ran) a key bound to the page's action `name`, with the frame on screen and its time.
+    case action(name: String, t: Double, frame: Int)
 
     public var name: String {
         switch self {
@@ -323,9 +323,15 @@ public enum PluginEvent: Equatable, Sendable {
             return PluginJSON.encode(reason)
         case let .segment(current, locked):
             return PluginJSON.encode(SegmentChanged(current: current, locked: locked))
-        case let .action(name):
-            return PluginJSON.encode(["name": name])
+        case let .action(name, t, frame):
+            return PluginJSON.encode(ActionPressed(name: name, t: t, frame: frame))
         }
+    }
+
+    private struct ActionPressed: Encodable {
+        var name: String
+        var t: Double
+        var frame: Int
     }
 
     private struct SegmentChanged: Encodable {
@@ -358,7 +364,7 @@ public enum PluginEvent: Equatable, Sendable {
 }
 
 /// The answer to `request("actions", {actions})`: which keys were bound to the page's actions and which were refused
-/// (with the reason, `key taken` or `user binding`).
+/// (with the reason: `key taken`, `user binding` or `not a key`).
 public struct PluginActionsReply: Encodable, Equatable, Sendable {
     public struct Item: Encodable, Equatable, Sendable {
         public var key: String

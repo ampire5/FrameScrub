@@ -67,6 +67,21 @@ import Testing
         #expect(map.bindings == base.bindings)
     }
 
+    @Test func refusesTheCommandChordsOfMenuItems() {
+        let base = InputMap(layout: .classic)
+        let (map, bound, refused) = base.merging([
+            PluginAction(name: "mark", label: "Mark", key: chord("Meta+w")),
+            PluginAction(name: "next", label: "Next", key: chord("Meta+1")),
+            PluginAction(name: "shut", label: "Shut", key: chord("Meta+Shift+o")),
+            PluginAction(name: "free", label: "Free", key: chord("Meta+9")),
+        ])
+        #expect(refused.map(\.name) == ["mark", "next", "shut"])
+        #expect(refused.allSatisfy { $0.reason == "key taken" })
+        #expect(bound.map(\.name) == ["free"])
+        #expect(map.command(for: chord("Meta+o")) != .pluginAction("shut"))
+        #expect(map.command(for: chord("Meta+9")) == .pluginAction("free"))
+    }
+
     @Test func aSecondActionOnTheSameKeyIsRefused() {
         let (map, bound, refused) = InputMap().merging([
             PluginAction(name: "mark", label: "Mark", key: chord("Alt+1")),

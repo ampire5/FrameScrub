@@ -236,9 +236,9 @@ import Testing
     }
 
     @Test func actionEventDetail() {
-        let event = PluginEvent.action(name: "mark")
+        let event = PluginEvent.action(name: "mark", t: 12.5, frame: 300)
         #expect(event.name == "action")
-        #expect(event.detail == #"{"name":"mark"}"#)
+        #expect(event.detail == #"{"frame":300,"name":"mark","t":12.5}"#)
     }
 
     @Test func actionsReplyListsBoundAndRefusedKeys() {

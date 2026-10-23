@@ -72,8 +72,8 @@ import WebKit
 ///                                     segments are applied after it)
 ///     segment                         {current: i | null, locked} when the current segment or the lock changes, playback
 ///                                     included
-///     action                          {name} when the user presses a key bound to the page's action `name` (not repeated
-///                                     while held)
+///     action                          {name, t, frame} when the user presses a key bound to the page's action `name` (not
+///                                     repeated while held); t and frame are those on screen, not a seek's target
 ///     error                           a reason string, when a verb (sent without a reply) failed
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default
