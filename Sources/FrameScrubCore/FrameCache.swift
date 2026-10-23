@@ -118,6 +118,21 @@ public final class FrameCache {
         }
     }
 
+    /// Evicts frames outside `kept`, farthest from the focus first, until `bytes` more fit in the budget; false when
+    /// they still do not.
+    public func makeRoom(forBytes bytes: Int, keeping kept: [ClosedRange<Int>]) -> Bool {
+        lock.withLock {
+            guard used + bytes > budget else { return true }
+            let victims = frames.keys.filter { k in k != focus && !kept.contains { $0.contains(k) } }
+                .sorted { score($0) > score($1) }
+            for k in victims {
+                guard used + bytes > budget else { break }
+                if let frame = frames.removeValue(forKey: k) { used -= frame.byteSize }
+            }
+            return used + bytes <= budget
+        }
+    }
+
     private func resolvedLocked(_ n: Int) -> Bool { frames[n] != nil || undecodable.contains(n) }
 
     private func evictLocked() {

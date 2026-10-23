@@ -3,9 +3,9 @@ import Testing
 
 @Suite struct PlaybackEdgesTests {
     private func decide(_ n: Int, from position: Int, _ direction: Int, loop: ClosedRange<Int>? = nil, _ mode: ABLoopMode = .loop,
-                        marks: [CutSegment]? = nil, pastStart: Bool = false, pastEnd: Bool = false) -> EdgeAction {
+                        marks: [CutSegment]? = nil, wrap: Bool = false, pastStart: Bool = false, pastEnd: Bool = false) -> EdgeAction {
         PlaybackEdges.decide(target: n, pastStart: pastStart, pastEnd: pastEnd, position: position, direction: direction,
-                             loop: loop, mode: mode, marks: marks, frameCount: 600)
+                             loop: loop, mode: mode, marks: marks, wrapMarks: wrap, frameCount: 600)
     }
 
     @Test func fileEdges() {
@@ -50,6 +50,22 @@ import Testing
         #expect(PlaybackEdges.markStart(position: 50, direction: 1, marks: marks) == 10)   // at the end of the last: again
         #expect(PlaybackEdges.markStart(position: 10, direction: -1, marks: marks) == 50)  // at the start of the first
         #expect(PlaybackEdges.markStart(position: 15, direction: 1, marks: marks) == nil)  // inside a mark
+    }
+
+    @Test func wrappedMarksForward() {
+        let marks = [CutSegment(start: 10, end: 20), CutSegment(start: 40, end: 50)]
+        #expect(decide(51, from: 50, 1, marks: marks, wrap: true) == .jump(10))
+        #expect(decide(51, from: 50, 1, marks: marks) == .pause(at: 50))
+    }
+
+    @Test func wrappedMarksBackward() {
+        let marks = [CutSegment(start: 10, end: 20), CutSegment(start: 40, end: 50)]
+        #expect(decide(9, from: 10, -1, marks: marks, wrap: true) == .jump(50))
+        #expect(decide(9, from: 10, -1, marks: marks) == .pause(at: 10))
+    }
+
+    @Test func wrappedMarksPastFileEnd() {
+        #expect(decide(599, from: 599, 1, marks: [.init(start: 590, end: 599)], wrap: true, pastEnd: true) == .jump(590))
     }
 
     @Test func pingPongCyclesAfterOnce() {

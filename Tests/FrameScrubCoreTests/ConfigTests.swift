@@ -48,9 +48,41 @@ import Testing
         #expect(c.stashPathMap == #"S:\Media=/Volumes/S$/Media;\\server.local\x=/Volumes/x"#)
         #expect(c.startTab == .stash)
         #expect(c.stashEnabled)
+        #expect(c.stashStream == .auto)
         let (bad, badWarnings) = Config.parse("start-tab=other")
         #expect(badWarnings.count == 1)
         #expect(bad.startTab == .recent)
+    }
+
+    @Test func parsesStashStream() {
+        for (text, value) in [("auto", StashStreaming.auto), ("never", .never), ("Always", .always)] {
+            let (c, warnings) = Config.parse("stash-stream=\(text)")
+            #expect(warnings.isEmpty)
+            #expect(c.stashStream == value)
+            #expect(c.text(forKey: "stash-stream") == text.lowercased())
+        }
+        let (bad, warnings) = Config.parse("stash-stream=sometimes")
+        #expect(warnings.count == 1)
+        #expect(bad.stashStream == .auto)
+        #expect(Config.keys.contains("stash-stream"))
+    }
+
+    @Test func parsesPluginKeys() {
+        let (c, warnings) = Config.parse("""
+        plugin-url=http://host:8000/page/
+        plugin-width=560
+        plugin-open-allowed=http://host:8000,file://
+        """)
+        #expect(warnings.isEmpty)
+        #expect(c.pluginURL == "http://host:8000/page/")
+        #expect(c.pluginWidth == 560)
+        #expect(c.pluginOpenAllowed == "http://host:8000,file://")
+        #expect(c.text(forKey: "plugin-width") == "560")
+        let (bad, badWarnings) = Config.parse("plugin-width=100\nplugin-width=2000\nplugin-width=wide")
+        #expect(badWarnings.count == 3)
+        #expect(bad.pluginWidth == 400)
+        #expect(Config().pluginURL.isEmpty && Config().pluginOpenAllowed.isEmpty)
+        #expect(Config.pluginWidthRange == 240...1200)
     }
 
     @Test func stashOffByDefault() {
@@ -309,6 +341,18 @@ import Testing
         #expect(lookup(dir.appendingPathComponent("none.png").path) == nil)
     }
 
+    @Test func parsesSegmentAdvance() {
+        #expect(Config().segmentAdvance == .repeating)
+        let (c, warnings) = Config.parse("segment-advance=next")
+        #expect(warnings.isEmpty)
+        #expect(c.segmentAdvance == .next)
+        #expect(c.text(forKey: "segment-advance") == "next")
+        #expect(Config().text(forKey: "segment-advance") == "repeat")
+        #expect(Config.parse("segment-advance=repeat").0.segmentAdvance == .repeating)
+        #expect(!Config.parse("segment-advance=forever").1.isEmpty)
+        #expect(Config.keys.contains("segment-advance"))
+    }
+
     @Test func parsesABLoopMode() {
         #expect(Config().abLoop == .loop)
         let (c, warnings) = Config.parse("ab-loop=once")
@@ -335,6 +379,17 @@ import Testing
         #expect(c.playlistSort == .size)
         #expect(c.text(forKey: "playlist-sort") == "size")
         #expect(!Config.parse("playlist-sort=random").1.isEmpty)
+    }
+
+    @Test func parsesKeepSpeed() {
+        #expect(Config().keepSpeed)
+        #expect(Config().text(forKey: "keep-speed") == "yes")
+        let (c, warnings) = Config.parse("keep-speed=no")
+        #expect(warnings.isEmpty)
+        #expect(!c.keepSpeed)
+        #expect(c.text(forKey: "keep-speed") == "no")
+        #expect(!Config.parse("keep-speed=maybe").1.isEmpty)
+        #expect(Config.keys.contains("keep-speed"))
     }
 
     @Test func parsesOntop() {

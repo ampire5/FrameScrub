@@ -148,6 +148,93 @@ FrameScrub plays your **[Stash](https://github.com/stashapp/stash)** library nat
 
 Stash support keeps growing in FrameScrub and in its sibling image viewer [Loupe](https://github.com/ampire5/Loupe).
 
+## Plugins
+
+A plugin is a web page that sits in a panel beside the video and drives the player through `window.framescrub`: notes taken against the timeline, chapter marking, a review checklist, a custom playlist. The player knows nothing of what the page is for.
+
+- **Set one** with `plugin-url=` in `framescrub.conf` (or Settings → General → Plugin panel); `plugin-width=` (240…1200 points) is the panel's width, and dragging its edge writes it. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too.
+- **Show it** with View › Show Plugin Panel (`⌥⌘P`, a toggle). View › Focus Plugin Panel (`⌃⌥⌘P`) gives the page the keyboard; the page's `focusPlayer()` (usually on Esc) gives it back.
+- **Keys.** While the page has the keyboard, a key it does not handle falls through to the player, as if the video had the keyboard (Space and the arrows included, rather than scrolling the page). So a page should call `preventDefault()` on the keys it handles itself. Nothing typed into a text field, textarea or editable element reaches the player.
+- **Trust.** Only pages from an origin you configured get the bridge and are heard: the origin (scheme, host and port) of `plugin-url`, and of any `plugin=` link you open. A `file:` page works from `plugin-url` only, not from a link. Links to other origins and new windows open in your default browser.
+- **Opening local files** is a step further: a page may open only video files, by absolute path, and the first time an origin asks you are asked to allow it. The answer is kept in `plugin-open-allowed=` (comma-separated origins, e.g. `http://localhost:8000`).
+
+A minimal page: it shows the time, has a button that jumps to 30 s, and declares one action on `Alt+1`.
+
+```html
+<!doctype html>
+<title>Notes</title>
+<p>Time: <b id="t">–</b></p>
+<button id="jump">Go to 0:30</button>
+<script>
+  const fs = window.framescrub;            // missing unless this origin is trusted
+  const show = s => { t.textContent = s.ready ? s.t.toFixed(2) + " s" : "no file"; };
+  if (fs) {
+    fs.onstate = show;                     // each change, at most ten times a second
+    if (fs.state) show(fs.state);
+    jump.onclick = () => fs.seek(30);
+    fs.actions([{ name: "mark", label: "Mark chapter", key: "Alt+1" }]);
+    fs.onaction = a => console.log("chapter at", a.t, "frame", a.frame);
+    fs.onerror = reason => console.warn(reason);
+  }
+</script>
+```
+
+### The bridge (version 1)
+
+Every verb posts a command and forgets it; a failure fires the `error` event with the reason. `framescrub.request(cmd, args)` does the same with a Promise that resolves with the result or rejects with an `Error` saying what was wrong, e.g. `request("seek", {t: 12})`. Times are seconds.
+
+| Verb | Does |
+|---|---|
+| `seek(t)` | Seek to `t` (not negative) |
+| `play()` `pause()` | Play / pause |
+| `step(n)` | `n` frames forward, negative backward |
+| `loop(a, b)` / `loop(null)` | An A-B loop (`b` above `a`) / clear it |
+| `segments(list, {lock?, advance?})` | Lock to `[[a, b], …]`; `[]` clears |
+| `lock(on)` | Lock to the segments or release them |
+| `goSegment(i)` | Seek to the start of segment `i` (from 0) |
+| `actions(list)` | Declare `[{name, label, key?}]`; `[]` withdraws |
+| `open(o)` | Open a file or Stash scene (below) |
+| `focusPlayer()` | Keys go to the player again |
+
+Requests that answer (they need a file open, else they reject):
+
+| Request | Reply |
+|---|---|
+| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream"}` |
+| `marks` | `{loop, loopFrames, segments: [{start, end, startFrame, endFrame}], openFrame, openStart}`: the A-B range and the cut marks |
+| `playlist` | `{index, count, total, name}`: the file's place in its folder (from 0) |
+| `frame` `{t \| frame, maxSize?}` | `{t, frame, width, height, dataURL}`: a JPEG fitted into `maxSize` pixels (16…512, default 512) |
+| `actions` `{actions}` | `{bound: [{key, name}], refused: [{key, name, reason}]}` |
+
+**State.** `framescrub.state` is the latest; `framescrub.onstate = s => …` or the window event `framescrubstate` (`event.detail`) hear each change:
+
+`{ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null, segments: {list, current, locked, advance} | null, visible}`
+
+**Events.** `framescrub.on<name> = detail => …`, or the window event `framescrub<name>`:
+
+| Event | When / detail |
+|---|---|
+| `focus` `blur` | The panel took / gave back the keyboard |
+| `fileopened` | `{path, scene, source}` once a file is open, however it was opened; before any `segment` event for it |
+| `segment` | `{current, locked}` when the current segment or the lock changes |
+| `action` | `{name, t, frame}` when the user presses a key bound to the page's action (not repeated while held) |
+| `error` | A reason string, when a verb sent without a reply failed |
+
+### Segments and opening files
+
+`segments` locks playback and scrubbing to the given ranges; `advance` is `"repeat"` or `"next"` for what happens at a segment's end (default: `segment-advance` in `framescrub.conf`). It fails with "no segment inside the file" when none falls in the open file, and `lock` fails with "no segments" without any. The same landing works in a link: `framescrub://open?path=…&t=12&seg=10-20,35-40&lock=1&adv=next`.
+
+`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `source` in `fileopened` and `info` says which.
+
+### Actions and keys
+
+`actions` lets a page offer commands on keys (`key` in `input.conf` syntax, e.g. `"Alt+1"`); they are listed in the key help (`?`) under "Plugin" and the page hears `action`. The keys are the user's first:
+
+- A key already bound to anything in `input.conf` (even `ignore`) is `key taken`; ⌘ chords of the menu items (⌘O, ⌘W, ⌘G, ⌥⌘P…) are refused the same way.
+- Mouse buttons, the wheel, swipes and pinches are refused with `not a key`.
+- To choose the key yourself, bind the action's name in `input.conf`: `Alt+9 plugin-action mark`. That key wins over the page's own (`user binding`), and an action without a key is reachable this way only.
+- Keys are bound only while the panel is shown; the actions are dropped when a new page loads or the page's process dies.
+
 ## Under the hood
 
 Native Swift and AppKit, with SwiftUI for settings and panels.

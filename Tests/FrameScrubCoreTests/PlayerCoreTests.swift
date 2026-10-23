@@ -129,6 +129,11 @@ final class HapticLog {
         await eventually { player.index?.isExact == true && player.displayedFrame != nil }
     }
 
+    /// Playing, and the clock running: it starts once the frame playback starts on is on screen (`restartClock`).
+    private func running(_ player: PlayerCore) async -> Bool {
+        await eventually { player.tick(); return player.clock.isRunning }
+    }
+
     private func shownNumber(_ delegate: RecordingDelegate) -> Int? {
         delegate.frames.last.map { readFrameNumber($0.pixelBuffer) }
     }
@@ -248,6 +253,7 @@ final class HapticLog {
         #expect(await ready(player))
         player.seek(toFrame: 590)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 1
         player.tick()
         #expect(player.isPaused)
@@ -320,6 +326,88 @@ final class HapticLog {
         #expect(await eventually { player.displayedFrame != nil })
         #expect(player.clock.isRunning)
         #expect(player.displayedFrame == 0)
+    }
+
+    /// A stand-in near the target is on screen, not the target itself: the clock (and with it the sound) waits for the
+    /// frame playback starts on, so the picture never trails the sound at the start.
+    @Test func playbackClockWaitsForTheFrameItStartsOn() async throws {
+        let now = 1000.0
+        let (player, delegate, _) = try makePlayer(now: { now })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.seek(toFrame: 240)   // same GOP as the frame on screen: decoded from frame 0 on, a stand-in shows first
+        player.play()
+        #expect(player.clock.isRunning == (player.displayedFrame == 240), "shown \(String(describing: player.displayedFrame))")
+        #expect(await eventually { player.tick(); return player.displayedFrame == 240 })
+        #expect(player.clock.isRunning)
+        #expect(player.clock.seconds == player.index?.seconds(forFrame: 240))
+        #expect(self.shownNumber(delegate) == 240)
+    }
+
+    /// A new file opened at a time and played at once from a slow source (a share, a stream): the exact index and
+    /// frames before the target arrive first and a stand-in shows, but the clock waits for the target itself.
+    @Test func playingAFileJustOpenedAtATimeStartsOnItsFrame() async throws {
+        let now = 1000.0
+        let url = Fixtures.url(Fixtures.h264)
+        let size = try FileByteSource(url: url).size
+        var config = Config()
+        config.cacheSizeMiB = 400
+        let player = PlayerCore(config: config, enableAudio: false, fallbackRoot: makeTemporaryDirectory(), now: { now },
+                                byteSource: { url, _ in ThrottledByteSource(try FileByteSource(url: url), bytesPerSecond: Int(size / 3)) })
+        let delegate = RecordingDelegate()
+        player.delegate = delegate
+        defer { player.close() }
+        try player.open(url)
+        player.applyLanding(LinkTarget(time: 8))   // frame 240, in the first GOP
+        player.play()
+        #expect(await eventually(timeout: 30) { player.tick(); return player.clock.isRunning })
+        #expect(player.displayedFrame == 240, "stand-ins shown: \(delegate.frames.map { readFrameNumber($0.pixelBuffer) })")
+        #expect(self.shownNumber(delegate) == 240)
+    }
+
+    /// Locked segments that play on to the next: the sound's first moments must not put the playhead a frame before the
+    /// segment (the player's time is negative until its first sample is heard), from where playback jumped back to the
+    /// segment's start and started the sound again, over and over: a buzz. Needs an audio device.
+    @Test func soundStartingAtASegmentStartStartsOnce() async throws {
+        let player = PlayerCore(config: Config(), enableAudio: true, fallbackRoot: makeTemporaryDirectory())
+        defer { player.close() }
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        guard await eventually(timeout: 3, { player.hasAudio }) else { return }   // no audio device here
+        player.applyLanding(LinkTarget(time: 1.0, segments: [1.0...1.6, 2.4...3.0], advance: .next))
+        player.play()
+        let start = CACurrentMediaTime()
+        while CACurrentMediaTime() - start < 0.45 {   // inside the first segment (0.6 s)
+            player.tick()
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(player.audioPlayCalls == 1)
+        #expect(player.position >= 25 && player.position <= 40)
+    }
+
+    /// The clock follows the sound: while the sound is still starting it holds the start (both begin together), but
+    /// not for longer than `audioStartLimit`.
+    @Test func clockHoldsWhileTheSoundStarts() {
+        var now = 0.0
+        var starting = true
+        var heard: Double?
+        let clock = PlaybackClock(now: { now })
+        clock.audioSeconds = { heard }
+        clock.audioStarting = { starting }
+        clock.start(at: 10)
+        now += 0.3
+        #expect(clock.seconds == 10)
+        starting = false
+        heard = 10.05
+        now += 0.05
+        #expect(clock.seconds == 10.05)
+        // A sound that never starts holds the clock for the limit only, then the host clock runs on from the start.
+        clock.start(at: 20)
+        heard = nil
+        starting = true
+        now += clock.audioStartLimit - 0.01
+        #expect(clock.seconds == 20)
+        now += 0.5
+        #expect(abs(clock.seconds - 20.5) < 1e-9)
     }
 
     @Test func autoplayStartsAfterTheResumePosition() throws {
@@ -401,6 +489,23 @@ final class HapticLog {
         #expect(delegate.messages.last?.hasPrefix("Frame 127") == true)
     }
 
+    @Test func abLoopConfinesTheCacheAndClearingItReleasesIt() async throws {
+        let (player, _, _) = try makePlayer()   // keyframes 0/250/500
+        defer { player.close() }
+        player.seek(toFrame: 320)
+        player.perform(.abLoop)
+        player.seek(toFrame: 300)
+        player.perform(.abLoop)
+        #expect(player.loopA == 300 && player.loopB == 320)
+        player.seek(toFrame: 310)
+        #expect(await eventually { (250...320).allSatisfy(player.cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(!player.cache.contains(321) && !player.cache.contains(249))
+        player.perform(.abLoop)   // clears
+        #expect(player.loopA == nil)
+        #expect(await eventually { player.cache.contains(321) && player.cache.contains(249) })
+    }
+
     @Test func abLoopAndRangeExport() async throws {
         let (player, delegate, root) = try makePlayer()
         defer { player.close() }
@@ -446,6 +551,7 @@ final class HapticLog {
 
         player.perform(.cyclePause)
         #expect(!player.isPaused)
+        #expect(await running(player))
         now += 1
         player.tick()
         #expect(player.position == 30)
@@ -457,9 +563,11 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 10)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 1                       // would be frame 40, past B = 20
         player.tick()
         #expect(player.position == 10)
+        #expect(await running(player))
         now += 0.2
         player.tick()
         #expect(player.position == 16)
@@ -535,6 +643,94 @@ final class HapticLog {
         #expect(player.speed == 1.5)
     }
 
+    // MARK: keep-speed
+
+    @Test func speedCarriesToTheNextFile() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        player.perform(.stepSpeed(1))
+        player.perform(.stepSpeed(1))
+        #expect(player.speed == 1.5)
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1.5 && player.direction == 1)
+        #expect(player.clock.rate == 1.5)
+        #expect(delegate.feedback == [.speed(1.5)])   // shown, so a faster file is no surprise
+        player.perform(.setSpeed(1))
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)            // 1×: nothing to show
+    }
+
+    @Test func reverseAndShuttleSpeedDoNotCarry() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.seek(toFrame: 300)
+        player.perform(.shuttleBack)
+        player.perform(.stepSpeed(1))                 // backward at 1.25×
+        #expect(player.direction == -1 && player.speed == 1.25 && player.clock.rate == -1.25)
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.direction == 1 && player.speed == 1.25 && player.clock.rate == 1.25)
+        #expect(await eventually { player.index?.isExact == true })
+        player.seek(toFrame: 300)
+        player.perform(.shuttleForward)
+        player.perform(.shuttleForward)
+        #expect(player.speed == 2)                    // the shuttle's speed, not one the user chose with [ ]
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.direction == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)
+    }
+
+    @Test func holdSpeedDoesNotCarry() async throws {
+        let (player, _, _) = try makePlayer(configure: { $0.holdSpeed = 3 })
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.perform(.stepSpeed(1))                 // 1.25
+        player.beginHoldSpeed()                       // paused: plays at 3× while held
+        #expect(player.speed == 3)
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1.25 && player.clock.rate == 1.25)
+        #expect(player.isPaused)                      // autoplay is off: the hold's playing stays with the old file
+        player.endHoldSpeed()                         // the key comes up after the open: nothing to put back
+        #expect(player.speed == 1.25 && player.isPaused)
+        player.beginHoldSpeed()                       // a new hold in the new file works as before
+        #expect(player.speed == 3 && !player.isPaused)
+        player.endHoldSpeed()
+        #expect(player.speed == 1.25 && player.isPaused)
+    }
+
+    @Test func keepSpeedNoResetsOnOpen() async throws {
+        let (player, delegate, _) = try makePlayer(configure: { $0.keepSpeed = false })
+        defer { player.close() }
+        player.perform(.stepSpeed(1))
+        #expect(player.speed == 1.25)
+        delegate.feedback.removeAll()
+        try player.open(Fixtures.url(Fixtures.h264))
+        #expect(player.speed == 1 && player.direction == 1 && player.clock.rate == 1)
+        #expect(delegate.feedback.isEmpty)
+    }
+
+    /// The sound is set up beside the video: when it comes in it plays at the kept speed. Needs an audio device.
+    @Test func keptSpeedReachesTheSound() async throws {
+        let player = PlayerCore(config: Config(), enableAudio: true, fallbackRoot: makeTemporaryDirectory())
+        defer { player.close() }
+        try player.open(Fixtures.url(Fixtures.h264))   // no sound: 50× is allowed
+        player.perform(.setSpeed(50))
+        #expect(player.speed == 50)
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        #expect(player.speed == AudioOutput.rateRange.upperBound)   // the sound's range from the start
+        #expect(player.clock.rate == AudioOutput.rateRange.upperBound)
+        player.perform(.setSpeed(1.5))
+        try player.open(Fixtures.url(Fixtures.withAudio))
+        #expect(player.speed == 1.5 && player.clock.rate == 1.5)
+        guard await eventually(timeout: 3, { player.hasAudio }) else { return }   // no audio device here
+        #expect(player.audioRate == 1.5)
+        #expect(player.speed == 1.5 && player.clock.rate == 1.5)
+    }
+
     @Test func reachingTheEndShowsStop() async throws {
         var now = 1000.0
         let (player, delegate, _) = try makePlayer(now: { now })
@@ -542,6 +738,7 @@ final class HapticLog {
         #expect(await ready(player))
         player.seek(toFrame: 595)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 5
         player.tick()
         #expect(delegate.feedback.last == .endOfFile)
@@ -560,6 +757,7 @@ final class HapticLog {
         player.seek(toFrame: 590)
         player.perform(.cyclePause)
         #expect(!player.isPaused)
+        #expect(await running(player))
         now += 1                       // well past the end of the file
         player.tick()
         #expect(player.position == 590)
@@ -577,6 +775,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 10)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 1                       // would be frame 40, past B = 20
         player.tick()
         #expect(player.position == 20)
@@ -585,6 +784,7 @@ final class HapticLog {
         player.perform(.cyclePause)    // play again from B: the range starts over
         #expect(player.position == 10)
         #expect(!player.isPaused)
+        #expect(await running(player))
         now += 0.2
         player.tick()
         #expect(player.position == 16)
@@ -601,6 +801,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 30)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 1
         player.tick()
         #expect(player.position == 60)
@@ -618,6 +819,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 590)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 1
         player.tick()
         #expect(player.position == 599)
@@ -1203,9 +1405,11 @@ final class HapticLog {
         #expect(player.playMarksOnly && delegate.messages.last == "Play marks only: on")
         player.perform(.cyclePause)
         #expect(player.position == 10)
+        #expect(await running(player))
         now += 0.5                     // frame 25, past 20: on to the next segment
         player.tick()
         #expect(player.position == 100)
+        #expect(await running(player))
         now += 1                       // past 110, the last one
         player.tick()
         #expect(player.position == 110 && player.isPaused)
@@ -1236,6 +1440,7 @@ final class HapticLog {
         player.seek(toFrame: 10)
         player.perform(.playMarks)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.2                     // frame 16: past B = 14, but the loop does not act
         player.tick()
         #expect(player.position == 16)
@@ -1541,9 +1746,11 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 10)
         player.perform(.cyclePause)
+        #expect(await running(player))
         now += 0.5                     // frame 25, past B
         player.tick()
         #expect(player.position == 20 && player.direction == -1 && !player.isPaused)
+        #expect(await running(player))
         now += 0.5                     // 15 frames back from B: frame 5, below A
         player.tick()
         #expect(player.position == 10 && player.direction == 1 && !player.isPaused)
@@ -1560,6 +1767,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 15)
         player.perform(.shuttleBack)
+        #expect(await running(player))
         now += 0.3                     // frame 6, below A
         player.tick()
         #expect(player.position == 20 && player.direction == -1 && !player.isPaused)
@@ -1576,6 +1784,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 15)
         player.perform(.shuttleBack)
+        #expect(await running(player))
         now += 0.3
         player.tick()
         #expect(player.position == 10 && player.isPaused)
@@ -1593,9 +1802,11 @@ final class HapticLog {
         player.perform(.playMarks)
         player.seek(toFrame: 45)
         player.perform(.shuttleBack)
+        #expect(await running(player))
         now += 0.2                     // frame 39, below the mark 40…50
         player.tick()
         #expect(player.position == 20 && !player.isPaused)
+        #expect(await running(player))
         now += 0.4                     // 12 frames back from 20: below the first mark
         player.tick()
         #expect(player.position == 10 && player.isPaused)
@@ -1611,6 +1822,7 @@ final class HapticLog {
         #expect(await ready(player))
         player.seek(toFrame: 300)
         player.perform(.shuttleBack)
+        #expect(await running(player))
         now += 1
         player.tick()
         #expect(player.position == 270)
@@ -1699,6 +1911,7 @@ final class HapticLog {
         player.perform(.abLoop)
         player.seek(toFrame: 10)
         player.perform(.cyclePause)
+        #expect(await running(player))
         player.beginHoldSpeed()        // 2×
         now += 0.3                     // frame 28, past B
         player.tick()

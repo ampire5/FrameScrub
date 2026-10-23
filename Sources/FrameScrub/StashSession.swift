@@ -9,14 +9,16 @@ enum FileOrigin: Equatable {
     case stash(sceneID: String, hasQueue: Bool)
 }
 
-/// A Stash scene's file on this Mac, or why it cannot be opened.
+/// A Stash scene's file on this Mac, Stash's stream of it, or why it cannot be opened.
 enum StashFile {
     case file(URL)
+    case stream(URL)
     case failed(OpenFailure)
 }
 
 /// The app side of a scene opened from Stash: finds its file on the mounted shares (mounting the share when it is
-/// missing) and reports what was watched back to Stash (Stash spec §2.6).
+/// missing), falls back on Stash's stream by `stash-stream` (`StashOpenPolicy`), and reports what was watched back to
+/// Stash (Stash spec §2.6).
 @MainActor final class StashSession {
     /// "Connecting \\server\S$…" while a share is being mounted.
     var onStatus: ((String) -> Void)?
@@ -29,6 +31,8 @@ enum StashFile {
     private(set) var details: (sceneID: String, state: StashDetailsState)?
     private var detailsRequests = StashDetailsRequests()
     private let rules: [StashPathRule]
+    private let streaming: StashStreaming
+    private let stashURL: String
     private let client: StashClient?
     /// Stash's UI settings; nil until Stash has answered (nothing is sent before: it may have tracking off).
     private var settings: StashUISettings?
@@ -40,6 +44,8 @@ enum StashFile {
 
     init(config: Config) {
         rules = StashPathRule.parse(config.stashPathMap)
+        streaming = config.stashStream
+        stashURL = config.stashURL
         client = URL(string: config.stashURL).map { StashClient(baseURL: $0, apiKey: config.stashAPIKey) }
         loadSettings()
         // The last server the PC's drive letters were found on, for a restart with none of its shares mounted yet.
@@ -66,30 +72,58 @@ enum StashFile {
         }
     }
 
-    /// The scene's first file on this Mac, or why it cannot be opened.
+    /// The scene's first file on this Mac, Stash's stream of it, or why it cannot be opened. A scene without paths
+    /// (a link, a plugin page that named only the id) has them asked of Stash first.
     func resolve(_ scene: StashScene, completion: @escaping @MainActor (StashFile) -> Void) {
-        guard let path = scene.paths.first else {
-            completion(.failed(OpenFailure(reason: "The scene has no file in Stash.", detail: "Stash scene \(scene.id)")))
+        guard scene.paths.isEmpty, streaming != .always else {
+            decide(sceneID: scene.id, paths: scene.paths, completion: completion)
             return
         }
-        switch map().resolve(path) {
+        guard let client else {
+            completion(.failed(OpenFailure(reason: "No Stash server to ask about the scene.", detail: "Stash scene \(scene.id)")))
+            return
+        }
+        Task { [weak self] in
+            let paths: [String]
+            do {
+                paths = try await client.scenePaths(id: scene.id)
+            } catch {
+                Self.logger.error("Paths of scene \(scene.id, privacy: .public): \(String(describing: error), privacy: .public)")
+                completion(.failed(OpenFailure(reason: error.localizedDescription, detail: "Stash scene \(scene.id)")))
+                return
+            }
+            self?.decide(sceneID: scene.id, paths: paths, completion: completion)
+        }
+    }
+
+    /// `StashOpenPolicy` over the shares mounted now; a share it names is mounted, then the policy is asked again
+    /// (`mountAllowed: false`). A share that will not mount is replaced by the stream when `stash-stream` is `auto`.
+    private func decide(sceneID: String, paths: [String], mountAllowed: Bool = true,
+                        completion: @escaping @MainActor (StashFile) -> Void) {
+        let decision = StashOpenPolicy.decide(sceneID: sceneID, paths: paths, resolve: { map().resolve($0) },
+                                              streaming: streaming, stashURL: stashURL, mountAllowed: mountAllowed)
+        switch decision {
         case let .local(url):
             completion(.file(url))
-        case .unmapped:
-            completion(.failed(Self.noShare(path)))
-        case let .needsMount(smbURL):
+        case let .stream(url):
+            completion(.stream(url))
+        case let .unavailable(failure):
+            completion(.failed(failure))
+        case let .needsMount(smbURL, path):
             let unc = Self.unc(smbURL)
             onStatus?("Connecting \(unc)…")
             ShareMounter.mount(smbURL) { [weak self] result in
+                guard let self else { return }
                 switch result {
                 case .success:
-                    if let self, case let .local(url) = map().resolve(path) {
-                        completion(.file(url))
-                    } else {
-                        completion(.failed(Self.noShare(path)))
-                    }
+                    decide(sceneID: sceneID, paths: paths, mountAllowed: false, completion: completion)
                 case let .failure(error):
-                    completion(.failed(OpenFailure(reason: "Cannot connect \(unc): \(error.localizedDescription)", detail: path)))
+                    if let stream = StashOpenPolicy.streamAfterMountFailure(sceneID: sceneID, streaming: streaming,
+                                                                            stashURL: stashURL) {
+                        completion(.stream(stream))
+                    } else {
+                        completion(.failed(OpenFailure(reason: "Cannot connect \(unc): \(error.localizedDescription)", detail: path)))
+                    }
                 }
             }
         }
@@ -223,11 +257,6 @@ enum StashFile {
             UserDefaults.standard.set(server, forKey: Self.driveServerKey)
         }
         return map
-    }
-
-    private static func noShare(_ path: String) -> OpenFailure {
-        OpenFailure(reason: "No share for \(path)",
-                    detail: "Mount the share on this Mac, or add a rule to stash-path-map in Settings → Stash.")
     }
 
     /// `smb://server/S$` → `\\server\S$`.

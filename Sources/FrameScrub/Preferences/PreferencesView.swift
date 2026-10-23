@@ -136,6 +136,7 @@ struct PreferencesView: View {
                           number: model.binding(\.holdSpeed, ["hold-speed"], decimals: 2), range: 1.25...8, step: 0.25)
                 SliderRow(title: "Speed step ([ ])", value: String(format: "%g×", model.config.speedStep),
                           number: model.binding(\.speedStep, ["speed-step"], decimals: 2), range: 0.05...1, step: 0.05)
+                Toggle("Keep the speed for the next video", isOn: model.binding(\.keepSpeed, ["keep-speed"]))
                 Toggle("Sound on every frame change in pause (⌥m)", isOn: model.binding(\.scrubAudio, ["scrub-audio"]))
                 Toggle("Natural pitch while scrubbing (⇧⌥m)", isOn: naturalScrubPitch)
                 SliderRow(title: "Scrub audio length", value: "\(model.config.scrubAudioLengthMs) ms",
@@ -194,6 +195,18 @@ struct PreferencesView: View {
                     Text("Scroll").tag(HomeLayoutMode.scroll)
                     Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
                 }
+            }
+            Section {
+                LabeledContent("Page") {
+                    CommitField(prompt: "http://host:8000/page/", value: model.binding(\.pluginURL, ["plugin-url"]))
+                }
+                StepperRow(title: "Width", value: "\(model.config.pluginWidth) pt",
+                           number: model.binding(\.pluginWidth, ["plugin-width"]), range: Config.pluginWidthRange, step: 20)
+            } header: {
+                Text("Plugin panel (⌥⌘P)")
+            } footer: {
+                Text("A web page beside the video that drives the player. Pages allowed to open local files: `plugin-open-allowed` in framescrub.conf.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

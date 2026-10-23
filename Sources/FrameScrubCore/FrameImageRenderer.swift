@@ -125,10 +125,25 @@ public final class FrameImageRenderer: @unchecked Sendable {
 
     /// A small SDR sRGB picture for the seek-bar preview, fitted into a `width` x `width` box.
     public func thumbnail(for frame: DecodedFrame, rotationClockwise: Int, width: Int) -> CGImage? {
-        let image = Self.image(for: frame, rotationClockwise: rotationClockwise, toneMapToSDR: true)
-        let scale = Double(width) / max(image.extent.width, image.extent.height)
-        let small = scale < 1 ? ImageScaling.lanczos(image, to: CGSize(width: max(1, (image.extent.width * scale).rounded()),
-                                                                       height: max(1, (image.extent.height * scale).rounded()))) : image
+        let small = Self.fitted(frame, rotationClockwise: rotationClockwise, into: width)
         return context.createCGImage(small, from: small.extent, format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!)
+    }
+
+    /// The same picture as JPEG bytes (for a plugin page), with its pixel size.
+    public func jpeg(for frame: DecodedFrame, rotationClockwise: Int, maxSide: Int, quality: Double = 0.85) -> (data: Data, size: CGSize)? {
+        let small = Self.fitted(frame, rotationClockwise: rotationClockwise, into: maxSide)
+        guard let data = context.jpegRepresentation(of: small, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                    options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: quality])
+        else { return nil }
+        return (data, small.extent.size)
+    }
+
+    /// The upright SDR picture shrunk (never enlarged) to fit a `side` x `side` box.
+    private static func fitted(_ frame: DecodedFrame, rotationClockwise: Int, into side: Int) -> CIImage {
+        let image = image(for: frame, rotationClockwise: rotationClockwise, toneMapToSDR: true)
+        let scale = Double(side) / max(image.extent.width, image.extent.height)
+        guard scale < 1 else { return image }
+        return ImageScaling.lanczos(image, to: CGSize(width: max(1, (image.extent.width * scale).rounded()),
+                                                      height: max(1, (image.extent.height * scale).rounded())))
     }
 }

@@ -44,6 +44,8 @@ extension KeyChord {
 public enum KeyHelp {
     public enum Section: Int, CaseIterable, Sendable {
         case playback, frames, navigation, saving, picture, window, audio
+        /// The plugin page's declared actions (`PluginAction`), titled by the page's labels.
+        case plugin
 
         public var title: String {
             switch self {
@@ -54,6 +56,7 @@ public enum KeyHelp {
             case .picture: "Picture"
             case .window: "Window"
             case .audio: "Sound"
+            case .plugin: "Plugin"
             }
         }
     }
@@ -71,12 +74,13 @@ public enum KeyHelp {
         case .holdSpeed: return (.playback, 1, "Hold: play faster")
         case let .multiplySpeed(factor): return (.playback, factor < 1 ? 2 : 3, factor < 1 ? "Slower" : "Faster")
         case let .stepSpeed(direction): return (.playback, direction < 0 ? 2 : 3, direction < 0 ? "Slower" : "Faster")
-        case let .setSpeed(value): return (.playback, 4, value == 1 ? "Normal speed" : "Speed ×\(formatNumber(value))")
+        case let .setSpeed(value): return (.playback, 4, value == 1 ? "Normal speed (1×)" : "Speed ×\(formatNumber(value))")
         case .abLoop: return (.playback, 5, "A-B range: start, end, clear")
         case .cycleABLoopMode: return (.playback, 6, "At B: loop, pause or turn back")
-        case .shuttleBack: return (.playback, 7, "Shuttle back")
-        case .shuttleStop: return (.playback, 8, "Stop")
-        case .shuttleForward: return (.playback, 9, "Shuttle forward")
+        case .toggleSegmentLock: return (.playback, 7, "Segments: lock / unlock")
+        case .shuttleBack: return (.playback, 8, "Shuttle back")
+        case .shuttleStop: return (.playback, 9, "Stop")
+        case .shuttleForward: return (.playback, 10, "Shuttle forward")
         case .frameBackStep: return (.frames, 0, "Previous frame")
         case .frameStep: return (.frames, 1, "Next frame")
         case let .scrub(fast, _): return (.frames, fast ? 3 : 2, fast ? "Fast scrubbing" : "Step frames")
@@ -134,17 +138,25 @@ public enum KeyHelp {
         case .toggleScrubAudio: return (.audio, 3, "Scrub audio on / off")
         case .toggleScrubAudioPitch: return (.audio, 4, "Scrub pitch: tape / natural")
         case .setFullscreen(true), .zoom, .zoomReset, .ignore: return nil   // zoom is bound but not available yet
+        case .pluginAction: return nil   // the plugin section lists them under the page's labels
         }
     }
 
-    /// The bound commands by section, each with all its keys (keys first, then mouse and trackpad).
-    public static func sections(for map: InputMap) -> [(section: Section, entries: [Entry])] {
+    /// The bound commands by section, each with all its keys (keys first, then mouse and trackpad); last the plugin
+    /// page's declared `actions` in their order, each with the keys bound to it (none when nothing reaches it).
+    public static func sections(for map: InputMap, plugin actions: [PluginAction] = []) -> [(section: Section, entries: [Entry])] {
         var grouped: [String: (section: Section, rank: Int, chords: [KeyChord])] = [:]
         for (chord, command) in map.bindings {
             guard let (section, rank, action) = describe(command) else { continue }
             grouped[action, default: (section, rank, [])].chords.append(chord)
         }
+        let plugin = actions.map { action in
+            Entry(keys: condensed(map.bindings.filter { $0.value == .pluginAction(action.name) }.keys
+                    .sorted { order($0, $1, in: map) }.map(\.displayName)),
+                  action: action.label)
+        }
         return Section.allCases.compactMap { section in
+            if section == .plugin { return plugin.isEmpty ? nil : (section, plugin) }
             let entries = grouped.filter { $0.value.section == section }
                 .sorted { ($0.value.rank, $0.key) < ($1.value.rank, $1.key) }
                 .map { Entry(keys: condensed($0.value.chords.sorted { order($0, $1, in: map) }.map(\.displayName)),

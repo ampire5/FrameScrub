@@ -1,5 +1,5 @@
 {
-  "originHash" : "8ffded6a5e84d941f28456fe14f01c00734daacad728c8778d74a54ae7e47e9e",
+  "originHash" : "2ebb14ef6cf9cab9f7192d4621b94d82aae101739ab6f7f8dbe2c3798eb4a418",
   "pins" : [
     {
       "identity" : "homescreenkit",
@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/StashKit.git",
       "state" : {
-        "revision" : "b361a8bb73288f0a6ec9a1956ff49d3c3e24a141",
-        "version" : "0.1.0"
+        "revision" : "d1141bb17714ee8978b0c781f15a1fb60bb08e05",
+        "version" : "0.2.0"
       }
     }
   ],

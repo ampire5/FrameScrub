@@ -9,7 +9,12 @@ import SwiftUI
 
 final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate, StillEnhancerDelegate {
     private let core: PlayerCore
+    /// The bindings in effect: the user's (`baseInputMap`) with the keys of the plugin page's declared actions added.
     private var inputMap: InputMap
+    /// The user's bindings (input.conf and the defaults), before any page action key is added.
+    private var baseInputMap: InputMap
+    /// The actions the page in the panel declared; dropped when the page goes away.
+    private var pluginActions: [PluginAction] = []
     private let gestures: GestureRouter
     /// The bound mouse buttons, from AppKit and from the Logitech mouse (`mouseBridge`).
     private let buttons: MouseButtonRouter
@@ -60,6 +65,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let osd = OverlayView(fontSize: 15)
     /// The stats (`i`): sections of the file on screen, in the top right corner; made in `buildViews`.
     private var statsPanel: InfoPanelController!
+    /// A web page beside the video that drives the player (View › Show Plugin Panel, `plugin=` in a link).
+    private let pluginPanel = PluginPanel()
+    /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from `plugin-url`.
+    private var pluginPolicy = PluginPolicy()
+    private var videoTrailing: NSLayoutConstraint!
+    /// The panel's width (`plugin-width`); a drag of its edge writes the setting once the drag rests.
+    private var pluginWidth: NSLayoutConstraint!
+    private var pluginWidthWrite: Timer?
+    /// Decodes frames for the page's `frame` requests; made on the first request for the open file.
+    private var pluginGrabber: PluginFrameGrabber?
+    /// While `core.open` runs: segment events wait until the page has heard `fileopened` (Ruling R20).
+    private var holdsSegmentEvents = false
+    /// The last segment event raised while held; dispatched right after `fileopened`.
+    private var heldSegmentEvent: PluginEvent?
+    private var lastPluginPush: TimeInterval = 0
     /// The open file's name and folder at once, its size and date once read off the main thread.
     private var fileFacts: FileFacts?
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
@@ -187,6 +207,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         colorMemory = ColorMemory(folders: folderColors, files: resumeStore)
         globalConfig = config
         self.inputMap = inputMap
+        baseInputMap = inputMap
         gestures = GestureRouter(inputMap: inputMap, scrubSettings: config.scrub)
         buttons = MouseButtonRouter(map: inputMap, longPressMilliseconds: config.mouseLongPress)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
@@ -231,18 +252,36 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Opens a file from outside the folder (Finder, ⌘O, Recent): closing it goes back to Recent.
+    /// A `framescrub://open` link: the file (or the Stash scene, found or streamed as for ▶), then its position,
+    /// segment and plugin page. A scene's open is asynchronous: true means it was begun.
     @discardableResult
-    func open(_ url: URL) -> Bool {
+    func open(_ target: OpenLink.Target) -> Bool {
+        if let plugin = target.plugin { showPlugin(plugin, from: .link) }
+        switch target.subject {
+        case let .file(url):
+            return open(url, landing: target.landing)
+        case let .stashScene(id):
+            openStashScene(id: id, paths: [], landing: target.landing)
+            return true
+        }
+    }
+
+    /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
+    /// where a link asked to land in it.
+    @discardableResult
+    func open(_ url: URL, landing: LinkTarget? = nil) -> Bool {
         returnTab = .recent
         stashScene = nil
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
-        return openFile(url)
+        return openFile(url, landing: landing)
     }
 
     /// Opens `url`; `fallbackPosition` is where to start when nothing is remembered for it (Stash's resume point).
+    /// `landing` (a link's or plugin's position and segments) is applied once it is open; it goes with this open only,
+    /// so a failed open or the user's next file never inherits it.
     @discardableResult
-    private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil) -> Bool {
+    private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
+                          landing: LinkTarget? = nil) -> Bool {
         StartupTrace.beginOpen(url.lastPathComponent)
         cancelEdgeDrag()   // the marks it moves are this file's
         cancelStashTitleWait()
@@ -252,6 +291,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if origin == .plain { stashScene = nil }
         failedScene = nil
         recentThumbnailer.cancel()   // the file's reads come first
+        pluginGrabber?.stop()
+        pluginGrabber = nil
         saveThumbnail()
         dropSceneSearch()
         videoView.clear()
@@ -267,24 +308,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         do {
             openedAt = ProcessInfo.processInfo.systemUptime
             indexingShownAt = nil
-            try core.open(url, fallbackPosition: fallbackPosition)
+            try openCore(url, fallbackPosition: fallbackPosition)
             StartupTrace.mark("core opened")
+            if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
             colorFileChanged()   // before anything below reads the colour
             startScreen.isHidden = true
             stashLibrary?.isHidden = true
             updatePrecisionWheel()
             // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon, up to
             // 0.4 s on a NAS, and a NAS folder read competes with the file's own reads: both wait for the first picture.
+            // A stream (Stash's, no file on this Mac) has no folder, no file facts and no place in Recent.
             videoView.onNextPicture = { [weak self] in
+                guard url.isFileURL else { return }
                 self?.window?.representedURL = url
                 self?.readFolder(of: url)
                 self?.readFileFacts(of: url)
             }
             showPlaylistPosition(url, opening: true)
             positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
-            NSDocumentController.shared.noteNewRecentDocumentURL(url)
-            var hidden = HiddenRecent()
-            hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+            if url.isFileURL {
+                NSDocumentController.shared.noteNewRecentDocumentURL(url)
+                var hidden = HiddenRecent()
+                hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+            }
             videoView.rotationClockwise = core.info?.rotationClockwise ?? 0
             gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
             updateGeometry(reshapeWindow: false)
@@ -295,7 +341,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             updateColorCorrection()
             updateScreenPixelSize()
             configurePreview(force: true)
-            applyWindowSize(.initial)
+            // The window keeps its size: the picture fits into it (⌘1–⌘4 and aspect changes still size the window).
+            window?.resizeIncrements = NSSize(width: 1, height: 1)   // no aspect left from the previous file
             revealSeekBar()
             statsFileChanged()
             StartupTrace.mark("open returned")
@@ -303,6 +350,27 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } catch {
             showFailure(OpenFailure(error), url: url)
             return false
+        }
+    }
+
+    /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
+    /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
+    private func openCore(_ url: URL, fallbackPosition: Double?) throws {
+        holdsSegmentEvents = true
+        heldSegmentEvent = nil
+        do {
+            try core.open(url, fallbackPosition: fallbackPosition)
+        } catch {
+            holdsSegmentEvents = false
+            heldSegmentEvent = nil
+            throw error
+        }
+        holdsSegmentEvents = false
+        pluginFileOpened()
+        if let held = heldSegmentEvent {
+            heldSegmentEvent = nil
+            pluginPanel.dispatch(held)
+            pushPluginState(force: true)
         }
     }
 
@@ -338,7 +406,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func closeFile() {
         guard hasOpenFile else { window?.performClose(nil); return }
         recentThumbnailer.cancel()
-        saveThumbnail()
+        saveThumbnail(wait: true)   // the start screen shows it next
         cancelStashTitleWait()
         stashSession?.leave()
         dropSceneSearch()
@@ -385,27 +453,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    /// ▶ on a Stash scene page, or the scene a queue step asked for: find the file on the shares (mounting one if
-    /// needed) and open it.
-    private func openStashScene(_ scene: StashScene) {
+    /// ▶ on a Stash scene page, the scene a queue step asked for, or one a link or plugin page named: find the file on
+    /// the shares (mounting one if needed) or take Stash's stream, and open it.
+    private func openStashScene(_ scene: StashScene, landing: LinkTarget? = nil) {
         if scene.automatic {
             // Stash also opens a page with autoplay=true on a reload: only a step of ours is answered.
             guard queueGate.isPending else { return }
             queueGate.answered()
         }
-        guard let stashSession else { return }
+        guard let stashSession = makeStashSession() else {
+            showMessage("No Stash server: set stash-url in Settings → Stash", duration: 4)
+            return
+        }
         returnTab = .stash
         stashSession.resolve(scene) { [weak self] result in
             guard let self else { return }
             stashScene = scene   // only now: during a mount the scene on screen (and ⌘⌫'s dialog) is still the old one
             switch result {
-            case let .file(url):
+            case let .file(url), let .stream(url):
                 let opened = openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
-                                      fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil)
+                                      fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil, landing: landing)
                 if opened { stashSession.began(sceneID: scene.id, duration: core.durationSeconds) }
                 window?.makeFirstResponder(videoView)
                 if scene.automatic {
-                    hud.show(queueDirection > 0 ? .playlistNext : .playlistPrevious)
+                    hud.show(openedHUD(queueDirection > 0 ? .playlistNext : .playlistPrevious))
                     if opened, queuePlays, core.isPaused { core.play() }
                 }
             case let .failed(failure):
@@ -631,14 +702,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 })
         ])
         library.onPageLoaded = { StartupTrace.markOnce("stash page loaded") }
-        let session = StashSession(config: core.config)
-        session.onStatus = { [weak self] in self?.showMessage($0, duration: 15) }
-        session.onDetails = { [weak self] sceneID, state in self?.stashDetailsChanged(sceneID, state) }
-        session.sample = { [weak self] () -> (position: Double, forward: Bool, speed: Double)? in
-            guard let core = self?.core, core.url != nil else { return nil }
-            return (core.currentSeconds, !core.isPaused && core.direction > 0, core.speed)
-        }
-        stashSession = session
+        _ = makeStashSession()
         library.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(library, positioned: .above, relativeTo: videoView)   // under the start screen's switch
         NSLayoutConstraint.activate([
@@ -649,6 +713,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         stashLibrary = library
         return library
+    }
+
+    /// The Stash session, made with the Stash page or for the first scene a link or plugin page names (that needs no
+    /// page); nil without `stash-url`.
+    private func makeStashSession() -> StashSession? {
+        if let stashSession { return stashSession }
+        guard core.config.stashEnabled else { return nil }
+        let session = StashSession(config: core.config)
+        session.onStatus = { [weak self] in self?.showMessage($0, duration: 15) }
+        session.onDetails = { [weak self] sceneID, state in self?.stashDetailsChanged(sceneID, state) }
+        session.sample = { [weak self] () -> (position: Double, forward: Bool, speed: Double)? in
+            guard let core = self?.core, core.url != nil else { return nil }
+            return (core.currentSeconds, !core.isPaused && core.direction > 0, core.speed)
+        }
+        stashSession = session
+        return session
     }
 
     /// Refreshes the start screen after the recent list changed (Clear Menu); does nothing while a file is open.
@@ -667,16 +747,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private lazy var recentThumbnailer = RecentThumbnailer(store: thumbnails)
 
     /// Keeps the picture on screen (as shown: upright, cut, square pixels) for the start screen's recent files.
-    private func saveThumbnail() {
+    /// The picture of the file being left, for the start screen. Scaling and encoding it took the main thread at
+    /// every switch of file; it runs in the background now (`wait`: at quit, so it is written before the app ends).
+    private func saveThumbnail(wait: Bool = false) {
         guard let url = core.url, let image = videoView.displayedImage else { return }
-        thumbnails.save(videoView.geometry.applied(to: image), for: url, context: Self.thumbnailContext)
+        let picture = videoView.geometry.applied(to: image)
+        let thumbnails = thumbnails
+        let work = { thumbnails.save(picture, for: url, context: Self.thumbnailContext) }
+        if wait { thumbnailQueue.sync(execute: work) } else { thumbnailQueue.async(execute: work) }
     }
+    private let thumbnailQueue = DispatchQueue(label: "framescrub.thumbnail-save", qos: .utility)
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
         stashSession?.flushBeforeQuit()
         recentThumbnailer.cancel()
-        saveThumbnail()
+        saveThumbnail(wait: true)
         memoryPressure?.cancel()
         memoryPressure = nil
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)
@@ -721,9 +807,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let config = effectiveConfig()
         let sortChanged = config.playlistSort != core.config.playlistSort
         let stashChanged = config.stashURL != core.config.stashURL || config.stashAPIKey != core.config.stashAPIKey
-            || config.stashPathMap != core.config.stashPathMap
+            || config.stashPathMap != core.config.stashPathMap || config.stashStream != core.config.stashStream
         // The scene search's decoder follows `hwdec` too: the next press makes a new one.
         if config.hwdec != core.config.hwdec { dropSceneSearch() }
+        applyPluginConfig(config, previous: core.config)
         core.apply(config)
         sceneSearch?.threshold = config.sceneThreshold
         sceneSearch?.lookahead = config.sceneLookahead
@@ -912,11 +999,50 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The bindings in effect, for the key hints in the menus.
     var currentInputMap: InputMap { inputMap }
 
+    /// The user's bindings changed (settings, input.conf): the page's action keys are added again on top.
     func applyInputMap(_ map: InputMap) {
-        inputMap = map
-        gestures.inputMap = map
-        buttons.update(map: map, longPressMilliseconds: core.config.mouseLongPress)
-        mouseBridge?.apply(config: core.config, map: map)
+        baseInputMap = map
+        rebuildInputMap()
+    }
+
+    /// Sets the effective map from the base map and the declared actions (their keys count while the panel is shown),
+    /// and brings an open key help up to date.
+    private func rebuildInputMap() {
+        inputMap = baseInputMap.merging(PluginActionPolicy.bindable(pluginActions, shown: pluginVisible)).map
+        gestures.inputMap = inputMap
+        buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
+        mouseBridge?.apply(config: core.config, map: inputMap)
+        keyHelp.refresh(inputMap, pluginActions: shownPluginActions)
+    }
+
+    /// The declared actions as the key help lists them: only while the panel is shown.
+    private var shownPluginActions: [PluginAction] { PluginActionPolicy.bindable(pluginActions, shown: pluginVisible) }
+
+    /// The page declared its actions (an empty list withdraws them). The reply says what the keys become; with the
+    /// panel hidden that is what they will become once it is shown (nothing is bound before).
+    private func declarePluginActions(_ actions: [PluginAction]) -> PluginActionsReply {
+        pluginActions = actions
+        rebuildInputMap()
+        let outcome = baseInputMap.merging(actions)
+        return PluginActionsReply(bound: outcome.bound, refused: outcome.refused)
+    }
+
+    /// A new page committed (or the same one again, or the page process died): what the old one declared is void.
+    private func clearPluginActions() {
+        guard !pluginActions.isEmpty else { return }
+        pluginActions = []
+        rebuildInputMap()
+    }
+
+    /// A key bound to a page action: the page hears it when it declared the name and is shown.
+    private func runPluginAction(_ name: String) {
+        guard PluginActionPolicy.shouldDispatch(name, declared: pluginActions, shown: pluginVisible) else {
+            showMessage("No plugin action: \(name)")
+            return
+        }
+        let frame = core.displayedFrame ?? core.position   // what is on screen, not a seek in flight
+        let t = core.index?.seconds(forFrame: frame) ?? core.positionSeconds
+        pluginPanel.dispatch(.action(name: name, t: t, frame: frame))
     }
 
     /// Shows scan progress once the scan has run for a second and the OSD is free, then refreshes it at most
@@ -949,7 +1075,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         NSLayoutConstraint.activate([
             videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             videoView.topAnchor.constraint(equalTo: container.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             startScreen.leadingAnchor.constraint(equalTo: container.leadingAnchor),
@@ -957,28 +1082,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             startScreen.topAnchor.constraint(equalTo: container.topAnchor),
             startScreen.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             hud.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hud.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            hud.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             hud.topAnchor.constraint(equalTo: container.topAnchor),
             hud.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             keyHelp.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            keyHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keyHelp.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             keyHelp.topAnchor.constraint(equalTo: container.topAnchor),
             keyHelp.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            goToField.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            goToField.centerXAnchor.constraint(equalTo: videoView.centerXAnchor),
             goToField.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
             osd.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            osd.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
+            osd.trailingAnchor.constraint(lessThanOrEqualTo: videoView.trailingAnchor, constant: -16),
             seekBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            seekBar.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+            seekBar.trailingAnchor.constraint(equalTo: videoView.trailingAnchor, constant: -16),
             seekBar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
             seekBar.heightAnchor.constraint(equalToConstant: 44),
             backButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
             backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
-            playlistPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            playlistPanel.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             playlistPanel.topAnchor.constraint(equalTo: container.topAnchor),
             playlistPanel.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -8),
-            playlistZone.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            playlistZone.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
             playlistZone.topAnchor.constraint(equalTo: playlistPanel.topAnchor),
             playlistZone.bottomAnchor.constraint(equalTo: playlistPanel.bottomAnchor),
             playlistZone.widthAnchor.constraint(equalTo: playlistPanel.widthAnchor),
@@ -999,6 +1124,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         osdTop = osd.topAnchor.constraint(equalTo: container.topAnchor, constant: 16)
         osdTop.isActive = true
         buildStatsPanel(in: container)
+        buildPluginPanel(in: container)
         seekBar.onHover = { [weak self] in
             self?.showCursorAfterScrub()
             self?.hover($0)
@@ -1010,6 +1136,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         core.onIndexReady = { [weak self] in
             self?.previewProvider?.updateIndex($0)
+            self?.pluginGrabber?.updateIndex($0)
             self?.sceneSearch?.updateIndex($0)
         }
         core.onIndexProgress = { [weak self] in self?.showIndexing($0) }
@@ -1201,9 +1328,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// spin. Settings binds to the same key.
     static let wheelFreeSpinKey = "wheelFreeSpin"
 
-    /// The start screen's own frame (Recent and Stash): a closed file gives the window back its size.
-    private static let startFrameKey = "StartScreenFrame"
-
     private static var savedFrame: CGRect? { frame(forKey: frameKey) }
 
     private static func frame(forKey key: String) -> CGRect? {
@@ -1216,19 +1340,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The start screen is showing Recent or Stash (not why a file failed).
     private var showsStartTabs: Bool { !startScreen.isHidden && failedURL == nil && failedScene == nil }
 
-    /// Back on the start screen: its own frame (960 × 540 around the window's centre the first time), and no video
-    /// shape holding the window's aspect.
+    /// Back on the start screen: the window keeps its size and place; only the video shape stops holding its aspect.
     private func applyStartScreenFrame() {
         guard let window, !isFullScreen else { return }
         window.resizeIncrements = NSSize(width: 1, height: 1)   // drops the video's contentAspectRatio
-        let screens = NSScreen.screens.map(\.visibleFrame)
-        let main = NSScreen.main?.visibleFrame ?? screens.first ?? .zero
-        let fallback = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 960, height: 540)).size
-        let saved = Self.frame(forKey: Self.startFrameKey)
-            ?? CGRect(x: window.frame.midX - fallback.width / 2, y: window.frame.midY - fallback.height / 2,
-                      width: fallback.width, height: fallback.height)
-        let frame = WindowPlacement.frame(saved: saved, fallbackSize: fallback, screens: screens, main: main)
-        if frame != window.frame { window.setFrame(frame, display: true, animate: false) }
     }
 
     private func restoreFrame(of window: NSWindow) {
@@ -1247,13 +1362,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func rememberFrame() {
         guard let window, window.isVisible, !isFullScreen else { return }
-        if showsStartTabs { UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.startFrameKey) }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameKey)
     }
 
     // MARK: Input
 
-    private func handleKey(_ event: NSEvent) {
+    /// A key for the player, from the video view or one the plugin page left unhandled; `stillDown` is false when the
+    /// page's answer came after the key-up (a hold must not start then).
+    private func handleKey(_ event: NSEvent, stillDown: Bool = true) {
         hideCursorOverVideo()
         if event.keyCode == 53, core.edgeDrag != nil {   // Esc cancels a live edge drag, and only that
             edgeDragSuppressed = edgeDragOwner
@@ -1270,7 +1386,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
               let command = inputMap.command(for: chord) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
-            guard holdKeyCode == nil else { return }
+            guard holdKeyCode == nil, stillDown else { return }
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -1279,7 +1395,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         runInput(command, from: .keyboard, fresh: !event.isARepeat)
     }
 
-    /// The key held for hold-speed (backlog 4.5); its key-up, or the window losing focus, ends the hold.
+    /// The icon for a file just opened by `event` (next / previous): a kept speed other than 1× (`keep-speed`) instead,
+    /// so a faster or slower file is never a surprise.
+    private func openedHUD(_ event: Feedback) -> Feedback {
+        core.url != nil && core.speed != 1 ? .speed(core.speed) : event
+    }
+
+    /// The key held for hold-speed (backlog 4.5); its key-up, the window losing focus, or the keyboard moving between
+    /// the video and the plugin panel ends the hold.
     private var holdKeyCode: UInt16?
 
     private func endHoldSpeed() {
@@ -1299,6 +1422,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `toggle-*` / `cycle-*` that switched something (no `.error` on the way; not `cycle pause`) plays `.toggle`. `fresh`: not a key's
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
+        if case let .pluginAction(name) = command { runPluginAction(name); return }   // the page's, not the player's
         core.inputIsFresh = fresh
         haptics.from(source) {
             let errors = haptics.errorCount
@@ -1351,7 +1475,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let previous = playlist?.previous {
                 _ = playlistEndBump.stepped(moved: true, direction: -1, fresh: core.inputIsFresh)
                 openFile(previous)
-                hud.show(.playlistPrevious)
+                hud.show(openedHUD(.playlistPrevious))
             } else {
                 showMessage("First file")
                 if playlistEndBump.stepped(moved: false, direction: -1, fresh: core.inputIsFresh) { haptics.play(.end) }
@@ -1362,7 +1486,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let next = playlist?.next {
                 _ = playlistEndBump.stepped(moved: true, direction: 1, fresh: core.inputIsFresh)
                 openFile(next)
-                hud.show(.playlistNext)
+                hud.show(openedHUD(.playlistNext))
             } else {
                 showMessage("Last file")
                 if playlistEndBump.stepped(moved: false, direction: 1, fresh: core.inputIsFresh) { haptics.play(.end) }
@@ -1374,7 +1498,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .revealFrames:
             revealFrames()
         case .showKeys:
-            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap) }
+            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
             goToField.open(with: FrameNaming.timecode(core.currentSeconds))
@@ -1551,7 +1675,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch result {
         case let .found(frame):
             sceneFrameOSDToDrop = nil
-            core.goTo(.frame(frame))   // exact, keeps play / pause, sets the revert point
+            core.jumpToScene(frame: frame)   // exact, keeps play / pause, sets the revert point; glued to locked segments
             hud.show(direction > 0 ? .sceneNext : .scenePrevious)
             sceneFrameOSDToDrop = core.position
             showMessage("Scene \(direction > 0 ? "→" : "←") \(FrameNaming.timecode(core.currentSeconds))")
@@ -2304,6 +2428,297 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
     }
 
+    // MARK: Plugin panel
+
+    private func buildPluginPanel(in container: ContainerView) {
+        pluginPanel.translatesAutoresizingMaskIntoConstraints = false
+        pluginPanel.isHidden = true
+        container.addSubview(pluginPanel)
+        videoTrailing = videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        pluginWidth = pluginPanel.widthAnchor.constraint(equalToConstant: CGFloat(globalConfig.pluginWidth))
+        NSLayoutConstraint.activate([
+            videoTrailing,
+            pluginWidth,
+            pluginPanel.topAnchor.constraint(equalTo: container.topAnchor),
+            pluginPanel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            pluginPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+        ])
+        pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
+        if let url = pluginSettingsURL { pluginPolicy.trust(url) }
+        pluginPanel.trusted = pluginPolicy.trusted
+        core.onSegmentChange = { [weak self] current, locked in
+            guard let self else { return }
+            if holdsSegmentEvents {
+                heldSegmentEvent = .segment(current: current, locked: locked)   // after fileopened (`openCore`)
+                return
+            }
+            pluginPanel.dispatch(.segment(current: current, locked: locked))
+            pushPluginState(force: true)
+        }
+        pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
+        pluginPanel.onFocusChange = { [weak self] in
+            self?.endHoldSpeed()   // the key-up may go elsewhere
+            self?.pluginPanel.dispatch($0 ? .focus : .blur)
+        }
+        pluginPanel.onUnhandledKey = { [weak self] in self?.handleKey($0, stillDown: $1) }
+        pluginPanel.onKeyUp = { [weak self] in
+            if $0.keyCode == self?.holdKeyCode { self?.endHoldSpeed() }
+        }
+        pluginPanel.onPageReplaced = { [weak self] in self?.clearPluginActions() }
+        pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
+    }
+
+    /// `plugin-url` as a URL; nil when empty or unreadable.
+    private var pluginSettingsURL: URL? {
+        globalConfig.pluginURL.isEmpty ? nil : URL(string: globalConfig.pluginURL)
+    }
+
+    /// The edge is being dragged: the panel follows at once, the setting is written once the drag rests for 0.5 s.
+    private func pluginDragged(to width: CGFloat) {
+        let clamped = min(max(Int(width.rounded()), Config.pluginWidthRange.lowerBound), Config.pluginWidthRange.upperBound)
+        setPluginWidth(clamped)
+        pluginWidthWrite?.invalidate()
+        pluginWidthWrite = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                do { try self.preferences.update(["plugin-width"]) { $0.pluginWidth = clamped } } catch {
+                    self.showMessage("Cannot save plugin-width: \(error.localizedDescription)", duration: 3)
+                }
+            }
+        }
+    }
+
+    private func setPluginWidth(_ width: Int) {
+        pluginWidth.constant = CGFloat(width)
+        if pluginVisible { videoTrailing.constant = -CGFloat(width) }
+        videoAreaChanged()
+    }
+
+    /// The video's part of the window changed (the plugin panel came, went or was resized): the stats panel keeps to
+    /// it like the seek bar, whose constraints follow the video by themselves.
+    private func videoAreaChanged() {
+        window?.contentView?.layoutSubtreeIfNeeded()
+        statsPanel.place()
+    }
+
+    /// Settings changed: the panel's width and, when the page was the settings' one (or none yet), its page.
+    private func applyPluginConfig(_ config: Config, previous: Config) {
+        if config.pluginWidth != Int(pluginWidth.constant) { setPluginWidth(config.pluginWidth) }
+        pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
+        guard config.pluginURL != previous.pluginURL else { return }
+        let old = previous.pluginURL.isEmpty ? nil : URL(string: previous.pluginURL)
+        guard let url = pluginSettingsURL else { return }
+        pluginPolicy.trust(url)
+        pluginPanel.trusted = pluginPolicy.trusted
+        if pluginPanel.url == nil || pluginPanel.url == old {
+            if pluginVisible { showPlugin(url, from: .settings) } else { pluginPanel.load(url, from: .settings) }
+        }
+    }
+
+    /// View › Focus Plugin Panel: the page gets the keyboard (shown first if it was hidden).
+    func focusPluginPanel() {
+        if !pluginVisible { togglePluginPanel() }
+        guard pluginVisible else { return }
+        pluginPanel.focus()
+    }
+
+    /// For View › Show Plugin Panel: the page set in Settings (`plugin-url`).
+    var pluginVisible: Bool { !pluginPanel.isHidden }
+
+    func togglePluginPanel() {
+        if pluginVisible {
+            setPluginShown(false)
+        } else if pluginPanel.url != nil {
+            setPluginShown(true)   // the page already loaded, from whichever source
+        } else if let url = pluginSettingsURL {
+            showPlugin(url, from: .settings)
+        } else {
+            showMessage("No plugin page: set one in Settings › General or open a link with plugin=")
+        }
+    }
+
+    /// Shows `url` in the panel; a page the source may not load (a `file:` page from a link) is refused with a notice.
+    func showPlugin(_ url: URL, from source: PluginPageSource) {
+        pluginPolicy.trust(url)
+        pluginPanel.trusted = pluginPolicy.trusted
+        guard pluginPanel.load(url, from: source) else {
+            showMessage("Cannot show the plugin page: \(url.absoluteString)", duration: 4)
+            return
+        }
+        setPluginShown(true)
+    }
+
+    private func setPluginShown(_ shown: Bool) {
+        pluginPanel.isHidden = !shown
+        rebuildInputMap()   // the page's keys count only while it is shown
+        videoTrailing.constant = shown ? -pluginWidth.constant : 0
+        videoAreaChanged()
+        if !shown { window?.makeFirstResponder(videoView) }
+        pushPluginState(force: true)
+    }
+
+    private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {
+        switch request.message {
+        case let .seek(t): core.seek(toSeconds: t)
+        case .play: if core.isPaused { core.play() }
+        case .pause: if !core.isPaused { core.pause() }
+        case let .step(n): core.step(frames: n)
+        case let .loop(segment): core.setLoop(seconds: segment)
+        case let .segments(list, lock, advance):
+            guard core.setSegments(seconds: list, lock: lock ?? true, advance: advance) else {
+                pluginFailed(request, "no segment inside the file")
+                return
+            }
+        case let .lock(on):
+            guard core.setSegmentLock(on) else { pluginFailed(request, "no segments"); return }
+        case let .goSegment(i):
+            guard core.goSegment(i) else { pluginFailed(request, "no such segment"); return }
+        case let .actions(list):
+            pluginDone(request, result: declarePluginActions(list).json)
+            return
+        case .focusPlayer: window?.makeFirstResponder(videoView)
+        case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
+        case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
+        case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
+        }
+        pluginDone(request)
+    }
+
+    /// `info`, `marks`, `playlist` and `frame`: answered from the open file, refused without one.
+    private func answerPluginRequest(_ request: PluginRequest) {
+        guard let url = core.url, let info = core.info, let index = core.index else {
+            pluginFailed(request, "no file is open")
+            return
+        }
+        switch request.message {
+        case .info:
+            let details = PluginInfo(path: url.path, name: url.lastPathComponent, fps: info.frameRate,
+                                     duration: core.durationSeconds, durationFrames: core.frameCount, width: info.width,
+                                     height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec,
+                                     source: PluginSource(url: url))
+            pluginDone(request, result: details.json)
+        case .marks:
+            let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
+            pluginDone(request, result: marks.json)
+        case .playlist:
+            let list = playlist.map { PluginPlaylist(index: $0.currentIndex, count: $0.files.count, total: $0.totalCount,
+                                                    name: url.lastPathComponent) }
+                ?? PluginPlaylist(index: 0, count: 1, total: 1, name: url.lastPathComponent)
+            pluginDone(request, result: list.json)
+        case let .frame(frameRequest):
+            guard let n = frameRequest.frameNumber(frameCount: core.frameCount, frameForSeconds: index.frameNumber(forSeconds:)) else {
+                pluginFailed(request, "frame: past the end of the file")
+                return
+            }
+            if pluginGrabber == nil {
+                pluginGrabber = PluginFrameGrabber(url: url, index: index, rotationClockwise: info.rotationClockwise,
+                                                   readCache: core.readCache)
+            }
+            pluginGrabber?.grab(frame: n, maxSide: frameRequest.maxSize) { [weak self] result in
+                MainActor.assumeIsolated { self?.pluginFrameDecoded(result, for: request, file: url, index: index) }
+            }
+        default:
+            pluginDone(request)
+        }
+    }
+
+    /// A request carried out: a `request()` resolves (with `result`, JSON), a verb hears nothing.
+    private func pluginDone(_ request: PluginRequest, result: String? = nil) {
+        if let id = request.id { pluginPanel.reply(.success(id, result: result)) }
+    }
+
+    private func pluginFailed(_ request: PluginRequest, _ reason: String) {
+        pluginPanel.fail(id: request.id, reason)
+    }
+
+    /// A `frame` request's picture arrived (or not); nothing is said when another file is open by now.
+    private func pluginFrameDecoded(_ result: Result<PluginFrameGrabber.Picture, PluginFrameGrabber.Failure>,
+                                    for request: PluginRequest, file url: URL, index: FrameIndex) {
+        guard core.url == url else { return }
+        switch result {
+        case let .success(picture):
+            let t = (core.index ?? index).seconds(forPTS: picture.pts)
+            let frame = PluginFrame(t: t, frame: picture.frame, width: Int(picture.size.width),
+                                    height: Int(picture.size.height), jpeg: picture.jpeg)
+            pluginDone(request, result: frame.json)
+        case .failure(.stopped):
+            break
+        case .failure(.noFrame):
+            pluginFailed(request, "frame: nothing decoded there")
+        case let .failure(.decoding(reason)):
+            pluginFailed(request, "frame: \(reason)")
+        }
+    }
+
+    /// A local file the page asked for: only a video, and only once the user has allowed the page's origin to open
+    /// files (asked the first time, remembered in `plugin-open-allowed`).
+    private func openFromPlugin(_ url: URL, landing: LinkTarget, origin: PluginOrigin, request: PluginRequest) {
+        let openIt = { [self] in
+            if open(OpenLink.Target(file: url, landing: landing)) { pluginDone(request) }
+            else { pluginFailed(request, "open: cannot open \(url.path)") }
+        }
+        switch pluginPolicy.decision(forOpening: url, from: origin) {
+        case .allowed:
+            openIt()
+        case .notMedia:
+            showMessage("The plugin page may only open video files: \(url.lastPathComponent)", duration: 4)
+            pluginFailed(request, "open: not a video file")
+        case .untrusted:
+            pluginFailed(request, "open: the page is not trusted")
+        case .needsConsent:
+            let alert = NSAlert()
+            alert.messageText = PluginPolicy.consentQuestion(for: origin)
+            alert.informativeText = "The page asked to open \(url.path). Your answer is remembered for this page."
+            alert.addButton(withTitle: "Allow")
+            alert.addButton(withTitle: "Don't Allow")
+            let decide = { [weak self] (response: NSApplication.ModalResponse) in
+                guard let self else { return }
+                guard response == .alertFirstButtonReturn else { pluginFailed(request, "open: not allowed by the user"); return }
+                pluginPolicy.allowOpening(from: origin)
+                let allowed = pluginPolicy.openAllowedText
+                do { try preferences.update(["plugin-open-allowed"]) { $0.pluginOpenAllowed = allowed } } catch {
+                    showMessage("Cannot save plugin-open-allowed: \(error.localizedDescription)", duration: 3)
+                }
+                openIt()
+            }
+            if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }
+        }
+    }
+
+    /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
+    /// applied once it is open.
+    private func openStashScene(id: String, paths: [String], landing: LinkTarget) {
+        openStashScene(StashScene(id: id, paths: paths), landing: landing)
+    }
+
+    /// The page hears of every file that opens, whoever opened it.
+    private func pluginFileOpened() {
+        var scene: String?
+        if case let .stash(sceneID, _) = origin { scene = sceneID }
+        pluginPanel.dispatch(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
+    }
+
+    /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
+    private func pushPluginState(force: Bool) {
+        guard pluginVisible else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard force || now - lastPluginPush >= 0.1 else { return }
+        lastPluginPush = now
+        var state = PluginState(ready: core.url != nil, path: core.url?.path, name: core.url?.lastPathComponent,
+                                t: core.positionSeconds, frame: core.position, fps: core.info?.frameRate ?? 0,
+                                duration: core.durationSeconds, durationFrames: core.frameCount, playing: !core.isPaused,
+                                loop: core.loopSeconds, segments: pluginSegments(), visible: pluginVisible)
+        if case let .stash(sceneID, _) = origin { state.scene = sceneID }
+        pluginPanel.push(state)
+    }
+
+    /// The segment set for the page; nil with none.
+    private func pluginSegments() -> PluginState.Segments? {
+        guard core.segments != nil else { return nil }
+        return PluginState.Segments(list: core.segmentsSeconds, current: core.currentSegment, locked: core.segmentsLocked,
+                                    advance: core.segmentAdvance)
+    }
+
     // MARK: Stats
 
     /// The stats panel goes over the video, under the seek bar, in the top right corner. It may cover the video below
@@ -2313,9 +2728,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let panel = InfoPanelController(
             host: container, below: seekBar, keyPrefix: "statsPanel", defaultOrder: StatsContent.defaultOrder,
             defaultPlacement: PanelPlacement(corner: .topRight, dx: 12, dy: 12),
-            area: { [weak container] in
+            area: { [weak container, weak videoView] in
+                // The video's part of the window: the plugin panel, when shown, takes the rest on the right.
                 guard let bounds = container?.bounds else { return .zero }
-                return CGRect(x: 0, y: 0, width: bounds.width, height: max(bounds.height - seekBarZone, 0))
+                let width = videoView?.frame.maxX ?? bounds.width
+                return CGRect(x: 0, y: 0, width: width, height: max(bounds.height - seekBarZone, 0))
             })
         panel.middleTruncated = ["Folder"]
         // A held button with the wheel is one of the player's chords (MBTN_RIGHT+WHEEL, MBTN_BACK+WHEEL_UP and the
@@ -2424,11 +2841,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.show(frame)
         lastFrame = frame
         checkSceneCut(frame)
+        pushPluginState(force: false)
         recomputeAutoColorIfDue(frame)
         refreshEnhancement()
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused
             if wasPaused { stashSession?.saveProgress() }

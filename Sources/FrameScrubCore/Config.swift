@@ -161,7 +161,16 @@ public struct Config: Equatable, Sendable {
     public var stashAPIKey = ""
     /// `stash-path-map`: `stashPrefix=localPrefix` rules separated by `;`, tried before the mounted shares.
     public var stashPathMap = ""
+    /// `stash-stream`: when a scene plays from Stash's stream instead of its file on a share.
+    public var stashStream = StashStreaming.auto
     public var stashEnabled: Bool { URL(string: stashURL)?.host != nil }
+    /// `plugin-url`: the page View › Show Plugin Panel shows beside the video; empty = none until a link brings one.
+    public var pluginURL = ""
+    /// `plugin-width`: the plugin panel's width in points.
+    public var pluginWidth = 400
+    public static let pluginWidthRange = 240...1200
+    /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
+    public var pluginOpenAllowed = ""
     public var preview = true
     public var previewWidth = 240.0
     public var exportMode = ExportMode.all
@@ -219,6 +228,9 @@ public struct Config: Equatable, Sendable {
     public var statsFontSize = 12
     /// Speed while the hold-speed key (`/`) is held.
     public var holdSpeed = 2.0
+    /// `keep-speed`: the speed chosen with `[` / `]` (or `set speed`) stays for the next file opened in the window;
+    /// the direction, the shuttle's speeds and a hold-speed in progress do not. `no`: every file starts at 1×.
+    public var keepSpeed = true
     /// What `[` / `]` (step-speed) add to or take from the speed.
     public var speedStep = 0.25
     /// A short piece of sound on every frame change in pause (`⌥m` toggles it).
@@ -228,6 +240,8 @@ public struct Config: Equatable, Sendable {
     /// How the scrub tape sounds: its pitch follows the speed, or stays the sound's own (spec §6б).
     public var scrubAudioPitch = ScrubPitch.tape
     public var abLoop = ABLoopMode.loop
+    /// `segment-advance`: when a locked segment ends, play it again (`repeat`) or go on to the next one (`next`).
+    public var segmentAdvance = SegmentAdvance.repeating
     public var keyLayout = KeyLayout.classic
     /// `app-icon`: which icon the Dock shows (see `AppIcon`).
     public var appIcon = AppIcon.bundle
@@ -243,7 +257,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-url", "plugin-width", "plugin-open-allowed", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -251,7 +265,7 @@ public struct Config: Equatable, Sendable {
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
         "preview", "preview-width", "scale", "sharpen", "sr-still", "save-scale", "save-upscaler",
         "vibrance", "vibrance-on", "auto-color", "auto-color-strength", "auto-color-filters", "auto-color-vibrance-gain", "auto-color-interval", "auto-color-threshold", "auto-color-full", "save-color", "ontop", "stats-font-size",
-        "hold-speed", "speed-step", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "key-layout",
+        "hold-speed", "speed-step", "keep-speed", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "segment-advance", "key-layout",
         "app-icon",
     ]
 
@@ -275,6 +289,10 @@ public struct Config: Equatable, Sendable {
         case "stash-url": return stashURL
         case "stash-api-key": return stashAPIKey
         case "stash-path-map": return stashPathMap
+        case "stash-stream": return stashStream.rawValue
+        case "plugin-url": return pluginURL
+        case "plugin-width": return String(pluginWidth)
+        case "plugin-open-allowed": return pluginOpenAllowed
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
         case "scene-lookahead": return String(sceneLookahead)
@@ -341,10 +359,12 @@ public struct Config: Equatable, Sendable {
         case "stats-font-size": return String(statsFontSize)
         case "hold-speed": return formatNumber(holdSpeed)
         case "speed-step": return formatNumber(speedStep)
+        case "keep-speed": return yesNo(keepSpeed)
         case "scrub-audio": return yesNo(scrubAudio)
         case "scrub-audio-length": return String(scrubAudioLengthMs)
         case "scrub-audio-pitch": return scrubAudioPitch.rawValue
         case "ab-loop": return abLoop.rawValue
+        case "segment-advance": return segmentAdvance.rawValue
         case "key-layout": return keyLayout.rawValue
         case "app-icon": return appIcon
         default: return nil
@@ -445,6 +465,10 @@ public struct Config: Equatable, Sendable {
         case "stash-url": stashURL = value
         case "stash-api-key": stashAPIKey = value
         case "stash-path-map": stashPathMap = value
+        case "stash-stream": guard let v = StashStreaming(rawValue: value.lowercased()) else { return false }; stashStream = v
+        case "plugin-url": pluginURL = value
+        case "plugin-width": guard let v = int(Config.pluginWidthRange) else { return false }; pluginWidth = v
+        case "plugin-open-allowed": pluginOpenAllowed = value
         case "preview": guard let v = bool() else { return false }; preview = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v
         case "export-mode": guard let v = ExportMode(rawValue: value.lowercased()) else { return false }; exportMode = v
@@ -485,10 +509,12 @@ public struct Config: Equatable, Sendable {
         case "stats-font-size": guard let v = int(8...40) else { return false }; statsFontSize = v
         case "hold-speed": guard let v = double(0.1...16) else { return false }; holdSpeed = v
         case "speed-step": guard let v = double(0.01...4), v > 0 else { return false }; speedStep = v
+        case "keep-speed": guard let v = bool() else { return false }; keepSpeed = v
         case "scrub-audio": guard let v = bool() else { return false }; scrubAudio = v
         case "scrub-audio-length": guard let v = int(20...500) else { return false }; scrubAudioLengthMs = v
         case "scrub-audio-pitch": guard let v = ScrubPitch(rawValue: value.lowercased()) else { return false }; scrubAudioPitch = v
         case "ab-loop": guard let v = ABLoopMode(rawValue: value.lowercased()) else { return false }; abLoop = v
+        case "segment-advance": guard let v = SegmentAdvance(rawValue: value.lowercased()) else { return false }; segmentAdvance = v
         case "key-layout": guard let v = KeyLayout(rawValue: value.lowercased()) else { return false }; keyLayout = v
         case "app-icon": guard let v = AppIcon.normalized(value) else { return false }; appIcon = v
         default: return false

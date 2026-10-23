@@ -54,7 +54,7 @@ public final class ReadCache: @unchecked Sendable {
 
     public init(url: URL, budgetBytes: Int, source: ByteSource? = nil) throws {
         self.url = url
-        self.source = try source ?? FileByteSource(url: url)
+        self.source = try source ?? ByteSources.open(url)
         fileSize = self.source.size
         budget = max(0, budgetBytes)
     }

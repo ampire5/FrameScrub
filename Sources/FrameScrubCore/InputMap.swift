@@ -51,6 +51,27 @@ public struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         return (parts + [key]).joined(separator: "+")
     }
 
+    /// A mouse button, wheel, swipe or pinch, or any chord needing a mouse button held: no keyboard key.
+    public var isPointerChord: Bool {
+        isPointer || !modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton))
+    }
+
+    /// The ⌘ chords owned by the app's menu items: AppKit gives the menu the key before the player sees it, so no
+    /// binding, the page's included, could ever fire.
+    public static let menuOwned: Set<KeyChord> = {
+        var set: Set<KeyChord> = []
+        for key in [",", "q", "o", "c", "w", "z", "x", "v", "a", "m", "g", "f", "1", "2", "3", "4", "BS"] {
+            set.insert(KeyChord(key: key, modifiers: .meta))
+        }
+        set.insert(KeyChord(key: "o", modifiers: [.meta, .shift]))
+        set.insert(KeyChord(key: "z", modifiers: [.meta, .shift]))
+        set.insert(KeyChord(key: "c", modifiers: [.meta, .alt]))
+        set.insert(KeyChord(key: "p", modifiers: [.meta, .alt]))
+        set.insert(KeyChord(key: "p", modifiers: [.meta, .alt, .ctrl]))
+        set.insert(KeyChord(key: "f", modifiers: [.meta, .ctrl]))
+        return set
+    }()
+
     /// Parses mpv key syntax: "Shift+LEFT", "Ctrl+s", "S", "Ctrl++"; `MBTN_RIGHT+`, `MBTN_BACK+`, `MX_PANEL+`… hold a button.
     public static func parse(_ spec: String) -> KeyChord? {
         var modifiers: Modifiers = []
@@ -109,6 +130,7 @@ public enum Command: Equatable, Sendable {
     case cycleOntop
     case showProgress, stats
     case abLoop, cycleABLoopMode
+    case toggleSegmentLock
     case markIn, markOut, markPrev, markNext, markSnap, markLoop, markDelete, markClear, playMarks
     case shuttleBack, shuttleStop, shuttleForward
     case screenshot, exportRange, saveClip
@@ -129,6 +151,8 @@ public enum Command: Equatable, Sendable {
     case holdSpeed
     case showKeys
     case quit
+    /// `plugin-action <name>`: runs the plugin page's declared action `name` (see `PluginAction`).
+    case pluginAction(String)
     case ignore
 
     /// Whether holding the key down repeats the command. Toggles and one-shot actions would
@@ -178,6 +202,7 @@ public enum Command: Equatable, Sendable {
         case .stats: return "script-binding stats/display-stats"
         case .abLoop: return "ab-loop"
         case .cycleABLoopMode: return "cycle-ab-loop-mode"
+        case .toggleSegmentLock: return "toggle-segment-lock"
         case .markIn: return "mark-in"
         case .markOut: return "mark-out"
         case .markPrev: return "mark-prev"
@@ -220,6 +245,7 @@ public enum Command: Equatable, Sendable {
         case .holdSpeed: return "hold-speed"
         case .showKeys: return "show-keys"
         case .quit: return "quit"
+        case let .pluginAction(name): return "plugin-action \(name)"
         case .ignore: return "ignore"
         }
     }
@@ -275,6 +301,7 @@ public enum Command: Equatable, Sendable {
         case let ("script-binding", binding?) where binding.hasPrefix("stats"): return .stats
         case ("ab-loop", nil): return .abLoop
         case ("cycle-ab-loop-mode", nil): return .cycleABLoopMode
+        case ("toggle-segment-lock", nil): return .toggleSegmentLock
         case ("mark-in", nil): return .markIn
         case ("mark-out", nil): return .markOut
         case ("mark-prev", nil): return .markPrev
@@ -321,6 +348,7 @@ public enum Command: Equatable, Sendable {
         case ("hold-speed", nil): return .holdSpeed
         case ("show-keys", nil): return .showKeys
         case ("quit", _): return .quit
+        case let ("plugin-action", name?): return args.count == 1 && PluginActions.isValidName(name) ? .pluginAction(name) : nil
         case ("ignore", nil): return .ignore
         default: return nil
         }
@@ -415,6 +443,7 @@ public struct InputMap {
     i script-binding stats/display-stats
     l ab-loop
     L cycle-ab-loop-mode
+    Alt+l toggle-segment-lock
     s screenshot
     S export-range
     C save-auto-color
@@ -486,6 +515,7 @@ public struct InputMap {
     g go-to
     f ab-loop
     F cycle-ab-loop-mode
+    Alt+F toggle-segment-lock
     r mark-in
     t mark-out
     R mark-prev
@@ -645,6 +675,29 @@ extension InputMap {
     public func hasChords(heldWith b: MouseButton) -> Bool {
         guard let modifier = b.modifier else { return false }
         return bindings.contains { $0.key.modifiers.contains(modifier) && $0.value != .ignore }
+    }
+
+    /// The map with the page's action keys added where free: a chord with any binding (even `ignore`) refuses the page
+    /// key (`key taken`), a name the map already binds keeps that key instead (`user binding`), and a ⌘ chord of a menu item
+    /// is `key taken` too, and a mouse button, wheel, swipe or pinch is no key (`not a key`). Actions without a key are in neither list: only the user's bindings
+    /// reach them.
+    public func merging(_ actions: [PluginAction]) -> (map: InputMap, bound: [PluginBinding], refused: [PluginBinding]) {
+        var map = self
+        var bound: [PluginBinding] = [], refused: [PluginBinding] = []
+        for action in actions {
+            guard let key = action.key else { continue }
+            if key.isPointerChord {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "not a key"))
+            } else if bindings.values.contains(.pluginAction(action.name)) {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "user binding"))
+            } else if map.bindings[key] != nil || KeyChord.menuOwned.contains(key) {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "key taken"))
+            } else {
+                map.bindings[key] = .pluginAction(action.name)
+                bound.append(PluginBinding(name: action.name, key: key, reason: nil))
+            }
+        }
+        return (map, bound, refused)
     }
 
     /// The control IDs of the Logitech buttons with any binding: those are taken over from macOS while bound.

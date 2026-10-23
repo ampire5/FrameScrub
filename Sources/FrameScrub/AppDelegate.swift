@@ -23,6 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// View › App Icon…: the Dock icon picker (AppIconSwitcher).
     @MainActor @objc private func showIconPicker(_ sender: Any?) { appIcon.showPicker(preferences: preferences) }
     private var pendingURL: URL?
+    /// A link's position, segment and plugin page for `pendingURL`.
+    private var pendingTarget: OpenLink.Target?
+    /// The link `pendingTarget` came from, handed over as it is when it names a Stash scene (no path to pass).
+    private var pendingLink: URL?
+    /// A link that could not be opened before the window existed.
+    private var pendingNotice: String?
     /// True for a launch that handed over to an already running instance (single-instance=yes) and is quitting.
     private var isSecondary = false
     private var handOverObserver: NSObjectProtocol?
@@ -49,10 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout)
         preferences = PreferencesStore(config: config)
+        migratePluginDefaults()
         gestureBindings = GesturePreferences(layout: config.keyLayout)
         let folderColors = FolderColors()
         self.folderColors = folderColors
-        let controller = PlayerWindowController(config: config, inputMap: inputMap, preferences: preferences,
+        let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
                                                 folderColors: folderColors)
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
         preferences.addObserver { [weak self] in self?.gestureBindings.layout = $0.keyLayout }
@@ -105,23 +112,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
 
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-        if let path = paths.first {
+        if let link = paths.first.flatMap(URL.init(string:)), link.scheme == "framescrub",
+           let target = OpenLink.target(from: link) {
+            controller.open(target)   // a link on the command line, as from another program
+        } else if let path = paths.first {
             controller.open(URL(fileURLWithPath: path))   // a failure stays on screen with its reason
+        } else if let target = pendingTarget {
+            controller.open(target)
         } else if let url = pendingURL {
             controller.open(url)
         } else {
             controller.showStartScreen()
         }
-        let warnings = configWarnings + inputWarnings
+        let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
     }
 
-    /// Finder "Open With" and drops on the Dock icon.
+    /// The prototype kept `plugin-url` and `plugin-open-allowed` in the user defaults: once, they move to
+    /// framescrub.conf (the file's own values win), then the defaults are removed.
+    private func migratePluginDefaults() {
+        let defaults = UserDefaults.standard
+        let oldURL = defaults.string(forKey: "plugin-url") ?? ""
+        let oldAllowed = defaults.stringArray(forKey: "plugin-open-allowed") ?? []
+        guard !oldURL.isEmpty || !oldAllowed.isEmpty else { return }
+        do {
+            try preferences.update(["plugin-url", "plugin-open-allowed"]) { config in
+                if config.pluginURL.isEmpty { config.pluginURL = oldURL }
+                var policy = PluginPolicy(openAllowedText: config.pluginOpenAllowed)
+                for origin in oldAllowed.compactMap(PluginOrigin.init(string:)) { policy.allowOpening(from: origin) }
+                config.pluginOpenAllowed = policy.openAllowedText
+            }
+            defaults.removeObject(forKey: "plugin-url")
+            defaults.removeObject(forKey: "plugin-open-allowed")
+        } catch {
+            pendingNotice = "Cannot move the plugin settings to framescrub.conf: \(error.localizedDescription)"
+        }
+    }
+
+    @objc private func togglePluginPanel(_ sender: Any?) {
+        controller?.togglePluginPanel()
+    }
+
+    @objc private func focusPluginPanel(_ sender: Any?) {
+        controller?.focusPluginPanel()
+    }
+
+    /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
     func application(_ application: NSApplication, open urls: [URL]) {
-        guard let url = urls.first else { return }
-        if isSecondary { Self.postHandOver(path: url.path); return }
+        guard let opened = urls.first else { return }
+        // Before anything else, so that the hand-over to the primary instance gets the real path too.
+        guard let target = OpenLink.target(from: opened) else {
+            let notice = "Cannot open the link: \(opened.absoluteString)"
+            if let controller { controller.showMessage(notice, duration: 4) } else if !isSecondary { pendingNotice = notice }
+            return
+        }
+        if isSecondary { Self.postHandOver(path: target.file?.path, link: target.file == nil ? opened : nil); return }
         if let controller {
-            controller.open(url)
+            controller.open(target)
             // A launch brings the window forward itself (pendingURL). For a running app, macOS may refuse our own
             // activate() while the Finder is still active (it cannot yield to us); the activation LaunchServices
             // grants for the open can land after this event, so the window is raised again when it does.
@@ -131,7 +178,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 NSApp.activate()
             }
         } else {
-            pendingURL = url
+            pendingURL = target.file
+            pendingTarget = target
+            pendingLink = opened
         }
     }
 
@@ -216,6 +265,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             Self.postHandOver(path: URL(fileURLWithPath: path).path)
         } else if let url = pendingURL {
             Self.postHandOver(path: url.path)
+        } else if let link = pendingLink, pendingTarget?.sceneID != nil {
+            Self.postHandOver(path: nil, link: link)
         } else {
             Self.postHandOver(path: nil)   // nothing to open: just bring the running window forward
         }
@@ -223,10 +274,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
     }
 
-    private static func postHandOver(path: String?) {
+    /// `path` for a file; `link` (a `framescrub://open?scene=` link) for a Stash scene, which has no path to pass.
+    private static func postHandOver(path: String?, link: URL? = nil) {
+        var userInfo: [String: String] = [:]
+        if let path { userInfo["path"] = path }
+        if let link { userInfo["link"] = link.absoluteString }
         DistributedNotificationCenter.default().postNotificationName(
-            openFileNotification, object: nil,
-            userInfo: path.map { ["path": $0] } ?? [:], deliverImmediately: true)
+            openFileNotification, object: nil, userInfo: userInfo, deliverImmediately: true)
     }
 
     private func observeHandOver() {
@@ -240,6 +294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                 if (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
                     controller.open(url)
                 }
+            } else if let link = (note.userInfo?["link"] as? String).flatMap(URL.init(string:)),
+                      let target = OpenLink.target(from: link), target.sceneID != nil {
+                controller.open(target)   // a Stash scene by id: nothing on this Mac is named
             }
             controller.bringToFront()
             NSApp.activate()
@@ -561,6 +618,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
         let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
         icon.keyEquivalentModifierMask = [.control, .option, .command]
+        let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")
+        plugin.keyEquivalentModifierMask = [.command, .option]
+        plugin.target = self
+        let focusPlugin = viewMenu.addItem(withTitle: "Focus Plugin Panel", action: #selector(focusPluginPanel(_:)), keyEquivalent: "p")
+        focusPlugin.keyEquivalentModifierMask = [.command, .option, .control]
+        focusPlugin.target = self
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding

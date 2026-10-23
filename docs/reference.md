@@ -102,13 +102,14 @@ modes and Play Marks Only work mirrored.
 | Shift+↑ / Shift+↓ | Next scene / start of this scene (again within 1 s: the previous one). Keyframes are compared, then the frames between them, so the jump lands on the first frame of the new scene; presses during a search add up; Shift+Backspace comes back |
 | `Shift+Backspace` | Back to where the last seek started (seeks less than a second apart count as one); again to undo that. Frame steps are not seeks |
 | `<` / `>`, PgUp / PgDn | Previous / next video in the folder |
-| `[` `]` `Backspace` | Speed −/+ `speed-step` (0.25 by default: 1 → 1.25 → 1.5, never below one step), reset |
+| `[` `]` `Backspace` | Speed −/+ `speed-step` (0.25 by default: 1 → 1.25 → 1.5, never below one step), reset to 1× (also Playback → Normal Speed). The speed stays for the next video opened in the window and is shown when that video opens (`keep-speed`) |
 | Hold `/` | Play at `hold-speed` (2× by default) while held, also from pause; on release the speed and pause come back |
 | `9` `0` `m` | Volume down, up, mute |
 | `⌥m` | Scrub audio on / off: in pause a step plays a short piece of sound, scrubbing plays it like tape — pitch follows the speed, backward is reversed (`scrub-audio`) |
 | `⇧⌥m` | Scrub pitch: tape (follows the speed) / natural (the sound's own pitch from 0.5× up, reversed backward) (`scrub-audio-pitch`) |
 | `l` | Set range start, then end, then clear (loops playback). While A is set, the frame line counts from it (`A+37 f (1.23 s)`); setting B shows the range's length |
 | `L` | At B: loop back to A, pause on B (playing on from B starts at A again), or back and forth (turns around at B and at A). Backward the same mirrored. Also Playback > At B; saved as `ab-loop` |
+| `⌥l` | Segments: lock playback to the segment under the position / unlock (`⇧⌥f` in left-hand) |
 | `Ctrl+j` `Ctrl+k` `Ctrl+l` | Shuttle: back / stop / forward (see the left-hand table) |
 | `s` | Save current frame (the picture flashes faintly, as it does for ⌘C) |
 | `S` | Export the A-B range (a sheet asks which frames and what size; press again or `Esc` to cancel a running export) |
@@ -133,6 +134,9 @@ modes and Play Marks Only work mirrored.
 Rebind keys in `~/.config/framescrub/input.conf` using mpv syntax (`KEY command`), e.g.
 `Ctrl+e export-range` or `s ignore`. In both config files `#` starts a comment only at the
 start of a line or after whitespace.
+
+A page's actions can be bound too: `Alt+9 plugin-action mark` runs the plugin page's action `mark`; the key help (`?`)
+lists the actions a page declares under "Plugin".
 
 Menu items own their ⌘ keys: ⌘1–⌘4, ⌘C, ⌘F, ⌘⌫, ⇧⌘O and ⌘, cannot be rebound in `input.conf`. The Playlist item in
 the menu has no key of its own; `F8` comes from the default `input.conf`.
@@ -301,6 +305,11 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   (`K −0.80 s / +2.20 s`).
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
+- **View › Show Plugin Panel** (⌥⌘P) shows a web page (`plugin-url`, or the `plugin=` of a `framescrub://open` link)
+  beside the video; the page drives the player through `window.framescrub` (the contract is documented at the top of
+  `Sources/FrameScrub/PluginPanel.swift`). Dragging the panel's edge sets its width (`plugin-width`); **Focus Plugin
+  Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local videos
+  only after you allow its origin once (`plugin-open-allowed`).
 - **Settings** (⌘,) has six tabs: General, Scrolling, Saving, Display, Mouse & Trackpad, and Stash. Changes apply
   at once. Edits keep the comments in `framescrub.conf` / `input.conf`; default values that are not in the
   file are not added.
@@ -413,6 +422,10 @@ start-tab=recent                # start screen without a file: recent | stash
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
+stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
+plugin-url=                     # web page for View › Show Plugin Panel (⌥⌘P), e.g. http://host:8000/page/; empty = none
+plugin-width=400                # 240…1200 points, width of the plugin panel (dragging its edge writes it)
+plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video
@@ -448,10 +461,12 @@ ontop=no                        # yes: the player window floats above other apps
 stats-font-size=12              # 8…40 points, text size of the stats panel (i)
 hold-speed=2                    # 0.1…16, speed while the hold key (w, or / in classic) is held
 speed-step=0.25                 # 0.01…4, what [ ] add to or take from the speed
+keep-speed=yes                  # yes: the speed set with [ ] stays for the next video in the window (shown when it opens; Backspace resets to 1×); no: every video starts at 1×. Reverse, the shuttle's speeds and the hold speed never carry over
 scrub-audio=yes                 # yes: sound in pause — a piece per step, tape while scrubbing (⌥m toggles it)
 scrub-audio-length=80           # 20…500 ms, length of the piece a single step plays
 scrub-audio-pitch=tape          # tape: the scrub pitch follows the speed; natural: the sound's own pitch (⇧⌥m toggles it)
 ab-loop=loop                    # loop | once | ping-pong — at B: back to A, pause, or turn around (⇧f / L cycles it)
+segment-advance=repeat          # repeat | next — at the end of a locked segment: play it again, or go on to the next one
 key-layout=classic              # classic (the original mpv-style keys) | left-hand
 app-icon=horse                  # Dock icon while running: horse, or a picture of yours: ~/.config/framescrub/icons/<name>.png (or .icns), or a path
 ```
@@ -508,7 +523,12 @@ file never loads it) and kept, so going back finds the same page.
   `trackActivity` and `minimumPlayPercent` are followed).
 - ⌘⌫ asks, then has Stash delete the scene, its file and its generated files; the next scene of the list opens.
 - **Check** in Settings → Stash asks Stash for its version and shows where its first scene's file is on this Mac.
-- Not yet: playing Stash's stream when a file is on no share this Mac can reach.
+- A file on no share this Mac can reach (no mount, no rule, or the share will not mount) plays as **Stash's stream**
+  (`<stash-url>/scene/<id>/stream`, read with Range requests like a file, the API key sent along). `stash-stream=never`
+  fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
+  `source: "file" | "stream"`.
+- `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found
+  on the shares (or streamed) as for ▶. A plugin page's `open({scene})` without `paths` does the same.
 
 ### Sharp frames
 

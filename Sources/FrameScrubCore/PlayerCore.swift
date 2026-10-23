@@ -86,8 +86,21 @@ public final class PlayerCore {
     private var shownTimes: [Double] = []
     public private(set) var volume: Double
     public private(set) var isMuted = false
-    public private(set) var loopA: Int?
-    public private(set) var loopB: Int?
+    public private(set) var loopA: Int? { didSet { syncCacheRegions() } }
+    public private(set) var loopB: Int? { didSet { syncCacheRegions() } }
+    /// The segments of the open file the playhead is kept inside while `segmentsLocked` (segment lock spec §1); nil
+    /// without any, or before the file has an index. Built from `segmentsSource` with the current index.
+    public private(set) var segments: SegmentSet? { didSet { syncCacheRegions() } }
+    /// Moves are held inside `segments` and playback repeats or advances through them. Not remembered for the file.
+    public private(set) var segmentsLocked = false { didSet { syncCacheRegions() } }
+    /// What playback does at the end of a locked segment.
+    public private(set) var segmentAdvance: SegmentAdvance { didSet { syncCacheRegions() } }
+    /// Called on the main thread when the segment containing the playhead or the lock changes.
+    public var onSegmentChange: ((_ current: Int?, _ locked: Bool) -> Void)?
+    /// The segments as given, in seconds: the frames are counted again from them when the exact index arrives.
+    private var segmentsSource: [ClosedRange<Double>] = []
+    /// The last `(currentSegment, segmentsLocked)` passed to `onSegmentChange`.
+    private var announcedSegment: (current: Int?, locked: Bool) = (nil, false)
     /// Cut marks of the open file (cut marks spec §2) and their ⌘Z history.
     public private(set) var marks = CutMarks()
     private var marksHistory = CutHistory()
@@ -110,11 +123,16 @@ public final class PlayerCore {
     public var isExporting: Bool { exportFlag != nil }
     public var hasAudio: Bool { audio != nil }
     var hasScrubAudio: Bool { scrubAudio != nil }
+    /// The time-pitch rate of the sound, nil without sound (tests).
+    var audioRate: Float? { audio?.rate }
+    /// Tests: how often the playback sound was (re)started.
+    var audioPlayCalls: Int { audio?.playCalls ?? 0 }
 
     private let enableAudio: Bool
     private let fallbackRoot: URL
     private let resumeStore: ResumeStore?
-    private let byteSource: (URL) throws -> ByteSource
+    /// The bytes of a URL about to open; the default reads a file, or Stash's stream with its API key.
+    private let byteSource: (URL, Config) throws -> ByteSource
     private let now: () -> Double
     private var filler: CacheFiller?
     private var exporter: FrameExporter?
@@ -156,7 +174,7 @@ public final class PlayerCore {
     var keepApproximateIndex = false
     /// Id of the keyframe seek whose landing may still move the position (spec §2.3); bumped by every
     /// other seek so a late landing never moves the user.
-    private var landingID = 0
+    private(set) var landingID = 0
     /// Direction of the running seek series (spec §3.2): frames that arrive on the way are shown only if
     /// they move the picture this way.
     var seekDirection = 1
@@ -171,7 +189,9 @@ public final class PlayerCore {
 
     public init(config: Config, enableAudio: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
                 now: @escaping () -> Double = CACurrentMediaTime, resumeStore: ResumeStore? = nil,
-                byteSource: @escaping (URL) throws -> ByteSource = { try FileByteSource(url: $0) }) {
+                byteSource: @escaping (URL, Config) throws -> ByteSource = {
+                    try ByteSources.open($0, headers: StashOpenPolicy.headers(for: $0, config: $1))
+                }) {
         self.config = config
         self.byteSource = byteSource
         self.now = now
@@ -182,6 +202,7 @@ public final class PlayerCore {
         cache = FrameCache(budgetBytes: baseBudget)
         clock = PlaybackClock(now: now)
         volume = config.volume
+        segmentAdvance = config.segmentAdvance
         watchMemoryPressure()
     }
 
@@ -199,12 +220,15 @@ public final class PlayerCore {
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
     /// resume point, Stash spec §2.3).
     public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
-        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url))
+        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url, config))
         let source = try MediaSource(url: url, readCache: readCache)
         StartupTrace.mark("probe done")
         readCache.probe = StreamProbe(source)
         readCache.readAheadBytes = Int(source.bytesPerSecond * 3)
-        close()
+        // Segments given while no file was open are for this one; those of the file open now go with it.
+        let pendingSegments = index == nil && !segmentsSource.isEmpty
+            ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
+        close(announcing: pendingSegments == nil)   // restored segments are announced once, by the first seek
         session += 1
         let current = session
         let approximate = source.approximateIndex()
@@ -212,6 +236,12 @@ public final class PlayerCore {
         self.readCache = readCache
         info = source
         index = approximate
+        if let pendingSegments {
+            segmentsSource = pendingSegments.seconds
+            segmentAdvance = pendingSegments.advance
+            rebuildSegments()
+            segmentsLocked = pendingSegments.locked && segments != nil   // all past the end: nothing to lock to
+        }
         revertPoint = nil
         lastSeekAt = -.infinity
         endBump = EndBump()
@@ -231,24 +261,36 @@ public final class PlayerCore {
         }
         filler.start()
         self.filler = filler
+        syncCacheRegions()
 
         rebuildExporter()
         if source.audioStreamIndex != nil {
             setUpAudioInBackground(url, zeroSeconds: Double(source.startPTS) * source.timeBase, readCache: readCache,
                                    session: current)
         }
-        speed = 1
+        // keep-speed: the speed the user chose goes on; the shuttle's and a hold's are only for the file they began in.
+        let kept = config.keepSpeed ? (shuttleSpeed ? 1 : heldFrom?.speed ?? speed) : 1
+        heldFrom = nil   // the hold's key-up after the open has nothing to put back
+        let willHaveSound = enableAudio && source.audioStreamIndex != nil   // the sound comes in later: its range now
+        let range = willHaveSound ? AudioOutput.rateRange : 0.01...100
+        speed = min(max(kept, range.lowerBound), range.upperBound)
         direction = 1
         shuttleSpeed = false
-        clock.rate = 1
+        clock.rate = speed   // the sound takes it when it comes in (`attachAudio`)
         clock.followsAudio = true
         buildIndexInBackground(url, readCache: readCache, session: current)
         seek(toFrame: 0)
         resumeIfRemembered(url, fallback: fallbackPosition)
         if config.autoplay { play() }
+        if speed != 1 { feedback(.speed(speed)) }   // a kept speed is shown, so a faster file is no surprise
     }
 
     public func close() {
+        close(announcing: true)
+    }
+
+    /// `announcing` false: `onSegmentChange` is left for the caller (`open` restoring segments given before it).
+    private func close(announcing: Bool) {
         cancelEdgeDrag()   // before the marks are remembered: the drag never reached them
         rememberPosition()
         exportFlag?.cancel()
@@ -262,6 +304,7 @@ public final class PlayerCore {
         scrubAudio?.stop()
         scrubAudio = nil
         clock.audioSeconds = nil
+        clock.audioStarting = nil
         clock.stop()
         cache.removeAll()
         readCache?.close()
@@ -280,6 +323,10 @@ public final class PlayerCore {
         marks = CutMarks()
         marksHistory = CutHistory()
         playMarksOnly = false
+        segmentsSource = []
+        segments = nil
+        segmentsLocked = false
+        segmentAdvance = config.segmentAdvance
         position = 0
         isPaused = true
         displayedFrame = nil
@@ -287,6 +334,7 @@ public final class PlayerCore {
         seekTimer = SeekTimer()
         indexStatus = .approximate
         session += 1
+        if announcing { announceSegment() }
     }
 
     /// Applies new settings while running (Preferences): cache budget, export settings and seek mode
@@ -326,31 +374,37 @@ public final class PlayerCore {
         seekDirection = n < position ? -1 : 1
         var target = n
         if usesKeyframes(.byConfig), !index.isExact {
-            seekToKeyframe(toward: n, direction: n < position ? -1 : 1)
+            seekToKeyframe(toward: n, direction: n < position ? -1 : 1, hold: .nearest)
             return
         }
-        if usesKeyframes(.byConfig), let keyframe = index.keyframeSeekTarget(from: position, toward: n, direction: 0) {
+        if usesKeyframes(.byConfig), let keyframe = index.keyframeSeekTarget(from: position, toward: n, direction: 0),
+           snapsToKeyframe(keyframe) {
             target = keyframe
         }
-        seek(toFrame: target, direction: target < position ? -1 : 1)
+        seek(toFrame: target, direction: target < position ? -1 : 1, hold: .nearest)
     }
 
     /// Spec §2.3, keyframe seeks before the exact index is known: the position moves to `target` for now and
     /// the forward decoder finds the keyframe beyond the current frame in `direction`; `landed` moves there.
-    private func seekToKeyframe(toward target: Int, direction: Int) {
+    private func seekToKeyframe(toward target: Int, direction: Int, hold: SegmentHold = .glued) {
         landingID += 1
         readCache?.cancelReadAhead()
         filler?.requestKeyframe(id: landingID, toward: target, from: position, direction: direction)
-        move(toFrame: target, direction: direction)
+        move(toFrame: target, direction: direction, hold: hold)
     }
 
-    private func landed(_ id: Int, _ n: Int, session current: Int) {
+    func landed(_ id: Int, _ n: Int, session current: Int) {
         guard current == session, id == landingID, let index else { return }
-        position = min(max(n, 0), max(index.frameCount - 1, 0))
+        let frame = min(max(n, 0), max(index.frameCount - 1, 0))
+        // A keyframe outside the locked segments: the seek stays on its target, held inside them (exactness inside the
+        // segments beats the keyframe).
+        if let segments = lockedSegments, segments.index(containing: frame) == nil { return }
+        position = frame
         refocus(direction: 0)
         if !isPaused { restartClock() }
         showCurrent()
         osd(progressText + " K")
+        announceSegment()
     }
 
     /// Opening the audio decoders and starting the engine takes 0.1–0.5 s (two probes of the file, the audio
@@ -379,6 +433,7 @@ public final class PlayerCore {
     private func attachAudio(_ output: AudioOutput?, scrubDecoder: AudioDecoder?) {
         audio = output
         clock.audioSeconds = output.map { output in { output.currentSeconds } }
+        clock.audioStarting = output.map { output in { output.isStarting } }
         output?.onRestart = { [weak self, weak output] in
             guard let self, let output, self.audio === output, !self.isPaused else { return }
             self.restartClock()   // the queued sound went with the stopped engine: it starts again at the frame on screen
@@ -393,7 +448,9 @@ public final class PlayerCore {
         }
         applySpeed(speed)   // the time-pitch unit narrows the range
         applyVolume()
-        if !isPaused, direction > 0, !clockWaitsForPicture { output?.play(fromSeconds: currentSeconds) }
+        // Playing forward on the host clock: started again with the sound, so the clock holds until it is heard instead
+        // of jumping back to it.
+        if !isPaused, direction > 0, !clockWaitsForPicture, output != nil { restartClock() }
     }
 
     private func buildIndexInBackground(_ url: URL, readCache: ReadCache, session current: Int) {
@@ -439,6 +496,16 @@ public final class PlayerCore {
         indexStatus = .failed
     }
 
+    /// The cache follows the A–B loop, else the locked segments (segment lock spec §3): frames outside them are wasted
+    /// work and evict useful ones.
+    private func syncCacheRegions() {
+        if let a = loopA, let b = loopB {
+            filler?.setRegions([min(a, b)...max(a, b)], advance: .repeating)
+        } else {
+            filler?.setRegions(lockedSegments?.ranges ?? [], advance: segmentAdvance)
+        }
+    }
+
     func indexReady(_ exact: FrameIndex, session current: Int, status: IndexStatus) {
         // A scan that found no frames (odd container) is useless: keep the approximate index.
         guard current == session else { return }
@@ -458,11 +525,14 @@ public final class PlayerCore {
             displayedFrame = nil
         }
         index = exact
+        rebuildSegments()   // from the seconds given, not remapped: the exact frames of those times
+        if let segments = lockedSegments { position = segments.nearest(position) }
         StartupTrace.mark("exact index ready")
         if !unchanged { landingID += 1 }   // a pending landing counts frames of the old index
         filler.updateIndex(exact, clearCache: !unchanged)
         refocus(direction: 0)
         showCurrent()
+        announceSegment()
         onIndexReady?(exact)
     }
 
@@ -471,14 +541,24 @@ public final class PlayerCore {
     public func play() {
         guard let index else { return }
         if shuttleSpeed { applySpeed(1) }   // Space after the shuttle: 1× (spec §2)
-        if playMarksOnly, let start = PlaybackEdges.markStart(position: position, direction: direction, marks: marks.segments) {
+        let loop = playbackLoop
+        if playMarksOnly, lockedSegments == nil,
+           let start = PlaybackEdges.markStart(position: position, direction: direction, marks: marks.segments) {
             seek(toFrame: start)
-        } else if config.abLoop == .once, let a = loopA, let b = loopB, position == (direction > 0 ? b : a) {
-            seek(toFrame: direction > 0 ? a : b)   // stopped on B (backward: on A): the range starts over
-        } else if direction > 0, position >= index.frameCount - 1 {
-            position = 0
-        } else if direction < 0, position <= 0 {
-            position = index.frameCount - 1
+        } else if config.abLoop == .once, let loop, position == (direction > 0 ? loop.upperBound : loop.lowerBound) {
+            // stopped on B (backward: on A), or on a repeated segment's end: the range starts over
+            seek(toFrame: direction > 0 ? loop.lowerBound : loop.upperBound)
+        } else if direction > 0 ? position >= index.frameCount - 1 : position <= 0 {
+            if let segments = lockedSegments {
+                // At the end of the file (backward: its start) in the segments: `next` starts over from the first
+                // (backward: the end of the last), `repeat` from the start (end) of the loop or the current segment.
+                let ranges = segments.ranges
+                let range = segmentAdvance == .next && loopRange == nil
+                    ? (direction > 0 ? ranges[0] : ranges[ranges.count - 1]) : playbackLoop ?? ranges[0]
+                seek(toFrame: direction > 0 ? range.lowerBound : range.upperBound)
+            } else {
+                position = direction > 0 ? 0 : index.frameCount - 1
+            }
         }
         isPaused = false
         scrubAudio?.playbackStarted()
@@ -498,18 +578,27 @@ public final class PlayerCore {
         showCurrent()
     }
 
+    /// While the segments are locked the target is held inside them (`SegmentHold.glued`: relative moves such as a
+    /// step, a seek by some seconds, a revert or a scene jump). Absolute targets (`seek(toSeconds:)`, `goTo`) take the
+    /// nearest edge.
     public func seek(toFrame n: Int, direction: Int = 0) {
-        landingID += 1
-        readCache?.cancelReadAhead()   // blocks queued for the old position would delay this one
-        move(toFrame: n, direction: direction)
+        seek(toFrame: n, direction: direction, hold: .glued)
     }
 
-    private func move(toFrame n: Int, direction: Int) {
+    private func seek(toFrame n: Int, direction: Int, hold: SegmentHold) {
+        landingID += 1
+        readCache?.cancelReadAhead()   // blocks queued for the old position would delay this one
+        move(toFrame: n, direction: direction, hold: hold)
+    }
+
+    /// Every seek, step and scrub ends here, so each is held inside the locked segments.
+    private func move(toFrame n: Int, direction: Int, hold: SegmentHold = .glued) {
         guard let index else { return }
-        position = min(max(n, 0), max(index.frameCount - 1, 0))
+        position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: hold)
         refocus(direction: direction)
         if !isPaused { restartClock() }
         showCurrent()
+        announceSegment()
     }
 
     /// Horizontal-scroll scrubbing: pauses and moves by `frames` (negative = backward). No keyframe / mark ticks.
@@ -544,16 +633,26 @@ public final class PlayerCore {
     /// Advances playback to the clock; call on every display refresh.
     public func tick() {
         checkPendingScreenshot()
-        // Before the file's first picture the clock stands still at 0: following it would undo the resume position.
+        // Before the starting frame is on screen the clock stands still: following it would move off the start. The frame
+        // may be in already (shown before the playhead came to it, or decoded unseen): it starts the clock here.
+        if clockWaitsForPicture, !isPaused {
+            if let frame = cache.frame(position), frame.number != displayedFrame { display(frame) }
+            else if displayedFrame == position || cache.isUndecodable(position) { restartClock() }
+        }
         guard !isPaused, !clockWaitsForPicture, let index else { return }
         let seconds = clock.seconds
         let n = index.frameNumber(forSeconds: max(seconds, 0))
         let last = index.frameCount - 1
         let atEnd = direction > 0 && n >= last && seconds >= index.seconds(forFrame: last) + 1 / (info?.frameRate ?? 30)
         let atStart = direction < 0 && seconds < index.seconds(forFrame: 0)
-        let loop = loopA.flatMap { a in loopB.map { a...$0 } }
+        // Locked segments without an A–B loop: `next` plays them as marks, round and round; `repeat` loops the current
+        // one (`playbackLoop`). Play-marks-only waits while they are locked.
+        let locked = lockedSegments
+        let segmentMarks = locked != nil && loopRange == nil && segmentAdvance == .next
+            ? locked?.ranges.map { CutSegment(start: $0.lowerBound, end: $0.upperBound) } : nil
+        let edgeMarks = segmentMarks ?? (playMarksOnly && locked == nil ? marks.segments : nil)
         switch PlaybackEdges.decide(target: n, pastStart: atStart, pastEnd: atEnd, position: position, direction: direction,
-                                    loop: loop, mode: config.abLoop, marks: playMarksOnly ? marks.segments : nil,
+                                    loop: playbackLoop, mode: config.abLoop, marks: edgeMarks, wrapMarks: segmentMarks != nil,
                                     frameCount: index.frameCount) {
         case .none:
             break
@@ -583,7 +682,8 @@ public final class PlayerCore {
             return
         }
         guard n != position else { return }
-        position = n
+        position = n   // not held: the edges above keep playback inside the segments
+        announceSegment()
         checkPendingScreenshot()
         filler?.setFocus(n, mode: direction < 0 ? .reversing : .playing, direction: direction)
         // Skipping frames (spec §3): the decoded frame nearest the clock between it and the one on screen, within two
@@ -647,9 +747,10 @@ public final class PlayerCore {
                 return count == 0 ? nil : "All marks deleted (\(count))"
             }
         case .showProgress: osd(progressText)
+        case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .cycleAspect, .windowScale, .windowFit,
-             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge: break
+             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
         case .shuttleForward: shuttle(.forward)
@@ -766,9 +867,10 @@ public final class PlayerCore {
 
     /// Backward the clock runs on the host time at a negative rate and the audio waits (spec §3).
     private func restartClock() {
-        // Nothing of this file on screen yet: the clock starts with its first picture (`display`), so playback does
-        // not run ahead of a decoder that is still starting.
-        clockWaitsForPicture = displayedFrame == nil
+        // The frame playback starts on is not on screen yet (a new file, a seek the decoder has not reached; a stand-in
+        // near it does not count): the clock and the sound start with it (`display`, `tick`), so the sound never runs
+        // ahead of a decoder that is still on its way there. An undecodable frame does not hold playback.
+        clockWaitsForPicture = displayedFrame != position && !cache.isUndecodable(position)
         guard !clockWaitsForPicture else {
             clock.stop()
             audio?.pause()
@@ -941,6 +1043,7 @@ public final class PlayerCore {
     }
 
     /// ⌘G (backlog 4.3): an exact jump to a time or frame, clamped to the file; revert-seek comes back here.
+    /// While the segments are locked an absolute target with no move to count along them takes the nearest edge.
     public func goTo(_ target: GoToTarget) {
         scrubAudio?.userActed()
         guard let index else { return }
@@ -948,12 +1051,26 @@ public final class PlayerCore {
         case let .seconds(seconds): index.frameNumber(forSeconds: seconds)
         case let .frame(n): n
         }
+        jump(toFrame: frame, hold: .nearest)
+    }
+
+    /// Next / previous scene: like `goTo(.frame(frame))`, but the scene was searched from the playhead, so while the
+    /// segments are locked the move is counted along them (`SegmentHold.glued`) and a cut found in a gap runs on into
+    /// the following segment instead of falling back onto the edge it started from.
+    public func jumpToScene(frame: Int) {
+        scrubAudio?.userActed()
+        jump(toFrame: frame, hold: .glued)
+    }
+
+    /// An exact jump that keeps play / pause and sets the revert point.
+    private func jump(toFrame frame: Int, hold: SegmentHold) {
+        guard let index else { return }
         revertPoint = position          // a deliberate jump: never part of a key-repeat series
         lastSeekAt = now()
         seekTimer.start(at: now())
         let target = min(max(frame, 0), max(index.frameCount - 1, 0))
         seekDirection = target < position ? -1 : 1
-        seek(toFrame: target, direction: seekDirection)
+        seek(toFrame: target, direction: seekDirection, hold: hold)
         frameOSDPending = !cache.contains(position)
         osd(frameText)
     }
@@ -982,7 +1099,8 @@ public final class PlayerCore {
             return
         }
         if usesKeyframes(precision), let keyframe = index.keyframeSeekTarget(from: position, toward: target,
-                                                                    direction: seconds < 0 ? -1 : 1) {
+                                                                    direction: seconds < 0 ? -1 : 1),
+           snapsToKeyframe(keyframe) {
             target = keyframe
         }
         seek(toFrame: target, direction: seconds < 0 ? -1 : 1)
@@ -1063,8 +1181,187 @@ public final class PlayerCore {
         scrubAudio?.audible = !isMuted && volume > 0
     }
 
+    /// Seeks to a time in seconds (links, plugins); a time outside the locked segments takes the nearest edge.
+    public func seek(toSeconds seconds: Double) {
+        guard let index else { return }
+        seek(toFrame: index.frameNumber(forSeconds: seconds), direction: 0, hold: .nearest)
+    }
+
+    /// Steps by whole frames, as the frame-step keys do (plugins).
+    public func step(frames: Int) {
+        step(by: frames)
+    }
+
+    /// An A-B loop over a range in seconds, nil to clear it (links, plugins).
+    public func setLoop(seconds range: ClosedRange<Double>?) {
+        guard let index else { return }
+        if let range {
+            let a = index.frameNumber(forSeconds: range.lowerBound)
+            loopA = a
+            loopB = max(a, index.frameNumber(forSeconds: range.upperBound))
+        } else {
+            loopA = nil
+            loopB = nil
+        }
+        delegate?.playerStateDidChange(self)
+    }
+
+    /// The current position in seconds.
+    public var positionSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
+
+    /// The loop in seconds, when both ends are set.
+    public var loopSeconds: ClosedRange<Double>? {
+        guard let index, let a = loopA, let b = loopB else { return nil }
+        return index.seconds(forFrame: a)...index.seconds(forFrame: b)
+    }
+
+    // MARK: Segment lock
+
+    /// How a target outside the locked segments is brought inside: `glued` counts the move along the segments with the
+    /// gaps left out (a step, a seek by some seconds); `nearest` takes the nearest edge (a click on the bar, a landing).
+    private enum SegmentHold { case glued, nearest }
+
+    /// The segments while they are locked.
+    private var lockedSegments: SegmentSet? { segmentsLocked ? segments : nil }
+
+    /// The A–B loop, when both ends are set.
+    private var loopRange: ClosedRange<Int>? { loopA.flatMap { a in loopB.map { a...$0 } } }
+
+    /// What playback loops over: the A–B loop, else, with locked segments that repeat, the segment of the playhead.
+    private var playbackLoop: ClosedRange<Int>? {
+        if let loopRange { return loopRange }
+        guard let segments = lockedSegments, segmentAdvance == .repeating,
+              let i = segments.index(containing: segments.nearest(position)) else { return nil }
+        return segments.ranges[i]
+    }
+
+    /// `frame` held inside the locked segments (spec §1): kept when inside one, else moved per `hold`.
+    private func held(_ frame: Int, hold: SegmentHold) -> Int {
+        guard let segments = lockedSegments, segments.index(containing: frame) == nil else { return frame }
+        switch hold {
+        case .glued: return segments.glued(from: position, to: frame)
+        case .nearest: return segments.nearest(frame)
+        }
+    }
+
+    /// Whether a keyframe seek snaps to `keyframe`: not when it lies outside the locked segments, where the seek's own
+    /// target is held inside them instead (exact frames inside the segments beat a keyframe outside them).
+    private func snapsToKeyframe(_ keyframe: Int) -> Bool {
+        lockedSegments.map { $0.index(containing: keyframe) != nil } ?? true
+    }
+
+    /// Index of the segment containing the playhead.
+    public var currentSegment: Int? { segments?.index(containing: position) }
+
+    /// The segments in seconds: their frames' times with an index, else the seconds as given.
+    public var segmentsSeconds: [ClosedRange<Double>] {
+        guard let index, let segments else { return segmentsSource }
+        return segments.ranges.map { index.seconds(forFrame: $0.lowerBound)...index.seconds(forFrame: $0.upperBound) }
+    }
+
+    /// Where a link or a plugin's `open` lands in the file just opened (Ruling R19): its segments (locked unless `lock`
+    /// is false), then its time, else the start of the first segment — over the remembered position and Stash's resume
+    /// point. Without segments, only the time. Announced once, where it lands.
+    public func applyLanding(_ landing: LinkTarget) {
+        if !landing.segments.isEmpty {
+            assignSegments(seconds: landing.segments, lock: landing.lock ?? true, advance: landing.advance)
+        }
+        if let index, let time = landing.time {
+            seek(toFrame: index.frameNumber(forSeconds: time), direction: 0, hold: .nearest)
+        } else if !landing.segments.isEmpty, let first = segments?.ranges.first {
+            seek(toFrame: first.lowerBound, direction: 0, hold: .nearest)
+        }
+        announceSegment()
+        delegate?.playerStateDidChange(self)
+    }
+
+    /// Gives the open file its segments (links, plugins); an empty list clears them. `advance` nil takes the config's
+    /// `segment-advance`. Locking moves the playhead to the nearest frame of a segment. Given while no file is open,
+    /// they apply to the next one opened. Not remembered for the file. False when a file is open and none of the
+    /// segments falls inside it (nothing is set then but an empty set).
+    @discardableResult
+    public func setSegments(seconds: [ClosedRange<Double>], lock: Bool = true, advance: SegmentAdvance? = nil) -> Bool {
+        assignSegments(seconds: seconds, lock: lock, advance: advance)
+        if lockedSegments != nil { seek(toFrame: position, direction: 0, hold: .nearest) }
+        announceSegment()
+        delegate?.playerStateDidChange(self)
+        return seconds.isEmpty || index == nil || segments != nil
+    }
+
+    /// The segments, the lock and the advance set, and a loop across a gap dropped; the playhead is left where it is.
+    private func assignSegments(seconds: [ClosedRange<Double>], lock: Bool, advance: SegmentAdvance?) {
+        segmentsSource = seconds
+        segmentAdvance = advance ?? config.segmentAdvance
+        rebuildSegments()
+        // Without an index they wait for the file; with one, ranges all past its end leave nothing to lock.
+        segmentsLocked = lock && !seconds.isEmpty && (segments != nil || index == nil)
+        if lockedSegments != nil { dropLoopOutsideSegments() }
+    }
+
+    /// Locks or unlocks the segments; false when there are none. Locking moves the playhead into them.
+    public func setSegmentLock(_ on: Bool) -> Bool {
+        guard segments != nil else { return false }
+        segmentsLocked = on
+        if on {
+            dropLoopOutsideSegments()
+            seek(toFrame: position, direction: 0, hold: .nearest)
+        }
+        announceSegment()
+        delegate?.playerStateDidChange(self)
+        return true
+    }
+
+    /// Seeks to the start of segment `i` (0-based); false when there is no such segment.
+    public func goSegment(_ i: Int) -> Bool {
+        guard let segments, segments.ranges.indices.contains(i) else { return false }
+        seek(toFrame: segments.ranges[i].lowerBound)
+        return true
+    }
+
+    /// Locking: an A–B loop not inside one segment is cleared, as playback would run through the gaps with it.
+    private func dropLoopOutsideSegments() {
+        guard let segments = lockedSegments, let a = loopA, let b = loopB else { return }
+        guard segments.index(containing: a) == nil || segments.index(containing: a) != segments.index(containing: b) else {
+            return
+        }
+        loopA = nil
+        loopB = nil
+    }
+
+    /// `segments` from `segmentsSource` with the current index; nil without an index or without segments. Ranges wholly
+    /// before the start or from the end of the file on are left out (the index would clamp them onto its first / last frame).
+    private func rebuildSegments() {
+        guard let index, !segmentsSource.isEmpty else { segments = nil; return }
+        let end = durationSeconds > 0 ? durationSeconds : .infinity
+        let set = SegmentSet(frames: segmentsSource.filter { $0.upperBound >= 0 && $0.lowerBound < end }.map {
+            index.frameNumber(forSeconds: $0.lowerBound)...index.frameNumber(forSeconds: $0.upperBound)
+        }, frameCount: index.frameCount)
+        segments = set.isEmpty ? nil : set
+    }
+
+    /// Calls `onSegmentChange` when the segment of the playhead or the lock changed since the last call.
+    private func announceSegment() {
+        let state = (current: currentSegment, locked: segmentsLocked)
+        guard state != announcedSegment else { return }
+        announcedSegment = state
+        onSegmentChange?(state.current, state.locked)
+    }
+
+    private func toggleSegmentLock() {
+        guard let segments, setSegmentLock(!segmentsLocked) else { refuse("No segments"); return }
+        osd(segmentsLocked ? "Segments locked: \((currentSegment ?? 0) + 1)/\(segments.ranges.count)"
+            : "Segments unlocked (\(segments.ranges.count))")
+    }
+
     private func cycleABLoop() {
         if let a = loopA, loopB == nil {
+            if let segments = lockedSegments,
+               segments.index(containing: a) == nil || segments.index(containing: a) != segments.index(containing: position) {
+                loopA = nil
+                refuse("A-B must be inside one segment")
+                delegate?.playerStateDidChange(self)
+                return
+            }
             loopA = min(a, position)
             loopB = max(a, position)
             let length = loopB! - loopA!
@@ -1156,7 +1453,7 @@ public final class PlayerCore {
         guard playMarksOnly || !marks.segments.isEmpty else { refuse("No marks to play"); return }
         playMarksOnly.toggle()
         osd("Play marks only: \(playMarksOnly ? "on" : "off")")
-        if playMarksOnly, !isPaused,
+        if playMarksOnly, !isPaused, lockedSegments == nil,
            let start = PlaybackEdges.markStart(position: position, direction: direction, marks: marks.segments) { seek(toFrame: start) }
         delegate?.playerStateDidChange(self)
     }
@@ -1437,6 +1734,7 @@ public final class PlayerCore {
         guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
         loopB = entry.loopB.map(index.frameNumber(forSeconds:))
+        dropLoopOutsideSegments()   // segments given before the open are locked already
         if let saved = entry.marks {
             marks = CutMarks(segments: saved.filter { $0.count == 2 }.map {
                                  CutSegment(start: index.frameNumber(forSeconds: $0[0]), end: index.frameNumber(forSeconds: $0[1]))
@@ -1444,7 +1742,7 @@ public final class PlayerCore {
                              open: saved.first { $0.count == 1 }.map { index.frameNumber(forSeconds: $0[0]) })
         }
         guard entry.position > 0, durationSeconds - entry.position >= 5 else { return }
-        seek(toFrame: index.frameNumber(forSeconds: entry.position))
+        seek(toFrame: index.frameNumber(forSeconds: entry.position), direction: 0, hold: .nearest)
         osd("Resumed at \(FrameNaming.timecode(entry.position))")
     }
 

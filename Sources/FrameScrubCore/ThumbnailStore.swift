@@ -41,9 +41,14 @@ public final class ThumbnailStore {
         guard let image = context.createCGImage(scaled, from: CGRect(origin: .zero, size: target),
                                                 format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) else { return }
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let destination = CGImageDestinationCreateWithURL(file as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
+        // Written beside it and moved over it: the start screen may read it meanwhile (saves run in the background).
+        let partial = file.appendingPathExtension("partial")
+        guard let destination = CGImageDestinationCreateWithURL(partial as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
         CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return }
+        guard CGImageDestinationFinalize(destination), rename(partial.path, file.path) == 0 else {
+            try? FileManager.default.removeItem(at: partial)
+            return
+        }
         prune()
     }
 
@@ -54,8 +59,8 @@ public final class ThumbnailStore {
 
     private func prune() {
         let keys: Set<URLResourceKey> = [.contentModificationDateKey]
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys)),
-              files.count > limit else { return }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))
+            .filter({ $0.pathExtension == "jpg" }), files.count > limit else { return }
         let dated = files.map { ($0, (try? $0.resourceValues(forKeys: keys))?.contentModificationDate ?? .distantPast) }
         for (file, _) in dated.sorted(by: { $0.1 < $1.1 }).prefix(files.count - limit) {
             try? FileManager.default.removeItem(at: file)
