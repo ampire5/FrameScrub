@@ -171,7 +171,7 @@ public final class PlayerCore {
 
     public init(config: Config, enableAudio: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
                 now: @escaping () -> Double = CACurrentMediaTime, resumeStore: ResumeStore? = nil,
-                byteSource: @escaping (URL) throws -> ByteSource = { try FileByteSource(url: $0) }) {
+                byteSource: @escaping (URL) throws -> ByteSource = { try ByteSources.open($0) }) {
         self.config = config
         self.byteSource = byteSource
         self.now = now
