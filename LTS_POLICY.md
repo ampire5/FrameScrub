@@ -1,5 +1,9 @@
 # LTS policy: `lts/macos26`
 
+> **Frozen (2026-10-23).** Intel Macs on macOS 26 are built from `main` now: one branch, an x86_64 build with Xcode 26
+> next to the Apple Silicon one. This branch takes no more backports and no `-lts` releases; it stays for reference.
+> Fixes go to `main`.
+
 macOS 26 Tahoe is the last macOS for Intel Macs. `main` moves on with Apple Silicon and newer macOS; the
 `lts/macos26` branches keep FrameScrub and Loupe working on **Intel Macs (x86_64) with macOS 26**.
 
