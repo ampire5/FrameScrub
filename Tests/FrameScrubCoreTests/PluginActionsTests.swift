@@ -99,4 +99,35 @@ import Testing
         let (map, bound, refused) = base.merging([])
         #expect(map.bindings == base.bindings && bound.isEmpty && refused.isEmpty)
     }
+
+    @Test func aPointerOrWheelNameIsNotAKey() {
+        let names = ["MBTN_LEFT", "MBTN_RIGHT", "WHEEL_UP", "TRACKPAD_LEFT", "PINCH_IN", "MX_PANEL", "MBTN_BACK+WHEEL_UP"]
+        let actions = names.enumerated().map { PluginAction(name: "a\($0.offset)", label: "A", key: chord($0.element)) }
+        let (map, bound, refused) = InputMap().merging(actions)
+        #expect(bound.isEmpty)
+        #expect(refused.map(\.reason) == Array(repeating: "not a key", count: names.count))
+        #expect(map.bindings == InputMap().bindings)
+    }
+
+    @Test func aUserBindingRefusalCarriesThePagesKeyIntoTheReply() {
+        var base = InputMap(layout: .classic)
+        base.apply("Alt+9 plugin-action mark")
+        let outcome = base.merging([PluginAction(name: "mark", label: "Mark", key: chord("Alt+1"))])
+        #expect(PluginActionsReply(bound: outcome.bound, refused: outcome.refused).json
+            == #"{"bound":[],"refused":[{"key":"Alt+1","name":"mark","reason":"user binding"}]}"#)
+    }
+
+    @Test func thePolicyDispatchesOnlyADeclaredNameOfAShownPage() {
+        let declared = [PluginAction(name: "mark", label: "Mark", key: nil)]
+        #expect(PluginActionPolicy.shouldDispatch("mark", declared: declared, shown: true))
+        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: declared, shown: false))
+        #expect(!PluginActionPolicy.shouldDispatch("next", declared: declared, shown: true))
+        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: [], shown: true))
+    }
+
+    @Test func theDeclaredKeysAreBoundOnlyWhileThePanelIsShown() {
+        let declared = [PluginAction(name: "mark", label: "Mark", key: chord("Alt+1"))]
+        #expect(PluginActionPolicy.bindable(declared, shown: true) == declared)
+        #expect(PluginActionPolicy.bindable(declared, shown: false).isEmpty)
+    }
 }

@@ -308,5 +308,4 @@ import Testing
         #expect(state.json?.contains("\u{2028}") == true)
         #expect(state.json.flatMap(PluginState.init(json:))?.path == "/a\u{2028}b.mp4")
     }
-
 }

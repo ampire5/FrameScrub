@@ -29,7 +29,11 @@ import WebKit
 ///                                     earlier list, [] withdraws them. A key is bound only where the user's keys leave it
 ///                                     free; a name the user bound to `plugin-action <name>` in input.conf keeps their key.
 ///                                     An unknown key name is accepted but may never be pressable. The actions are listed
-///                                     in the key help and dropped when the page navigates, reloads or is hidden
+///                                     in the key help. They belong to the loaded page: they stay while the panel is hidden
+///                                     (keys are bound only while it is shown) and are dropped when the page navigates or
+///                                     reloads. A reply sent while the panel is hidden says what the keys will become
+///                                     once it is shown. Only keyboard chords bind: a mouse button, wheel, swipe or pinch
+///                                     is refused with reason "not a key"
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
@@ -50,7 +54,7 @@ import WebKit
 ///                                     maxSize x maxSize pixels (16…512, default 512); decoded beside playback
 ///
 ///     request("actions", {actions})  {bound: [{key, name}], refused: [{key, name, reason}]} — what became of each key
-///                                     (reason "key taken" or "user binding"); actions without a key are in neither list
+///                                     (reason "key taken", "user binding" or "not a key"); actions without a key are in neither list
 ///
 /// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
 /// (`event.detail`) hear each change, at most ten times a second while frames show:
@@ -97,6 +101,9 @@ import WebKit
     /// Why the page is not there (a failed load), above the Reload button.
     private let failure = NSTextField(wrappingLabelWithString: "")
     private(set) var url: URL?
+    /// False from the moment a navigation starts until the new page commits (or the navigation fails): the outgoing
+    /// page's messages are not heard.
+    private var hearingPage = true
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
 
@@ -212,7 +219,7 @@ import WebKit
             splitter.widthAnchor.constraint(equalToConstant: SplitterView.width),
         ])
         handler.receive = { [weak self] message in
-            guard let self, let body = message.body as? [String: Any],
+            guard let self, hearingPage, let body = message.body as? [String: Any],
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
             let id = PluginRequest.id(of: body)
             switch PluginMessage.parse(body) {
@@ -325,7 +332,12 @@ import WebKit
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        hearingPage = false
         onNavigationStart?()
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        hearingPage = true
     }
 
     /// The page's web content process died: once, the page is simply loaded again; after that a button offers it.
@@ -340,6 +352,7 @@ import WebKit
 
     /// The page could not be loaded (no route, refused connection, App Transport Security…): the reason and a button.
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if (error as NSError).code != NSURLErrorCancelled { hearingPage = true }   // the old page stays
         showFailure(error)
     }
 

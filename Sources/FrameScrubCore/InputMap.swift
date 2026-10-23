@@ -657,14 +657,17 @@ extension InputMap {
     }
 
     /// The map with the page's action keys added where free: a chord with any binding (even `ignore`) refuses the page
-    /// key (`key taken`), and a name the map already binds keeps that key instead (`user binding`). Actions without a
-    /// key are in neither list: only the user's bindings reach them.
+    /// key (`key taken`), a name the map already binds keeps that key instead (`user binding`), and a mouse button, wheel,
+    /// swipe or pinch is no key (`not a key`). Actions without a key are in neither list: only the user's bindings
+    /// reach them.
     public func merging(_ actions: [PluginAction]) -> (map: InputMap, bound: [PluginBinding], refused: [PluginBinding]) {
         var map = self
         var bound: [PluginBinding] = [], refused: [PluginBinding] = []
         for action in actions {
             guard let key = action.key else { continue }
-            if bindings.values.contains(.pluginAction(action.name)) {
+            if key.isPointer || !key.modifiers.isDisjoint(with: Modifiers.heldButtons.union(.rightButton)) {
+                refused.append(PluginBinding(name: action.name, key: key, reason: "not a key"))
+            } else if bindings.values.contains(.pluginAction(action.name)) {
                 refused.append(PluginBinding(name: action.name, key: key, reason: "user binding"))
             } else if map.bindings[key] != nil {
                 refused.append(PluginBinding(name: action.name, key: key, reason: "key taken"))

@@ -998,34 +998,41 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         rebuildInputMap()
     }
 
-    /// Sets the effective map from the base map and the declared actions; what became of the page's keys.
-    @discardableResult
-    private func rebuildInputMap() -> (bound: [PluginBinding], refused: [PluginBinding]) {
-        let merged = baseInputMap.merging(pluginActions)
-        inputMap = merged.map
+    /// Sets the effective map from the base map and the declared actions (their keys count while the panel is shown),
+    /// and brings an open key help up to date.
+    private func rebuildInputMap() {
+        inputMap = baseInputMap.merging(PluginActionPolicy.bindable(pluginActions, shown: pluginVisible)).map
         gestures.inputMap = inputMap
         buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
         mouseBridge?.apply(config: core.config, map: inputMap)
-        return (merged.bound, merged.refused)
+        if keyHelp.isShown { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
     }
 
-    /// The page declared its actions (an empty list withdraws them).
+    /// The declared actions as the key help lists them: only while the panel is shown.
+    private var shownPluginActions: [PluginAction] { PluginActionPolicy.bindable(pluginActions, shown: pluginVisible) }
+
+    /// The page declared its actions (an empty list withdraws them). The reply says what the keys become; with the
+    /// panel hidden that is what they will become once it is shown (nothing is bound before).
     private func declarePluginActions(_ actions: [PluginAction]) -> PluginActionsReply {
         pluginActions = actions
-        let outcome = rebuildInputMap()
+        rebuildInputMap()
+        let outcome = baseInputMap.merging(actions)
         return PluginActionsReply(bound: outcome.bound, refused: outcome.refused)
     }
 
-    /// The page went away (hidden, navigating, another page): its actions and their keys go with it.
+    /// A new page is loading (or the same one again): what the old one declared is void.
     private func clearPluginActions() {
         guard !pluginActions.isEmpty else { return }
         pluginActions = []
         rebuildInputMap()
     }
 
-    /// A key bound to a page action: the page hears it, as long as it is there.
+    /// A key bound to a page action: the page hears it when it declared the name and is shown.
     private func runPluginAction(_ name: String) {
-        guard pluginVisible else { showMessage("No plugin action: \(name)"); return }
+        guard PluginActionPolicy.shouldDispatch(name, declared: pluginActions, shown: pluginVisible) else {
+            showMessage("No plugin action: \(name)")
+            return
+        }
         pluginPanel.dispatch(.action(name: name))
     }
 
@@ -1486,7 +1493,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .revealFrames:
             revealFrames()
         case .showKeys:
-            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: pluginActions) }
+            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
             goToField.open(with: FrameNaming.timecode(core.currentSeconds))
@@ -2487,7 +2494,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if config.pluginWidth != Int(pluginWidth.constant) { setPluginWidth(config.pluginWidth) }
         pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
         guard config.pluginURL != previous.pluginURL else { return }
-        clearPluginActions()
         let old = previous.pluginURL.isEmpty ? nil : URL(string: previous.pluginURL)
         guard let url = pluginSettingsURL else { return }
         pluginPolicy.trust(url)
@@ -2532,7 +2538,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func setPluginShown(_ shown: Bool) {
         pluginPanel.isHidden = !shown
-        if !shown { clearPluginActions() }
+        rebuildInputMap()   // the page's keys count only while it is shown
         videoTrailing.constant = shown ? -pluginWidth.constant : 0
         videoAreaChanged()
         if !shown { window?.makeFirstResponder(videoView) }

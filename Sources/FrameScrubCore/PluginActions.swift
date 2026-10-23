@@ -14,7 +14,7 @@ public struct PluginAction: Equatable, Sendable {
     }
 }
 
-/// What became of a page action's key: bound (`reason` nil) or refused (`key taken`, `user binding`).
+/// What became of a page action's key: bound (`reason` nil) or refused (`key taken`, `user binding`, `not a key`).
 public struct PluginBinding: Equatable, Sendable {
     public let name: String
     public let key: KeyChord?
@@ -59,5 +59,18 @@ public enum PluginActions {
             actions.append(PluginAction(name: name, label: label, key: key))
         }
         return .success(actions)
+    }
+}
+
+/// What the player does with the declared actions, apart from the window.
+public enum PluginActionPolicy {
+    /// A key bound to `plugin-action <name>` reaches the page only while the panel is shown and the page declared `name`.
+    public static func shouldDispatch(_ name: String, declared: [PluginAction], shown: Bool) -> Bool {
+        shown && declared.contains { $0.name == name }
+    }
+
+    /// The actions whose keys are bound: all of them while the panel is shown, none while it is hidden.
+    public static func bindable(_ declared: [PluginAction], shown: Bool) -> [PluginAction] {
+        shown ? declared : []
     }
 }
