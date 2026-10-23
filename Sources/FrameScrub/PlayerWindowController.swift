@@ -1626,7 +1626,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch result {
         case let .found(frame):
             sceneFrameOSDToDrop = nil
-            core.goTo(.frame(frame))   // exact, keeps play / pause, sets the revert point
+            core.jumpToScene(frame: frame)   // exact, keeps play / pause, sets the revert point; glued to locked segments
             hud.show(direction > 0 ? .sceneNext : .scenePrevious)
             sceneFrameOSDToDrop = core.position
             showMessage("Scene \(direction > 0 ? "→" : "←") \(FrameNaming.timecode(core.currentSeconds))")

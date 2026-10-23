@@ -98,6 +98,34 @@ import Testing
         #expect(player.position == ranges[1].lowerBound)
     }
 
+    /// A scene jump searches from the playhead, so a cut found in the gap is counted along the segments: from the end of
+    /// a segment it runs on into the next one, never back onto the edge it started from (the nearest edge would).
+    @Test func sceneJumpsAreGlued() async throws {
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.setSegments(seconds: twoSegments)
+        let ranges = try frames(player)
+        let segments = try #require(player.segments)
+        let index = try #require(player.index)
+
+        let forwardCut = index.frameNumber(forSeconds: 2.4)   // first half of the gap: nearer to 2 s
+        player.seek(toFrame: ranges[0].upperBound)
+        let forward = segments.glued(from: player.position, to: forwardCut)
+        #expect(ranges[1].contains(forward))
+        player.jumpToScene(frame: forwardCut)
+        #expect(player.position == forward)
+        #expect(player.position != ranges[0].upperBound)
+
+        let backwardCut = index.frameNumber(forSeconds: 3.6)  // second half of the gap: nearer to 4 s
+        player.seek(toFrame: ranges[1].lowerBound)
+        let backward = segments.glued(from: player.position, to: backwardCut)
+        #expect(ranges[0].contains(backward))
+        player.jumpToScene(frame: backwardCut)
+        #expect(player.position == backward)
+        #expect(player.position != ranges[1].lowerBound)
+    }
+
     /// Review focus 2: a keyframe seek before the exact index lands where the decoder found the keyframe; that landing
     /// is held inside the segments too.
     @Test func keyframeLandingIsConstrained() async throws {

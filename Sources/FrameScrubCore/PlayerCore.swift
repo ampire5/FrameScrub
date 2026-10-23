@@ -565,7 +565,8 @@ public final class PlayerCore {
     }
 
     /// While the segments are locked the target is held inside them (`SegmentHold.glued`: relative moves such as a
-    /// step, a seek by some seconds or a revert). Absolute targets (`seek(toSeconds:)`, `goTo`) take the nearest edge.
+    /// step, a seek by some seconds, a revert or a scene jump). Absolute targets (`seek(toSeconds:)`, `goTo`) take the
+    /// nearest edge.
     public func seek(toFrame n: Int, direction: Int = 0) {
         seek(toFrame: n, direction: direction, hold: .glued)
     }
@@ -1022,6 +1023,7 @@ public final class PlayerCore {
     }
 
     /// ⌘G (backlog 4.3): an exact jump to a time or frame, clamped to the file; revert-seek comes back here.
+    /// While the segments are locked an absolute target with no move to count along them takes the nearest edge.
     public func goTo(_ target: GoToTarget) {
         scrubAudio?.userActed()
         guard let index else { return }
@@ -1029,12 +1031,26 @@ public final class PlayerCore {
         case let .seconds(seconds): index.frameNumber(forSeconds: seconds)
         case let .frame(n): n
         }
+        jump(toFrame: frame, hold: .nearest)
+    }
+
+    /// Next / previous scene: like `goTo(.frame(frame))`, but the scene was searched from the playhead, so while the
+    /// segments are locked the move is counted along them (`SegmentHold.glued`) and a cut found in a gap runs on into
+    /// the following segment instead of falling back onto the edge it started from.
+    public func jumpToScene(frame: Int) {
+        scrubAudio?.userActed()
+        jump(toFrame: frame, hold: .glued)
+    }
+
+    /// An exact jump that keeps play / pause and sets the revert point.
+    private func jump(toFrame frame: Int, hold: SegmentHold) {
+        guard let index else { return }
         revertPoint = position          // a deliberate jump: never part of a key-repeat series
         lastSeekAt = now()
         seekTimer.start(at: now())
         let target = min(max(frame, 0), max(index.frameCount - 1, 0))
         seekDirection = target < position ? -1 : 1
-        seek(toFrame: target, direction: seekDirection, hold: .nearest)   // absolute: no move to count along the segments
+        seek(toFrame: target, direction: seekDirection, hold: hold)
         frameOSDPending = !cache.contains(position)
         osd(frameText)
     }
