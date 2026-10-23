@@ -77,7 +77,7 @@ public enum PluginMessage: Equatable, Sendable {
             if json["a"] == nil && json["b"] == nil { return .loop(nil) }
             return .loop(try args.segment("a", "b"))
         case "segments":
-            return .segments(try args.segmentList("segments") ?? [], lock: try args.optionalBool("lock"),
+            return .segments(try args.requiredSegmentList("segments"), lock: try args.optionalBool("lock"),
                              advance: try args.optionalAdvance("advance"))
         case "lock":
             return .lock(try args.bool("on"))
@@ -168,6 +168,11 @@ struct Arguments {
     }
 
     /// A JSON boolean (a plain number is not one).
+    func requiredSegmentList(_ key: String) throws(Failure) -> [ClosedRange<Double>] {
+        guard let list = try segmentList(key) else { throw Failure("\(key) is missing") }
+        return list
+    }
+
     func bool(_ key: String) throws(Failure) -> Bool {
         guard let value = json[key] else { throw Failure("\(key) is missing") }
         guard let number = value as? NSNumber, CFGetTypeID(number) == CFBooleanGetTypeID() else {

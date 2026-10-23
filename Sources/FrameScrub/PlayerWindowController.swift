@@ -1824,10 +1824,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The bound mouse buttons (`MouseButtonRouter`) and the player's haptics.
     private func setUpMouse() {
         haptics.config = { [weak self] in self?.core.config ?? Config() }
-        core.onSegmentChange = { [weak self] current, locked in
-            self?.pluginPanel.dispatch(.segment(current: current, locked: locked))
-            self?.pushPluginState(force: true)
-        }
         core.onHaptic = { [weak self] in self?.haptics.play($0) }   // filtered by the input running (`haptics.from`)
         core.onSeekHaptic = { [weak self] in self?.haptics.play($0, mouseOnly: true) }   // a seek's step: the mouse only
         buttons.onFire = { [weak self] chords in chords.forEach { self?.runBinding($0) } }
@@ -2377,6 +2373,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
         if let url = pluginSettingsURL { pluginPolicy.trust(url) }
         pluginPanel.trusted = pluginPolicy.trusted
+        core.onSegmentChange = { [weak self] current, locked in
+            self?.pluginPanel.dispatch(.segment(current: current, locked: locked))
+            self?.pushPluginState(force: true)
+        }
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
         pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
         pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }

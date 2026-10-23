@@ -15,12 +15,12 @@ import WebKit
 ///     framescrub.play()  .pause()
 ///     framescrub.step(n)              `n` frames forward, negative backward
 ///     framescrub.loop(a, b)           an A-B loop in seconds, `b` above `a`;  loop(null) clears it
-///     request("segments", {segments, lock?, advance?})
+///     framescrub.segments(list, {lock?, advance?})
 ///                                     lock playback and scrubbing to segments = [[a, b], …] in seconds (each `b` above
 ///                                     `a`); lock (default true), advance "repeat" | "next" (default: segment-advance);
-///                                     segments: [] clears the set
-///     request("lock", {on})           lock to the segments or release them; rejects "no segments" without any
-///     request("goSegment", {i})       seek to the start of segment i (from 0); rejects "no such segment" out of range
+///                                     list [] clears the set (request("segments", {segments, lock?, advance?}) too)
+///     framescrub.lock(on)             lock to the segments or release them; rejects "no segments" without any
+///     framescrub.goSegment(i)         seek to the start of segment i (from 0); rejects "no such segment" out of range
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
@@ -121,6 +121,14 @@ import WebKit
       pause() { this.send("pause"); },
       step(n) { this.send("step", {n}); },
       loop(a, b) { this.send("loop", a == null ? {} : {a, b}); },
+      segments(list, opts) {
+        const args = {segments: list};
+        if (opts && opts.lock !== undefined) args.lock = opts.lock;
+        if (opts && opts.advance !== undefined) args.advance = opts.advance;
+        this.send("segments", args);
+      },
+      lock(on) { this.send("lock", {on}); },
+      goSegment(i) { this.send("goSegment", {i}); },
       open(o) { this.send("open", o); },
       focusPlayer() { this.send("focusPlayer"); },
       state: null,

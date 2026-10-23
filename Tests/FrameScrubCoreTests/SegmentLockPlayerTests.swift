@@ -169,6 +169,19 @@ import Testing
         #expect(after.first.map { $0.0 == 0 && $0.1 } == true)
     }
 
+    @Test func clearingSegmentsUnlocksAndAnnounces() async throws {
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.setSegments(seconds: twoSegments)
+        var calls: [(Int?, Bool)] = []
+        player.onSegmentChange = { calls.append(($0, $1)) }
+        player.setSegments(seconds: [])
+        #expect(player.segments == nil)
+        #expect(!player.segmentsLocked)
+        #expect(calls.last.map { $0.0 == nil && $0.1 == false } == true)
+    }
+
     @Test func segmentsPastTheEndDoNotLock() throws {
         let (player, _) = try makePlayer()
         defer { player.close() }

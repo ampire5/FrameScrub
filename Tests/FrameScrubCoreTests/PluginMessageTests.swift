@@ -108,7 +108,7 @@ import Testing
             == .segments([1...2], lock: false, advance: .next))
         #expect(message(["cmd": "segments", "segments": [[1, 2]], "advance": "repeat"]) == .segments([1...2], lock: nil, advance: .repeating))
         #expect(message(["cmd": "segments", "segments": []]) == .segments([], lock: nil, advance: nil))
-        #expect(message(["cmd": "segments"]) == .segments([], lock: nil, advance: nil))
+        #expect(message(["cmd": "segments"]) == nil)
         #expect(message(["cmd": "segments", "segments": [[1, 2], [5, 3]]]) == nil)
         #expect(message(["cmd": "segments", "segments": [[1]]]) == nil)
         #expect(message(["cmd": "segments", "segments": [[-1, 2]]]) == nil)
@@ -136,6 +136,7 @@ import Testing
         }
         #expect(reason(["cmd": "segments", "segments": [[3, 1]]]) == "segments: each segment must be [a, b] with b above a")
         #expect(reason(["cmd": "segments", "segments": [[1, 2]], "advance": "x"]) == "segments: advance must be \"repeat\" or \"next\"")
+        #expect(reason(["cmd": "segments"]) == "segments: segments is missing")
         #expect(reason(["cmd": "lock"]) == "lock: on is missing")
     }
 
