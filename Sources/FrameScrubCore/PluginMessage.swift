@@ -147,7 +147,7 @@ struct Arguments {
 extension PluginOpen {
     /// `{path, t?, seg?: [a, b]}` or `{scene, paths?, t?, seg?: [a, b]}`; a scene's id may come as a number.
     init(_ args: Arguments) throws(PluginMessage.Failure) {
-        let landing = LinkTarget(time: try args.optionalTime("t"), segment: try args.optionalSegmentPair("seg"))
+        let landing = LinkTarget(time: try args.optionalTime("t"), segments: try args.optionalSegmentPair("seg").map { [$0] } ?? [])
         if let scene = args.json["scene"] {
             let id: String
             switch scene {

@@ -2460,8 +2460,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func applyLinkTarget() {
         guard let target = linkTarget else { return }
         linkTarget = nil
-        core.setLoop(seconds: target.segment)
-        if let start = target.start { core.seek(toSeconds: start) }
+        if !target.segments.isEmpty {
+            core.setSegments(seconds: target.segments, lock: target.lock ?? true, advance: target.advance)
+        }
+        if let time = target.time { core.seek(toSeconds: time) }
     }
 
     private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {

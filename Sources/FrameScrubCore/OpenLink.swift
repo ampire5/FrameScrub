@@ -3,7 +3,10 @@ import Foundation
 /// The `framescrub://open?path=<percent-encoded absolute path>` link: other programs open a video in FrameScrub with
 /// it. `scene=<id>` in place of `path` opens that Stash scene (its file paths are asked of Stash). Optional parameters:
 /// - `t=<seconds>`: start there instead of the remembered position;
-/// - `seg=<a>-<b>`: play and scrub inside that range (an A-B loop), starting at `a` unless `t` says otherwise;
+/// - `seg=<a>-<b>[,<a>-<b>…]`: lock playback and scrubbing to those segments (seconds), starting at the first one's
+///   start unless `t` says otherwise; one malformed item drops the whole list;
+/// - `lock=0|1`: whether the segments lock playback (default 1);
+/// - `adv=repeat|next`: at a segment's end, play it again or go to the next one (default from the configuration);
 /// - `plugin=<http(s) URL>`: show that page in the plugin panel.
 public enum OpenLink {
     /// What a link names: a file, or a Stash scene by id.
@@ -14,7 +17,7 @@ public enum OpenLink {
 
     public struct Target: Equatable, Sendable {
         public var subject: Subject
-        /// The position and segment to land on once the file is open.
+        /// The position and segments to land on once the file is open.
         public var landing: LinkTarget
         public var plugin: URL?
 
@@ -40,20 +43,20 @@ public enum OpenLink {
             return nil
         }
 
-        public init(file: URL, time: Double? = nil, segment: ClosedRange<Double>? = nil, plugin: URL? = nil) {
-            self.init(file: file, landing: LinkTarget(time: time, segment: segment), plugin: plugin)
+        public init(file: URL, time: Double? = nil, segments: [ClosedRange<Double>] = [], plugin: URL? = nil) {
+            self.init(file: file, landing: LinkTarget(time: time, segments: segments), plugin: plugin)
         }
 
         public var time: Double? {
             get { landing.time }
             set { landing.time = newValue }
         }
-        public var segment: ClosedRange<Double>? {
-            get { landing.segment }
-            set { landing.segment = newValue }
+        public var segments: [ClosedRange<Double>] {
+            get { landing.segments }
+            set { landing.segments = newValue }
         }
 
-        /// Where to land: `t`, else the segment's start.
+        /// Where to land: `t`, else the first segment's start.
         public var start: Double? { landing.start }
     }
 
@@ -63,7 +66,7 @@ public enum OpenLink {
         target(from: url)?.file
     }
 
-    /// The whole link: the file or scene plus the optional position, segment and plugin page. A `path` wins over a
+    /// The whole link: the file or scene plus the optional position, segments and plugin page. A `path` wins over a
     /// `scene` when both are given; a scene's id is any non-empty text.
     public static func target(from url: URL) -> Target? {
         if url.isFileURL { return Target(file: url) }
@@ -80,7 +83,9 @@ public enum OpenLink {
             return nil
         }
         let landing = LinkTarget(time: item("t").flatMap(Double.init).flatMap(LinkTarget.time),
-                                 segment: item("seg").flatMap(LinkTarget.segment(from:)))
+                                 segments: item("seg").flatMap(LinkTarget.segments(from:)) ?? [],
+                                 lock: item("lock").flatMap { ["0": false, "1": true][$0] },
+                                 advance: item("adv").flatMap { SegmentAdvance(rawValue: $0.lowercased()) })
         let plugin = item("plugin").flatMap(URL.init(string:))
             .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
         return Target(subject: subject, landing: landing, plugin: plugin)

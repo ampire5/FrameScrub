@@ -50,7 +50,7 @@ import Testing
             "framescrub://open?path=%2Fa.mp4&t=12.5&seg=10-16&plugin=http%3A%2F%2Fhost%3A8000%2Fp%2F%3Fq%3D1"))
         #expect(target?.file?.path == "/a.mp4")
         #expect(target?.time == 12.5)
-        #expect(target?.segment == 10...16)
+        #expect(target?.segments == [10...16])
         #expect(target?.plugin?.absoluteString == "http://host:8000/p/?q=1")
         #expect(target?.start == 12.5)
     }
@@ -65,7 +65,7 @@ import Testing
         let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&t=-4&seg=9-3&plugin=file%3A%2F%2F%2Fx"))
         #expect(target?.file?.path == "/a.mp4")
         #expect(target?.time == nil)
-        #expect(target?.segment == nil)
+        #expect(target?.segments == [])
         #expect(target?.plugin == nil)
     }
 
@@ -74,7 +74,7 @@ import Testing
         #expect(target?.subject == .stashScene(id: "42"))
         #expect(target?.sceneID == "42")
         #expect(target?.file == nil)
-        #expect(target?.landing == LinkTarget(time: 3, segment: 1...5))
+        #expect(target?.landing == LinkTarget(time: 3, segments: [1...5]))
         #expect(OpenLink.fileURL(from: link("framescrub://open?scene=42")) == nil)
         #expect(OpenLink.target(from: link("framescrub://open?scene=")) == nil)
         #expect(OpenLink.target(from: link("framescrub://open?scene=%20")) == nil)
@@ -96,15 +96,37 @@ import Testing
 extension OpenLinkTests {
     @Test func landingCarriesTimeAndSegment() {
         let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&t=2&seg=1-5"))
-        #expect(target?.landing == LinkTarget(time: 2, segment: 1...5))
+        #expect(target?.landing == LinkTarget(time: 2, segments: [1...5]))
         #expect(OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4"))?.landing.isEmpty == true)
     }
 
     @Test func timeAndSegmentWriteThroughToTheLanding() {
         var target = OpenLink.Target(file: link("file:///a.mp4"))
         target.time = 4
-        target.segment = 1...9
-        #expect(target.landing == LinkTarget(time: 4, segment: 1...9))
-        #expect(target == OpenLink.Target(file: link("file:///a.mp4"), time: 4, segment: 1...9))
+        target.segments = [1...9]
+        #expect(target.landing == LinkTarget(time: 4, segments: [1...9]))
+        #expect(target == OpenLink.Target(file: link("file:///a.mp4"), time: 4, segments: [1...9]))
+    }
+}
+
+extension OpenLinkTests {
+    @Test func readsSegmentListLockAndAdvance() {
+        let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&seg=10-20,35.5-40&lock=0&adv=next"))
+        #expect(target?.segments == [10...20, 35.5...40])
+        #expect(target?.landing.lock == false)
+        #expect(target?.landing.advance == .next)
+        #expect(target?.start == 10)
+        let plain = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&seg=10-20&lock=1&adv=repeat"))
+        #expect(plain?.segments == [10...20])
+        #expect(plain?.landing.lock == true)
+        #expect(plain?.landing.advance == .repeating)
+    }
+
+    @Test func badListLockAndAdvanceAreIgnored() {
+        let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&seg=10-20,x&lock=2&adv=sideways"))
+        #expect(target?.file?.path == "/a.mp4")
+        #expect(target?.segments == [])
+        #expect(target?.landing.lock == nil)
+        #expect(target?.landing.advance == nil)
     }
 }

@@ -46,7 +46,7 @@ import Testing
         #expect(message(["cmd": "open", "path": "/a/b.mp4"])
                 == .open(.file(URL(fileURLWithPath: "/a/b.mp4"), landing: LinkTarget())))
         #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "seg": [1, 9]])
-                == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(time: 4, segment: 1...9))))
+                == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(time: 4, segments: [1...9]))))
         #expect(message(["cmd": "open", "path": "rel/a.mp4"]) == nil)
         #expect(message(["cmd": "open", "path": 5]) == nil)
         #expect(message(["cmd": "open"]) == nil)
@@ -56,7 +56,7 @@ import Testing
         #expect(message(["cmd": "open", "scene": "42", "paths": ["/mnt/a.mp4"]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget())))
         #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "seg": [2, 3]])
-                == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget(segment: 2...3))))
+                == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget(segments: [2...3]))))
         // A scene wins over a path when both are given.
         #expect(message(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"])
                 == .open(.stashScene(id: "1", paths: ["/x"], landing: LinkTarget())))
@@ -133,7 +133,7 @@ import Testing
     }
 
     @Test func openLanding() {
-        let landing = LinkTarget(time: 1, segment: 0...2)
+        let landing = LinkTarget(time: 1, segments: [0...2])
         #expect(PluginOpen.file(URL(fileURLWithPath: "/a"), landing: landing).landing == landing)
         #expect(PluginOpen.stashScene(id: "1", paths: ["/a"], landing: landing).landing == landing)
     }
