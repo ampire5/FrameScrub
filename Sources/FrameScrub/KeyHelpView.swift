@@ -46,8 +46,8 @@ final class KeyHelpView: NSView {
     var isShown: Bool { !isHidden }
 
     /// Lays the sheet out in three columns, or two, at the largest text size (12…9 pt) that fits the view.
-    func show(_ map: InputMap) {
-        let sections = KeyHelp.sections(for: map)
+    func show(_ map: InputMap, pluginActions: [PluginAction] = []) {
+        let sections = KeyHelp.sections(for: map, plugin: pluginActions)
         let room = CGSize(width: bounds.width - 66, height: bounds.height - 58)   // the backdrop's padding and a margin
         layout: for size in stride(from: 12.0, through: 9, by: -1) {
             for count in [3, 2] {

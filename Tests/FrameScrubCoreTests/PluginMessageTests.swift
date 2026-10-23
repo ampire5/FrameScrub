@@ -221,6 +221,33 @@ import Testing
         #expect(PluginOpen.file(URL(fileURLWithPath: "/a"), landing: landing).landing == landing)
         #expect(PluginOpen.stashScene(id: "1", paths: ["/a"], landing: landing).landing == landing)
     }
+
+    @Test func actionsCommand() {
+        let list: [[String: Any]] = [["name": "mark", "label": "Mark here", "key": "Alt+1"], ["name": "next", "label": "Next"]]
+        #expect(message(["cmd": "actions", "actions": list])
+            == .actions([PluginAction(name: "mark", label: "Mark here", key: KeyChord.parse("Alt+1")),
+                         PluginAction(name: "next", label: "Next", key: nil)]))
+        #expect(message(["cmd": "actions", "actions": []]) == .actions([]))
+        #expect(reason(["cmd": "actions"]) == "actions: actions is missing")
+        #expect(reason(["cmd": "actions", "actions": "mark"]) == "actions: actions must be a list of objects")
+        #expect(reason(["cmd": "actions", "actions": [1]]) == "actions: actions must be a list of objects")
+        #expect(reason(["cmd": "actions", "actions": [["name": "Mark", "label": "x"]]])
+            == "actions: actions[0].name must be 1-32 of a-z 0-9 - _")
+    }
+
+    @Test func actionEventDetail() {
+        let event = PluginEvent.action(name: "mark")
+        #expect(event.name == "action")
+        #expect(event.detail == #"{"name":"mark"}"#)
+    }
+
+    @Test func actionsReplyListsBoundAndRefusedKeys() {
+        let reply = PluginActionsReply(
+            bound: [PluginBinding(name: "mark", key: KeyChord.parse("Alt+1"), reason: nil)],
+            refused: [PluginBinding(name: "next", key: KeyChord.parse("n"), reason: "key taken")])
+        #expect(reply.json == #"{"bound":[{"key":"Alt+1","name":"mark"}],"refused":[{"key":"n","name":"next","reason":"key taken"}]}"#)
+        #expect(PluginActionsReply(bound: [], refused: []).json == #"{"bound":[],"refused":[]}"#)
+    }
 }
 
 @Suite struct PluginStateTests {
@@ -281,4 +308,5 @@ import Testing
         #expect(state.json?.contains("\u{2028}") == true)
         #expect(state.json.flatMap(PluginState.init(json:))?.path == "/a\u{2028}b.mp4")
     }
+
 }

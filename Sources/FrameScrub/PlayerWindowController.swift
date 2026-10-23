@@ -9,7 +9,12 @@ import SwiftUI
 
 final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate, StillEnhancerDelegate {
     private let core: PlayerCore
+    /// The bindings in effect: the user's (`baseInputMap`) with the keys of the plugin page's declared actions added.
     private var inputMap: InputMap
+    /// The user's bindings (input.conf and the defaults), before any page action key is added.
+    private var baseInputMap: InputMap
+    /// The actions the page in the panel declared; dropped when the page goes away.
+    private var pluginActions: [PluginAction] = []
     private let gestures: GestureRouter
     /// The bound mouse buttons, from AppKit and from the Logitech mouse (`mouseBridge`).
     private let buttons: MouseButtonRouter
@@ -202,6 +207,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         colorMemory = ColorMemory(folders: folderColors, files: resumeStore)
         globalConfig = config
         self.inputMap = inputMap
+        baseInputMap = inputMap
         gestures = GestureRouter(inputMap: inputMap, scrubSettings: config.scrub)
         buttons = MouseButtonRouter(map: inputMap, longPressMilliseconds: config.mouseLongPress)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
@@ -986,11 +992,41 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The bindings in effect, for the key hints in the menus.
     var currentInputMap: InputMap { inputMap }
 
+    /// The user's bindings changed (settings, input.conf): the page's action keys are added again on top.
     func applyInputMap(_ map: InputMap) {
-        inputMap = map
-        gestures.inputMap = map
-        buttons.update(map: map, longPressMilliseconds: core.config.mouseLongPress)
-        mouseBridge?.apply(config: core.config, map: map)
+        baseInputMap = map
+        rebuildInputMap()
+    }
+
+    /// Sets the effective map from the base map and the declared actions; what became of the page's keys.
+    @discardableResult
+    private func rebuildInputMap() -> (bound: [PluginBinding], refused: [PluginBinding]) {
+        let merged = baseInputMap.merging(pluginActions)
+        inputMap = merged.map
+        gestures.inputMap = inputMap
+        buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
+        mouseBridge?.apply(config: core.config, map: inputMap)
+        return (merged.bound, merged.refused)
+    }
+
+    /// The page declared its actions (an empty list withdraws them).
+    private func declarePluginActions(_ actions: [PluginAction]) -> PluginActionsReply {
+        pluginActions = actions
+        let outcome = rebuildInputMap()
+        return PluginActionsReply(bound: outcome.bound, refused: outcome.refused)
+    }
+
+    /// The page went away (hidden, navigating, another page): its actions and their keys go with it.
+    private func clearPluginActions() {
+        guard !pluginActions.isEmpty else { return }
+        pluginActions = []
+        rebuildInputMap()
+    }
+
+    /// A key bound to a page action: the page hears it, as long as it is there.
+    private func runPluginAction(_ name: String) {
+        guard pluginVisible else { showMessage("No plugin action: \(name)"); return }
+        pluginPanel.dispatch(.action(name: name))
     }
 
     /// Shows scan progress once the scan has run for a second and the OSD is free, then refreshes it at most
@@ -1374,6 +1410,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `toggle-*` / `cycle-*` that switched something (no `.error` on the way; not `cycle pause`) plays `.toggle`. `fresh`: not a key's
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
+        if case let .pluginAction(name) = command { runPluginAction(name); return }   // the page's, not the player's
         core.inputIsFresh = fresh
         haptics.from(source) {
             let errors = haptics.errorCount
@@ -1449,7 +1486,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .revealFrames:
             revealFrames()
         case .showKeys:
-            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap) }
+            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: pluginActions) }
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
             goToField.open(with: FrameNaming.timecode(core.currentSeconds))
@@ -2408,6 +2445,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
         pluginPanel.onFocusChange = { [weak self] in self?.pluginPanel.dispatch($0 ? .focus : .blur) }
+        pluginPanel.onNavigationStart = { [weak self] in self?.clearPluginActions() }
         pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
     }
 
@@ -2449,6 +2487,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if config.pluginWidth != Int(pluginWidth.constant) { setPluginWidth(config.pluginWidth) }
         pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
         guard config.pluginURL != previous.pluginURL else { return }
+        clearPluginActions()
         let old = previous.pluginURL.isEmpty ? nil : URL(string: previous.pluginURL)
         guard let url = pluginSettingsURL else { return }
         pluginPolicy.trust(url)
@@ -2493,6 +2532,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func setPluginShown(_ shown: Bool) {
         pluginPanel.isHidden = !shown
+        if !shown { clearPluginActions() }
         videoTrailing.constant = shown ? -pluginWidth.constant : 0
         videoAreaChanged()
         if !shown { window?.makeFirstResponder(videoView) }
@@ -2515,6 +2555,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard core.setSegmentLock(on) else { pluginFailed(request, "no segments"); return }
         case let .goSegment(i):
             guard core.goSegment(i) else { pluginFailed(request, "no such segment"); return }
+        case let .actions(list):
+            pluginDone(request, result: declarePluginActions(list).json)
+            return
         case .focusPlayer: window?.makeFirstResponder(videoView)
         case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
         case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)

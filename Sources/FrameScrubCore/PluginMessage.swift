@@ -30,6 +30,8 @@ public enum PluginMessage: Equatable, Sendable {
     case lock(Bool)
     /// To the start of segment `i` (from 0); refused out of range.
     case goSegment(Int)
+    /// The page's actions (empty clears them); answered with a `PluginActionsReply` when sent as a request.
+    case actions([PluginAction])
     case open(PluginOpen)
     /// Keys go to the player again.
     case focusPlayer
@@ -86,6 +88,11 @@ public enum PluginMessage: Equatable, Sendable {
             guard i == i.rounded() else { throw Failure("i must be a whole number") }
             guard i >= 0, abs(i) < Double(Int32.max) else { throw Failure("i must not be negative") }
             return .goSegment(Int(i))
+        case "actions":
+            switch PluginActions.parse(try args.requiredObjectList("actions")) {
+            case let .success(list): return .actions(list)
+            case let .failure(failure): throw failure
+            }
         case "open":
             return .open(try PluginOpen(args))
         case "focusPlayer":
@@ -174,6 +181,13 @@ struct Arguments {
 
     func requiredSegmentList(_ key: String) throws(Failure) -> [ClosedRange<Double>] {
         guard let list = try segmentList(key) else { throw Failure("\(key) is missing") }
+        return list
+    }
+
+    /// `[{…}, …]`; any other shape refuses the whole list.
+    func requiredObjectList(_ key: String) throws(Failure) -> [[String: Any]] {
+        guard let value = json[key] else { throw Failure("\(key) is missing") }
+        guard let list = value as? [[String: Any]] else { throw Failure("\(key) must be a list of objects") }
         return list
     }
 
@@ -284,6 +298,8 @@ public enum PluginEvent: Equatable, Sendable {
     case error(String)
     /// The current segment or the lock changed (also by playback); `current` is nil outside any segment.
     case segment(current: Int?, locked: Bool)
+    /// The user pressed (or ran) a key bound to the page's action `name`.
+    case action(name: String)
 
     public var name: String {
         switch self {
@@ -292,6 +308,7 @@ public enum PluginEvent: Equatable, Sendable {
         case .fileOpened: "fileopened"
         case .error: "error"
         case .segment: "segment"
+        case .action: "action"
         }
     }
 
@@ -306,6 +323,8 @@ public enum PluginEvent: Equatable, Sendable {
             return PluginJSON.encode(reason)
         case let .segment(current, locked):
             return PluginJSON.encode(SegmentChanged(current: current, locked: locked))
+        case let .action(name):
+            return PluginJSON.encode(["name": name])
         }
     }
 
@@ -336,6 +355,30 @@ public enum PluginEvent: Equatable, Sendable {
             try c.encode(source, forKey: .source)
         }
     }
+}
+
+/// The answer to `request("actions", {actions})`: which keys were bound to the page's actions and which were refused
+/// (with the reason, `key taken` or `user binding`).
+public struct PluginActionsReply: Encodable, Equatable, Sendable {
+    public struct Item: Encodable, Equatable, Sendable {
+        public var key: String
+        public var name: String
+        public var reason: String?
+    }
+
+    public var bound: [Item]
+    public var refused: [Item]
+
+    public init(bound: [PluginBinding], refused: [PluginBinding]) {
+        self.bound = bound.compactMap(Self.item)
+        self.refused = refused.compactMap(Self.item)
+    }
+
+    private static func item(_ binding: PluginBinding) -> Item? {
+        binding.key.map { Item(key: $0.description, name: binding.name, reason: binding.reason) }
+    }
+
+    public var json: String? { PluginJSON.encode(self) }
 }
 
 /// Where the open file's bytes come from, as the page hears it (`fileopened`, `info`).

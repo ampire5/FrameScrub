@@ -24,6 +24,12 @@ import WebKit
 ///     framescrub.lock(on)             lock to the segments or release them; fails "no segments" without any
 ///     framescrub.goSegment(i)         seek to the start of segment i (from 0, a whole number); fails "no such
 ///                                     segment" out of range
+///     framescrub.actions(list)        declare the page's actions, list = [{name, label, key?}] (name 1-32 of a-z 0-9 - _,
+///                                     label 1-60 characters, key in input.conf chord syntax such as "Alt+1"); replaces any
+///                                     earlier list, [] withdraws them. A key is bound only where the user's keys leave it
+///                                     free; a name the user bound to `plugin-action <name>` in input.conf keeps their key.
+///                                     An unknown key name is accepted but may never be pressable. The actions are listed
+///                                     in the key help and dropped when the page navigates, reloads or is hidden
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
@@ -43,6 +49,9 @@ import WebKit
 ///                                     {t, frame, width, height, dataURL} — that frame as a JPEG data URL fitted into
 ///                                     maxSize x maxSize pixels (16…512, default 512); decoded beside playback
 ///
+///     request("actions", {actions})  {bound: [{key, name}], refused: [{key, name, reason}]} — what became of each key
+///                                     (reason "key taken" or "user binding"); actions without a key are in neither list
+///
 /// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
 /// (`event.detail`) hear each change, at most ten times a second while frames show:
 ///
@@ -58,6 +67,8 @@ import WebKit
 ///                                     segments are applied after it)
 ///     segment                         {current: i | null, locked} when the current segment or the lock changes, playback
 ///                                     included
+///     action                          {name} when the user presses a key bound to the page's action `name` (not repeated
+///                                     while held)
 ///     error                           a reason string, when a verb (sent without a reply) failed
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default
@@ -69,6 +80,8 @@ import WebKit
     var onMessage: ((PluginRequest, PluginOrigin) -> Void)?
     /// The web view took or lost the keyboard.
     var onFocusChange: ((Bool) -> Void)?
+    /// The panel starts loading a page (a first load, a link, a reload): what the old page declared is void.
+    var onNavigationStart: (() -> Void)?
     /// The user drags the panel's edge: the width it asks for, in points (not yet clamped).
     var onResize: ((CGFloat) -> Void)?
 
@@ -133,6 +146,7 @@ import WebKit
       },
       lock(on) { this.send("lock", {on}); },
       goSegment(i) { this.send("goSegment", {i}); },
+      actions(list) { this.send("actions", {actions: list}); },
       open(o) { this.send("open", o); },
       focusPlayer() { this.send("focusPlayer"); },
       state: null,
@@ -308,6 +322,10 @@ import WebKit
             if ["http", "https"].contains(target.scheme?.lowercased() ?? "") { NSWorkspace.shared.open(target) }
             decisionHandler(.cancel)
         }
+    }
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        onNavigationStart?()
     }
 
     /// The page's web content process died: once, the page is simply loaded again; after that a button offers it.
