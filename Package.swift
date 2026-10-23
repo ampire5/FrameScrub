@@ -16,7 +16,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.1.0"),
-        .package(url: "https://github.com/ampire5/StashKit.git", from: "0.1.0"),
+        // Local until StashKit's scene-paths branch (StashScene(id:paths:resumeTime:), scenePaths(id:)) is released.
+        .package(name: "StashKit", path: "../StashKit-scene-paths"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.3.0"),
     ],

@@ -2557,12 +2557,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
-    /// applied once it is open. The scene is built the way the Stash page's own message would build it; a direct
-    /// initializer is a later step.
+    /// applied once it is open.
     private func openStashScene(id: String, paths: [String], landing: LinkTarget) {
-        guard let scene = StashScene(message: ["type": "open", "sceneID": id, "paths": paths]) else { return }
         linkTarget = landing.isEmpty ? nil : landing
-        openStashScene(scene)
+        openStashScene(StashScene(id: id, paths: paths))
     }
 
     /// The page hears of every file that opens, whoever opened it.
