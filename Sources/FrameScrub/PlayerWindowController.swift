@@ -1824,6 +1824,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The bound mouse buttons (`MouseButtonRouter`) and the player's haptics.
     private func setUpMouse() {
         haptics.config = { [weak self] in self?.core.config ?? Config() }
+        core.onSegmentChange = { [weak self] current, locked in
+            self?.pluginPanel.dispatch(.segment(current: current, locked: locked))
+            self?.pushPluginState(force: true)
+        }
         core.onHaptic = { [weak self] in self?.haptics.play($0) }   // filtered by the input running (`haptics.from`)
         core.onSeekHaptic = { [weak self] in self?.haptics.play($0, mouseOnly: true) }   // a seek's step: the mouse only
         buttons.onFire = { [weak self] chords in chords.forEach { self?.runBinding($0) } }
@@ -2473,6 +2477,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .pause: if !core.isPaused { core.pause() }
         case let .step(n): core.step(frames: n)
         case let .loop(segment): core.setLoop(seconds: segment)
+        case let .segments(list, lock, advance): core.setSegments(seconds: list, lock: lock ?? true, advance: advance)
+        case let .lock(on):
+            guard core.setSegmentLock(on) else { pluginFailed(request, "no segments"); return }
+        case let .goSegment(i):
+            guard core.goSegment(i) else { pluginFailed(request, "no such segment"); return }
         case .focusPlayer: window?.makeFirstResponder(videoView)
         case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
         case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
@@ -2605,9 +2614,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         var state = PluginState(ready: core.url != nil, path: core.url?.path, name: core.url?.lastPathComponent,
                                 t: core.positionSeconds, frame: core.position, fps: core.info?.frameRate ?? 0,
                                 duration: core.durationSeconds, durationFrames: core.frameCount, playing: !core.isPaused,
-                                loop: core.loopSeconds, visible: pluginVisible)
+                                loop: core.loopSeconds, segments: pluginSegments(), visible: pluginVisible)
         if case let .stash(sceneID, _) = origin { state.scene = sceneID }
         pluginPanel.push(state)
+    }
+
+    /// The segment set for the page; nil with none.
+    private func pluginSegments() -> PluginState.Segments? {
+        guard core.segments != nil else { return nil }
+        return PluginState.Segments(list: core.segmentsSeconds, current: core.currentSegment, locked: core.segmentsLocked,
+                                    advance: core.segmentAdvance)
     }
 
     // MARK: Stats

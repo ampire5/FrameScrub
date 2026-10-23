@@ -15,10 +15,17 @@ import WebKit
 ///     framescrub.play()  .pause()
 ///     framescrub.step(n)              `n` frames forward, negative backward
 ///     framescrub.loop(a, b)           an A-B loop in seconds, `b` above `a`;  loop(null) clears it
-///     framescrub.open(o)              o = {path, t?, seg?: [a, b]} a local video (absolute path; the first time a page's
-///                                     origin asks, the user is asked to allow it), or {scene, paths?, t?, seg?} a Stash
-///                                     scene found on the shares or streamed from Stash (stash-stream); without `paths`
-///                                     they are asked of Stash
+///     request("segments", {segments, lock?, advance?})
+///                                     lock playback and scrubbing to segments = [[a, b], …] in seconds (each `b` above
+///                                     `a`); lock (default true), advance "repeat" | "next" (default: segment-advance);
+///                                     segments: [] clears the set
+///     request("lock", {on})           lock to the segments or release them; rejects "no segments" without any
+///     request("goSegment", {i})       seek to the start of segment i (from 0); rejects "no such segment" out of range
+///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
+///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
+///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
+///                                     Stash (stash-stream); without `paths` they are asked of Stash. A single
+///                                     `seg: [a, b]` still counts as one segment
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
@@ -36,7 +43,8 @@ import WebKit
 /// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
 /// (`event.detail`) hear each change, at most ten times a second while frames show:
 ///
-///     {ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null, visible}
+///     {ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null,
+///      segments: {list: [[a, b], …], current: i | null, locked, advance} | null, visible}
 ///
 /// Events. `framescrub.on<name> = detail => …`, or the window event "framescrub<name>" with `event.detail`:
 ///
@@ -44,6 +52,8 @@ import WebKit
 ///                                     brings keys to the page; focusPlayer() returns them)
 ///     fileopened                      {path, scene, source: "file" | "stream"} once a file is open, however it was
 ///                                     opened
+///     segment                         {current: i | null, locked} when the current segment or the lock changes, playback
+///                                     included
 ///     error                           a reason string, when a verb (sent without a reply) failed
 ///
 /// The panel holds one page: links to another origin, and anything the page opens in a new window, go to the default

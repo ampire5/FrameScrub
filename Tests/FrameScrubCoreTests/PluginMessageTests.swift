@@ -102,6 +102,64 @@ import Testing
         #expect(reason(["cmd": "play"]) == nil)
     }
 
+    @Test func segmentsCommand() {
+        #expect(message(["cmd": "segments", "segments": [[1, 2], [3.5, 4]]]) == .segments([1...2, 3.5...4], lock: nil, advance: nil))
+        #expect(message(["cmd": "segments", "segments": [[1, 2]], "lock": false, "advance": "next"])
+            == .segments([1...2], lock: false, advance: .next))
+        #expect(message(["cmd": "segments", "segments": [[1, 2]], "advance": "repeat"]) == .segments([1...2], lock: nil, advance: .repeating))
+        #expect(message(["cmd": "segments", "segments": []]) == .segments([], lock: nil, advance: nil))
+        #expect(message(["cmd": "segments"]) == .segments([], lock: nil, advance: nil))
+        #expect(message(["cmd": "segments", "segments": [[1, 2], [5, 3]]]) == nil)
+        #expect(message(["cmd": "segments", "segments": [[1]]]) == nil)
+        #expect(message(["cmd": "segments", "segments": [[-1, 2]]]) == nil)
+        #expect(message(["cmd": "segments", "segments": "1-2"]) == nil)
+        #expect(message(["cmd": "segments", "segments": [[1, 2]], "advance": "loop"]) == nil)
+        #expect(message(["cmd": "segments", "segments": [[1, 2]], "lock": 1]) == nil)
+    }
+
+    @Test func lockAndGoSegmentCommands() {
+        #expect(message(["cmd": "lock", "on": true]) == .lock(true))
+        #expect(message(["cmd": "lock", "on": false]) == .lock(false))
+        #expect(message(["cmd": "lock"]) == nil)
+        #expect(message(["cmd": "lock", "on": 1]) == nil)
+        #expect(message(["cmd": "goSegment", "i": 2]) == .goSegment(2))
+        #expect(message(["cmd": "goSegment", "i": 0]) == .goSegment(0))
+        #expect(message(["cmd": "goSegment", "i": -1]) == nil)
+        #expect(message(["cmd": "goSegment"]) == nil)
+        #expect(message(["cmd": "goSegment", "i": "1"]) == nil)
+    }
+
+    @Test func segmentReasons() {
+        func reason(_ json: [String: Any]) -> String? {
+            if case let .failure(failure) = PluginMessage.parse(json) { return failure.reason }
+            return nil
+        }
+        #expect(reason(["cmd": "segments", "segments": [[3, 1]]]) == "segments: each segment must be [a, b] with b above a")
+        #expect(reason(["cmd": "segments", "segments": [[1, 2]], "advance": "x"]) == "segments: advance must be \"repeat\" or \"next\"")
+        #expect(reason(["cmd": "lock"]) == "lock: on is missing")
+    }
+
+    @Test func openLandingWithSegments() {
+        #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "segments": [[1, 2], [5, 6]], "lock": false, "advance": "next"])
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"),
+                           landing: LinkTarget(time: 4, segments: [1...2, 5...6], lock: false, advance: .next))))
+        #expect(message(["cmd": "open", "scene": "9", "segments": [[1, 2]]])
+            == .open(.stashScene(id: "9", paths: [], landing: LinkTarget(segments: [1...2]))))
+        // segments wins over the single seg pair; seg alone stays a one-item list
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[1, 2]], "seg": [7, 8]])
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [1...2]))))
+        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [7, 8]])
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[2, 1]]]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "advance": "x"]) == nil)
+    }
+
+    @Test func segmentEvent() {
+        #expect(PluginEvent.segment(current: 1, locked: true).name == "segment")
+        #expect(PluginEvent.segment(current: 1, locked: true).detail == #"{"current":1,"locked":true}"#)
+        #expect(PluginEvent.segment(current: nil, locked: false).detail == #"{"current":null,"locked":false}"#)
+    }
+
     @Test func requestIDIsANumberOrNothing() {
         #expect(PluginRequest.id(of: ["cmd": "play", "id": 7]) == 7)
         #expect(PluginRequest.id(of: ["cmd": "play", "id": 7.0]) == 7)
@@ -144,7 +202,7 @@ import Testing
         let state = PluginState(t: 1.5, frame: 36, fps: 24, duration: 10, playing: false, visible: true)
         #expect(state.json == """
         {"duration":10,"durationFrames":0,"fps":24,"frame":36,"loop":null,"name":null,"path":null,"playing":false,\
-        "ready":false,"scene":null,"t":1.5,"visible":true}
+        "ready":false,"scene":null,"segments":null,"t":1.5,"visible":true}
         """)
     }
 
@@ -153,8 +211,22 @@ import Testing
                                 fps: 25, duration: 60, durationFrames: 1500, playing: true, loop: 1...3, visible: false)
         #expect(state.json == """
         {"duration":60,"durationFrames":1500,"fps":25,"frame":50,"loop":[1,3],"name":"a b.mp4","path":"/Volumes/V/a b.mp4",\
-        "playing":true,"ready":true,"scene":"42","t":2,"visible":false}
+        "playing":true,"ready":true,"scene":"42","segments":null,"t":2,"visible":false}
         """)
+    }
+
+    @Test func segmentsAreWrittenWithCurrentLockAndAdvance() {
+        let segments = PluginState.Segments(list: [1...2, 3.5...4], current: 1, locked: true, advance: .next)
+        let state = PluginState(t: 3.5, segments: segments)
+        #expect(state.json == """
+        {"duration":0,"durationFrames":0,"fps":0,"frame":0,"loop":null,"name":null,"path":null,"playing":false,\
+        "ready":false,"scene":null,"segments":{"advance":"next","current":1,"list":[[1,2],[3.5,4]],"locked":true},\
+        "t":3.5,"visible":true}
+        """)
+        let outside = PluginState(segments: PluginState.Segments(list: [1...2], current: nil, locked: false))
+        #expect(outside.json?.contains(#""segments":{"advance":"repeat","current":null,"list":[[1,2]],"locked":false}"#) == true)
+        #expect(state.json.flatMap(PluginState.init(json:)) == state)
+        #expect(outside.json.flatMap(PluginState.init(json:)) == outside)
     }
 
     @Test func roundTrips() {
