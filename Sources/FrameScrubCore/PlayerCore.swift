@@ -170,7 +170,7 @@ public final class PlayerCore {
     var keepApproximateIndex = false
     /// Id of the keyframe seek whose landing may still move the position (spec §2.3); bumped by every
     /// other seek so a late landing never moves the user.
-    private var landingID = 0
+    private(set) var landingID = 0
     /// Direction of the running seek series (spec §3.2): frames that arrive on the way are shown only if
     /// they move the picture this way.
     var seekDirection = 1
@@ -224,7 +224,7 @@ public final class PlayerCore {
         // Segments given while no file was open are for this one; those of the file open now go with it.
         let pendingSegments = index == nil && !segmentsSource.isEmpty
             ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
-        close()
+        close(announcing: pendingSegments == nil)   // restored segments are announced once, by the first seek
         session += 1
         let current = session
         let approximate = source.approximateIndex()
@@ -275,6 +275,11 @@ public final class PlayerCore {
     }
 
     public func close() {
+        close(announcing: true)
+    }
+
+    /// `announcing` false: `onSegmentChange` is left for the caller (`open` restoring segments given before it).
+    private func close(announcing: Bool) {
         cancelEdgeDrag()   // before the marks are remembered: the drag never reached them
         rememberPosition()
         exportFlag?.cancel()
@@ -317,7 +322,7 @@ public final class PlayerCore {
         seekTimer = SeekTimer()
         indexStatus = .approximate
         session += 1
-        announceSegment()
+        if announcing { announceSegment() }
     }
 
     /// Applies new settings while running (Preferences): cache budget, export settings and seek mode
@@ -376,10 +381,13 @@ public final class PlayerCore {
         move(toFrame: target, direction: direction, hold: hold)
     }
 
-    private func landed(_ id: Int, _ n: Int, session current: Int) {
+    func landed(_ id: Int, _ n: Int, session current: Int) {
         guard current == session, id == landingID, let index else { return }
-        // A keyframe in a gap between locked segments: the nearest frame of a segment (exactness beats the keyframe).
-        position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: .nearest)
+        let frame = min(max(n, 0), max(index.frameCount - 1, 0))
+        // A keyframe outside the locked segments: the seek stays on its target, held inside them (exactness inside the
+        // segments beats the keyframe).
+        if let segments = lockedSegments, segments.index(containing: frame) == nil { return }
+        position = frame
         refocus(direction: 0)
         if !isPaused { restartClock() }
         showCurrent()
@@ -520,12 +528,17 @@ public final class PlayerCore {
         } else if config.abLoop == .once, let loop, position == (direction > 0 ? loop.upperBound : loop.lowerBound) {
             // stopped on B (backward: on A), or on a repeated segment's end: the range starts over
             seek(toFrame: direction > 0 ? loop.lowerBound : loop.upperBound)
-        } else if lockedSegments != nil {
-            // the segments' edges in `tick` decide what follows the end of the file
-        } else if direction > 0, position >= index.frameCount - 1 {
-            position = 0
-        } else if direction < 0, position <= 0 {
-            position = index.frameCount - 1
+        } else if direction > 0 ? position >= index.frameCount - 1 : position <= 0 {
+            if let segments = lockedSegments {
+                // At the end of the file (backward: its start) in the segments: `next` starts over from the first
+                // (backward: the end of the last), `repeat` from the start (end) of the loop or the current segment.
+                let ranges = segments.ranges
+                let range = segmentAdvance == .next && loopRange == nil
+                    ? (direction > 0 ? ranges[0] : ranges[ranges.count - 1]) : playbackLoop ?? ranges[0]
+                seek(toFrame: direction > 0 ? range.lowerBound : range.upperBound)
+            } else {
+                position = direction > 0 ? 0 : index.frameCount - 1
+            }
         }
         isPaused = false
         scrubAudio?.playbackStarted()
@@ -1210,9 +1223,13 @@ public final class PlayerCore {
         segmentsSource = seconds
         segmentAdvance = advance ?? config.segmentAdvance
         rebuildSegments()
-        segmentsLocked = lock && !seconds.isEmpty
+        // Without an index they wait for the file; with one, ranges all past its end leave nothing to lock.
+        segmentsLocked = lock && !seconds.isEmpty && (segments != nil || index == nil)
         syncCacheRegions()
-        if lockedSegments != nil { seek(toFrame: position, direction: 0, hold: .nearest) }
+        if lockedSegments != nil {
+            dropLoopOutsideSegments()
+            seek(toFrame: position, direction: 0, hold: .nearest)
+        }
         announceSegment()
         delegate?.playerStateDidChange(self)
     }
@@ -1221,7 +1238,10 @@ public final class PlayerCore {
     public func setSegmentLock(_ on: Bool) -> Bool {
         guard segments != nil else { return false }
         segmentsLocked = on
-        if on { seek(toFrame: position, direction: 0, hold: .nearest) }
+        if on {
+            dropLoopOutsideSegments()
+            seek(toFrame: position, direction: 0, hold: .nearest)
+        }
         announceSegment()
         delegate?.playerStateDidChange(self)
         return true
@@ -1234,10 +1254,22 @@ public final class PlayerCore {
         return true
     }
 
-    /// `segments` from `segmentsSource` with the current index; nil without an index or without segments.
+    /// Locking: an A–B loop not inside one segment is cleared, as playback would run through the gaps with it.
+    private func dropLoopOutsideSegments() {
+        guard let segments = lockedSegments, let a = loopA, let b = loopB else { return }
+        guard segments.index(containing: a) == nil || segments.index(containing: a) != segments.index(containing: b) else {
+            return
+        }
+        loopA = nil
+        loopB = nil
+    }
+
+    /// `segments` from `segmentsSource` with the current index; nil without an index or without segments. Ranges wholly
+    /// before the start or from the end of the file on are left out (the index would clamp them onto its first / last frame).
     private func rebuildSegments() {
         guard let index, !segmentsSource.isEmpty else { segments = nil; return }
-        let set = SegmentSet(frames: segmentsSource.map {
+        let end = durationSeconds > 0 ? durationSeconds : .infinity
+        let set = SegmentSet(frames: segmentsSource.filter { $0.upperBound >= 0 && $0.lowerBound < end }.map {
             index.frameNumber(forSeconds: $0.lowerBound)...index.frameNumber(forSeconds: $0.upperBound)
         }, frameCount: index.frameCount)
         segments = set.isEmpty ? nil : set

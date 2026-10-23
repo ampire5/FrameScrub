@@ -99,11 +99,19 @@ import Testing
         player.setSegments(seconds: twoSegments)
         let index = try #require(player.index)
         #expect(!index.isExact)
+        let ranges = try frames(player)
         delegate.messages.removeAll()
-        player.seekFromBar(toFrame: index.frameNumber(forSeconds: 3.1))
-        #expect(player.currentSegment != nil)
-        #expect(await eventually { delegate.messages.last?.hasSuffix(" K") == true })   // landed on a keyframe (0/250/500)
-        #expect(player.currentSegment != nil)
+        player.seekFromBar(toFrame: index.frameNumber(forSeconds: 3.1))   // nearer to 4 s
+        #expect(player.position == ranges[1].lowerBound)
+        // The decoder's landing on keyframe 0 or 250 (outside both segments) is ignored: the held target stays.
+        _ = await eventually(timeout: 0.5) { false }
+        player.landed(player.landingID, 250, session: player.session)
+        #expect(player.position == ranges[1].lowerBound)
+        #expect(!delegate.messages.contains { $0.hasSuffix(" K") })
+        // A landing inside a segment is taken.
+        player.landed(player.landingID, ranges[1].lowerBound + 10, session: player.session)
+        #expect(player.position == ranges[1].lowerBound + 10)
+        #expect(delegate.messages.last?.hasSuffix(" K") == true)
     }
 
     /// Review focus 1: the segments are kept as seconds and built again from them when the exact index arrives.
@@ -144,6 +152,64 @@ import Testing
         #expect(player.segments?.ranges == ranges)
         #expect(player.segmentsLocked && player.segmentAdvance == .next)
         #expect(player.position == ranges[0].lowerBound)
+    }
+
+    /// Segments given before opening are announced once, after the file opens, without a `(nil, false)` in between.
+    @Test func segmentsSetBeforeOpeningAreAnnouncedOnce() throws {
+        let player = PlayerCore(config: Config(), enableAudio: false,
+                                fallbackRoot: makeTemporaryDirectory().appendingPathComponent("fallback"))
+        defer { player.close() }
+        var calls: [(Int?, Bool)] = []
+        player.onSegmentChange = { calls.append(($0, $1)) }
+        player.setSegments(seconds: twoSegments)
+        let before = calls.count
+        try player.open(Fixtures.url(Fixtures.h264))
+        let after = calls[before...]
+        #expect(after.count == 1)
+        #expect(after.first.map { $0.0 == 0 && $0.1 } == true)
+    }
+
+    @Test func segmentsPastTheEndDoNotLock() throws {
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        player.setSegments(seconds: [100.0...200.0])   // the file lasts 20 s
+        #expect(player.segments == nil && !player.segmentsLocked)
+    }
+
+    @Test func lockingClearsALoopAcrossTheGap() async throws {
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.setLoop(seconds: 1.5...4.5)
+        player.setSegments(seconds: twoSegments)
+        #expect(player.loopA == nil && player.loopB == nil)
+
+        #expect(player.setSegmentLock(false))
+        player.setLoop(seconds: 1.5...4.5)
+        #expect(player.setSegmentLock(true))
+        #expect(player.loopA == nil && player.loopB == nil)
+
+        player.setLoop(seconds: 4.2...4.8)                   // inside one segment: kept
+        #expect(player.setSegmentLock(false) && player.setSegmentLock(true))
+        #expect(player.loopA != nil && player.loopB != nil)
+    }
+
+    @Test func playingFromTheFileEndStaysInTheSegments() async throws {
+        let (player, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        let last = player.frameCount - 1
+        let end = player.durationSeconds
+        for advance in [SegmentAdvance.repeating, .next] {
+            player.pause()
+            player.setSegments(seconds: [1.0...2.0, end - 2...end + 1], advance: advance)
+            let ranges = try #require(player.segments?.ranges)
+            #expect(ranges[1].upperBound == last)
+            player.seek(toFrame: last)
+            #expect(player.position == last)
+            player.play()
+            #expect(player.position == (advance == .next ? ranges[0].lowerBound : ranges[1].lowerBound))
+        }
     }
 
     @Test func closingClearsTheSegments() throws {
@@ -244,6 +310,42 @@ import Testing
         now += 0.5                                    // past the end of the last: back to the first
         player.tick()
         #expect(player.position == ranges[0].lowerBound)
+    }
+
+    @Test func nextModeWrapsBackwardDuringPlayback() async throws {
+        var now = 1000.0
+        let (player, _) = try makePlayer(now: { now })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.setSegments(seconds: twoSegments, advance: .next)
+        let ranges = try frames(player)
+        player.seek(toFrame: ranges[1].lowerBound + 5)
+        player.perform(.shuttleBack)                  // backward at 1×
+        #expect(!player.isPaused && player.direction == -1)
+        now += 0.5                                    // before the start of the second: back to the end of the first
+        player.tick()
+        #expect(player.position == ranges[0].upperBound)
+        now += 1.5                                    // before the start of the first: round to the end of the last
+        player.tick()
+        #expect(player.position == ranges[1].upperBound)
+    }
+
+    @Test func playbackIntoASegmentIsAnnounced() async throws {
+        var now = 1000.0
+        let (player, _) = try makePlayer(now: { now })
+        defer { player.close() }
+        #expect(await ready(player))
+        player.setSegments(seconds: twoSegments)
+        let ranges = try frames(player)
+        #expect(player.setSegmentLock(false))
+        player.seek(toFrame: ranges[1].lowerBound - 5)   // unlocked: in the gap
+        var calls: [(Int?, Bool)] = []
+        player.onSegmentChange = { calls.append(($0, $1)) }
+        player.perform(.cyclePause)
+        now += 0.5                                    // 15 frames on: inside the second segment
+        player.tick()
+        #expect(player.currentSegment == 1)
+        #expect(calls.count == 1 && calls.last.map { $0.0 == 1 && !$0.1 } == true)
     }
 
     @Test func noSegmentsToggleRefuses() throws {
