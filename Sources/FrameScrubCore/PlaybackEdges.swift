@@ -11,18 +11,23 @@ public enum EdgeAction: Equatable, Sendable {
 
 public enum PlaybackEdges {
     /// `n` is the frame the clock is at, `position` the one on screen; `pastStart` / `pastEnd`: the clock went beyond
-    /// the first / last frame. `marks` only while play-marks-only is on (the loop is ignored then).
+    /// the first / last frame. `marks` only while play-marks-only is on (the loop is ignored then). `wrapMarks`: past
+    /// the last mark's end playback goes on from the first mark's start (backward: before the first mark's start, from
+    /// the last mark's end) instead of pausing.
     public static func decide(target n: Int, pastStart: Bool, pastEnd: Bool, position: Int, direction: Int,
-                              loop: ClosedRange<Int>?, mode: ABLoopMode, marks: [CutSegment]?, frameCount: Int) -> EdgeAction {
+                              loop: ClosedRange<Int>?, mode: ABLoopMode, marks: [CutSegment]?, wrapMarks: Bool = false,
+                              frameCount: Int) -> EdgeAction {
         let forward = direction > 0
         if let marks {
             if let i = marks.firstIndex(where: { $0.start <= position && position <= $0.end }) {
                 let segment = marks[i]
                 if forward, n > segment.end || pastEnd {
-                    return i + 1 < marks.count ? .jump(marks[i + 1].start) : .pause(at: segment.end)
+                    if i + 1 < marks.count { return .jump(marks[i + 1].start) }
+                    return wrapMarks ? .jump(marks[0].start) : .pause(at: segment.end)
                 }
                 if !forward, n < segment.start || pastStart {
-                    return i > 0 ? .jump(marks[i - 1].end) : .pause(at: segment.start)
+                    if i > 0 { return .jump(marks[i - 1].end) }
+                    return wrapMarks ? .jump(marks[marks.count - 1].end) : .pause(at: segment.start)
                 }
                 return .none
             }
