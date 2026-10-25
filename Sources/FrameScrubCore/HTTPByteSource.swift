@@ -1,12 +1,13 @@
 import Foundation
 
 /// A file served over HTTP, read with Range requests: every `read` is one ranged GET, waited for on the calling
-/// thread. Thread-safe: `URLSession` runs the requests side by side. `headers` go with every request (Stash's
+/// thread, its body handed over as it arrives (`read(…, progress:)`). Thread-safe: `URLSession` runs the requests side by side. `headers` go with every request (Stash's
 /// `ApiKey`). Opening asks for the first byte (`Range: bytes=0-0`) to learn the size from `Content-Range`, so a
 /// server that ignores ranges is refused at once instead of failing on the first seek.
 public final class HTTPByteSource: ByteSource, @unchecked Sendable {
     public let size: Int64
     public let url: URL
+    public var arrivesGradually: Bool { true }
     private let headers: [String: String]
     private let session: URLSession
 
@@ -43,18 +44,25 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
     }
 
     public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int {
+        try read(at: offset, count: count, into: buffer, progress: { _ in })
+    }
+
+    /// One ranged GET whose body is copied into `buffer` as it arrives, reporting each step.
+    public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
+                     progress: @escaping @Sendable (Int) -> Void) throws -> Int {
         guard offset < size, count > 0 else { return 0 }
         let last = min(offset + Int64(count), size) - 1
-        let (response, data) = try Self.perform(Self.request(url, headers: headers, range: offset...last),
-                                                with: session, name: url.lastPathComponent)
-        guard response.statusCode == 206 else {
-            if response.statusCode == 416 { return 0 }
+        let sink = BodySink(buffer: buffer, capacity: Int(last - offset) + 1, progress: progress)
+        let task = session.dataTask(with: Self.request(url, headers: headers, range: offset...last))
+        task.delegate = sink
+        task.resume()
+        sink.done.wait()
+        if let error = sink.error { throw Self.failure(error, name: url.lastPathComponent) }
+        guard sink.status == 206 else {
+            if sink.status == 416 { return 0 }
             throw POSIXError(.EIO)
         }
-        let n = min(data.count, Int(last - offset) + 1)
-        guard n > 0 else { return 0 }
-        data.withUnsafeBytes { buffer.copyMemory(from: $0.baseAddress!, byteCount: n) }
-        return n
+        return sink.filled
     }
 
     private static func makeSession() -> URLSession {
@@ -93,11 +101,15 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
         done.wait()
         do {
             return try result.get()
-        } catch let error as URLError {
-            throw FFmpegError(code(for: error), "open \(name): \(error.localizedDescription)")
         } catch {
-            throw FFmpegError(-EIO, "open \(name): \(error.localizedDescription)")
+            throw failure(error, name: name)
         }
+    }
+
+    /// A transport failure as an `FFmpegError` with the matching errno.
+    private static func failure(_ error: Error, name: String) -> FFmpegError {
+        guard let error = error as? URLError else { return FFmpegError(-EIO, "open \(name): \(error.localizedDescription)") }
+        return FFmpegError(code(for: error), "open \(name): \(error.localizedDescription)")
     }
 
     /// `bytes 0-0/12345` → 12345; nil for an unknown total (`*`) or another shape.
@@ -123,6 +135,45 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
         case .notConnectedToInternet, .networkConnectionLost: -ENETDOWN
         default: -EIO
         }
+    }
+}
+
+/// Receives one ranged response for `HTTPByteSource.read`: the body goes straight into the reader's buffer (clipped
+/// to the range asked for), only for a 206, and every chunk is reported; `done` is signalled when the task ends.
+/// The session's delegate queue is serial, and the reader looks at the fields only after `done`.
+private final class BodySink: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    let done = DispatchSemaphore(value: 0)
+    private let buffer: UnsafeMutableRawPointer
+    private let capacity: Int
+    private let progress: @Sendable (Int) -> Void
+    private(set) var status = 0
+    private(set) var filled = 0
+    private(set) var error: Error?
+
+    init(buffer: UnsafeMutableRawPointer, capacity: Int, progress: @escaping @Sendable (Int) -> Void) {
+        self.buffer = buffer
+        self.capacity = capacity
+        self.progress = progress
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
+                    completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
+        status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        completionHandler(status == 206 ? .allow : .cancel)   // another status's body is never read
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let n = min(data.count, capacity - filled)
+        guard n > 0 else { return }
+        data.withUnsafeBytes { buffer.advanced(by: filled).copyMemory(from: $0.baseAddress!, byteCount: n) }
+        filled += n
+        progress(filled)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // A status other than 206 was cancelled on purpose: that is the status, not a transport failure.
+        if let error, status == 206 || (error as? URLError)?.code != .cancelled { self.error = error }
+        done.signal()
     }
 }
 

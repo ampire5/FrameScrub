@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import Testing
 @testable import FrameScrubCore
 
@@ -82,6 +83,49 @@ import Testing
         #expect(!ByteSources.isRemote(Fixtures.url(Fixtures.scenes)))
     }
 
+    /// A read's body is handed over as it arrives: reports rise to the read's length, the first one long before the
+    /// read returns, and the bytes up to each report are the file's.
+    @Test func readsReportBytesAsTheyArrive() throws {
+        let file = Fixtures.url(Fixtures.withAudio)
+        let expected = try Data(contentsOf: file)
+        let server = try RangeServer(file: file)
+        defer { server.stop() }
+        let source = try HTTPByteSource(url: server.url)
+        server.trickle = (bytes: 16 << 10, delay: 0.05)
+        let count = 128 << 10
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 16)
+        defer { buffer.deallocate() }
+        nonisolated(unsafe) let base = buffer
+        let reports = Reports()
+        let started = CACurrentMediaTime()
+        let n = try source.read(at: 1000, count: count, into: buffer) { filled in
+            let matches = Data(bytes: base, count: filled) == expected[1000..<(1000 + filled)]
+            reports.add(filled, matches: matches, at: CACurrentMediaTime())
+        }
+        let returned = CACurrentMediaTime()
+        #expect(n == count)
+        #expect(reports.values.count > 2)
+        #expect(reports.values == reports.values.sorted() && Set(reports.values).count == reports.values.count)
+        #expect(reports.values.last == count)
+        #expect(reports.allMatched)
+        #expect(try #require(reports.firstAt) - started < (returned - started) / 2)
+    }
+
+    /// An answer that is not the range asked for hands nothing over.
+    @Test func aRefusedReadReportsNothing() throws {
+        let server = try RangeServer(file: Fixtures.url(Fixtures.scenes))
+        defer { server.stop() }
+        let source = try HTTPByteSource(url: server.url)
+        server.requiredHeader = ("ApiKey", "secret")   // 401 from now on
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: 100, alignment: 16)
+        defer { buffer.deallocate() }
+        let reports = Reports()
+        #expect(throws: POSIXError.self) {
+            try source.read(at: 0, count: 100, into: buffer) { reports.add($0, matches: true, at: 0) }
+        }
+        #expect(reports.values.isEmpty)
+    }
+
     /// A video opens through the server like a file: the demuxer reads it in blocks and a frame decodes.
     @Test func aVideoOpensAndDecodesOverHTTP() async throws {
         let server = try RangeServer(file: Fixtures.url(Fixtures.withAudio))
@@ -105,4 +149,22 @@ import Testing
         #expect(player.readCache?.source is HTTPByteSource)
         player.close()
     }
+}
+
+/// Progress reports collected from the session's delegate queue.
+private final class Reports: @unchecked Sendable {
+    private let lock = NSLock()
+    private var list: [Int] = []
+    private var mismatch = false
+    private var first: Double?
+    func add(_ filled: Int, matches: Bool, at time: Double) {
+        lock.withLock {
+            list.append(filled)
+            if !matches { mismatch = true }
+            if first == nil { first = time }
+        }
+    }
+    var values: [Int] { lock.withLock { list } }
+    var allMatched: Bool { lock.withLock { !mismatch } }
+    var firstAt: Double? { lock.withLock { first } }
 }

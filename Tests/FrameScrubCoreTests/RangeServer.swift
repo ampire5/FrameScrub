@@ -22,6 +22,8 @@ final class RangeServer: @unchecked Sendable {
     private var connections: [NWConnection] = []
     var rangesSupported = true
     var requiredHeader: (field: String, value: String)?
+    /// Sends each answer in pieces of `bytes`, `delay` seconds apart, like a slow link.
+    var trickle: (bytes: Int, delay: Double)?
 
     init(file: URL) throws {
         data = try Data(contentsOf: file)
@@ -68,10 +70,20 @@ final class RangeServer: @unchecked Sendable {
             let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
             let rest = buffer[end.upperBound...]
             let response = respond(to: head)
-            connection.send(content: response, completion: .contentProcessed { _ in
-                self.receive(on: connection, buffered: Data(rest))
-            })
+            send(response, on: connection) { self.receive(on: connection, buffered: Data(rest)) }
         }
+    }
+
+    private func send(_ response: Data, on connection: NWConnection, then next: @escaping @Sendable () -> Void) {
+        guard let trickle, response.count > trickle.bytes else {
+            connection.send(content: response, completion: .contentProcessed { _ in next() })
+            return
+        }
+        let piece = response.prefix(trickle.bytes)
+        let rest = Data(response.dropFirst(trickle.bytes))
+        connection.send(content: piece, completion: .contentProcessed { [weak self] _ in
+            self?.queue.asyncAfter(deadline: .now() + trickle.delay) { self?.send(rest, on: connection, then: next) }
+        })
     }
 
     private func respond(to head: String) -> Data {

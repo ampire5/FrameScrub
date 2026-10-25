@@ -3,8 +3,27 @@ import Foundation
 /// Random-access bytes of one file. Implementations are thread-safe.
 public protocol ByteSource: AnyObject, Sendable {
     var size: Int64 { get }
+    /// Whether a read's bytes arrive over a while (a network answer) rather than at once: `ReadCache` then loads a
+    /// block on its own thread and hands readers its bytes as they come.
+    var arrivesGradually: Bool { get }
     /// Reads up to `count` bytes at `offset`; returns the number read (0 at end of file).
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int
+    /// The same read, calling `progress(n)` (on any thread) whenever the first `n` bytes are in the buffer, so a
+    /// reader can use them before the rest arrives; the last report is the number returned.
+    func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
+              progress: @escaping @Sendable (Int) -> Void) throws -> Int
+}
+
+extension ByteSource {
+    public var arrivesGradually: Bool { false }
+
+    /// Reads, then reports once: for a source whose reads arrive whole.
+    public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
+                     progress: @escaping @Sendable (Int) -> Void) throws -> Int {
+        let n = try read(at: offset, count: count, into: buffer)
+        if n > 0 { progress(n) }
+        return n
+    }
 }
 
 /// A file read with `pread`, which is safe to call from several threads on one descriptor.
