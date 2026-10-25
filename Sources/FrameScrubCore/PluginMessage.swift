@@ -181,13 +181,6 @@ struct Arguments {
         return segment
     }
 
-    /// `a...b` from a `[a, b]` pair; nil when absent.
-    func optionalSegmentPair(_ key: String) throws(Failure) -> ClosedRange<Double>? {
-        guard let value = json[key] else { return nil }
-        guard let segment = Self.pair(value) else { throw Failure("\(key) must be [a, b] with b above a") }
-        return segment
-    }
-
     /// `[[a, b], …]`; nil when absent or `null`. Any bad pair refuses the whole list.
     func segmentList(_ key: String) throws(Failure) -> [ClosedRange<Double>]? {
         guard given(key), let value = json[key] else { return nil }
@@ -292,12 +285,10 @@ extension Arguments {
 }
 
 extension PluginOpen {
-    /// `{path, t?, segments?, lock?, advance?}` or `{scene, paths?, t?, …}`; a scene's id may come as a number. The older
-    /// single `seg: [a, b]` counts as a one-item `segments` when that is absent (or `null`).
+    /// `{path, t?, segments?, lock?, advance?}` or `{scene, paths?, t?, …}`; a scene's id may come as a number.
     init(_ args: Arguments) throws(PluginMessage.Failure) {
-        var segments = try args.segmentList("segments") ?? []
-        if !args.given("segments"), let pair = try args.optionalSegmentPair("seg") { segments = [pair] }
-        let landing = LinkTarget(time: try args.optionalTime("t"), segments: segments, lock: try args.optionalBool("lock"),
+        let landing = LinkTarget(time: try args.optionalTime("t"), segments: try args.segmentList("segments") ?? [],
+                                 lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
         if args.has("scene") {
             let id = try args.sceneID("scene")

@@ -45,7 +45,7 @@ import Testing
     @Test func openALocalFile() {
         #expect(message(["cmd": "open", "path": "/a/b.mp4"])
                 == .open(.file(URL(fileURLWithPath: "/a/b.mp4"), landing: LinkTarget())))
-        #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "seg": [1, 9]])
+        #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "segments": [[1, 9]]])
                 == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(time: 4, segments: [1...9]))))
         #expect(message(["cmd": "open", "path": "rel/a.mp4"]) == nil)
         #expect(message(["cmd": "open", "path": 5]) == nil)
@@ -55,7 +55,7 @@ import Testing
     @Test func openAStashScene() {
         #expect(message(["cmd": "open", "scene": "42", "paths": ["/mnt/a.mp4"]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget())))
-        #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "seg": [2, 3]])
+        #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "segments": [[2, 3]]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget(segments: [2...3]))))
         // A scene wins over a path when both are given.
         #expect(message(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"])
@@ -72,9 +72,9 @@ import Testing
     @Test func openRefusesBadExtras() {
         #expect(message(["cmd": "open", "path": "/a.mp4", "t": "4"]) == nil)
         #expect(message(["cmd": "open", "path": "/a.mp4", "t": -1]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [9, 3]]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": "1-3"]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[9, 3]]]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[1]]]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": "1-3"]) == nil)
     }
 
     @Test func unknownOrMissingCommand() {
@@ -97,7 +97,7 @@ import Testing
         #expect(reason(["cmd": "loop", "a": 3, "b": 1]) == "loop: b must be above a, and a not negative")
         #expect(reason(["cmd": "open", "path": "x"]) == "open: path must be absolute")
         #expect(reason(["cmd": "open", "scene": "1", "paths": "x"]) == "open: paths must be an array of strings")
-        #expect(reason(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == "open: seg must be [a, b] with b above a")
+        #expect(reason(["cmd": "open", "path": "/a.mp4", "segments": [[1]]]) == "open: each segment must be [a, b] with b above a")
         #expect(reason(["cmd": "open"]) == "open: path or scene is missing")
         #expect(reason(["cmd": "play"]) == nil)
     }
@@ -146,11 +146,9 @@ import Testing
                            landing: LinkTarget(time: 4, segments: [1...2, 5...6], lock: false, advance: .next))))
         #expect(message(["cmd": "open", "scene": "9", "segments": [[1, 2]]])
             == .open(.stashScene(id: "9", paths: [], landing: LinkTarget(segments: [1...2]))))
-        // segments wins over the single seg pair; seg alone stays a one-item list
-        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[1, 2]], "seg": [7, 8]])
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [1...2]))))
+        // the older single seg pair is not heard
         #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [7, 8]])
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget())))
         #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[2, 1]]]) == nil)
         #expect(message(["cmd": "open", "path": "/a.mp4", "advance": "x"]) == nil)
     }
@@ -169,14 +167,12 @@ import Testing
     @Test func segmentArgumentsAreCheckedStrictly() {
         #expect(reason(posted(#"{"cmd":"segments","segments":[[true,2]]}"#)) == "segments: each segment must be [a, b] with b above a")
         #expect(reason(posted(#"{"cmd":"segments","segments":[[0,true]]}"#)) == "segments: each segment must be [a, b] with b above a")
-        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","seg":[false,true]}"#)) == nil)
+        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":[[false,true]]}"#)) == nil)
         #expect(message(posted(#"{"cmd":"segments","segments":[[0,2]]}"#)) == .segments([0...2], lock: nil, advance: nil))
         #expect(reason(posted(#"{"cmd":"goSegment","i":1.5}"#)) == "goSegment: i must be a whole number")
         #expect(message(posted(#"{"cmd":"goSegment","i":1.0}"#)) == .goSegment(1))
         #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null}"#))
             == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget())))
-        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null,"seg":[7,8]}"#))
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
         #expect(reason(posted(#"{"cmd":"segments","segments":null}"#)) == "segments: segments is missing")
     }
 

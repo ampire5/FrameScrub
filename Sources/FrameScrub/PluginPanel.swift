@@ -38,8 +38,7 @@ import WebKit
 ///     framescrub.open(o)              o = {path, t?, segments?, lock?, advance?} a local video (absolute path; the first
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
-///                                     Stash (stash-stream); without `paths` they are asked of Stash. A single
-///                                     `seg: [a, b]` still counts as one segment
+///                                     Stash (stash-stream); without `paths` they are asked of Stash
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.hide()               hide the page's slot; the keys go back to the player
 ///     framescrub.playlist(items, {index?, name?})
