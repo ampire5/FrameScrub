@@ -222,11 +222,29 @@ public final class PlayerCore {
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
     /// resume point, Stash spec §2.3).
     public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
-        networkPolicy = NetworkPolicy.resolve(config.networkMode, url: url)
-        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url, config))
-        let source = try MediaSource(url: url, readCache: readCache)
+        open(try preparation(for: url)(), fallbackPosition: fallbackPosition)
+    }
+
+    /// The part of opening `url` that reads it (the byte source, the read cache, the first probe), as work that
+    /// touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
+    public func preparation(for url: URL) -> @Sendable () throws -> PreparedOpen {
+        let policy = NetworkPolicy.resolve(config.networkMode, url: url)
+        let budget = Self.readCacheBudget(config: config, policy: policy, factor: pressureFactor)
+        let config = config
+        nonisolated(unsafe) let byteSource = byteSource
+        return {
+            let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
+            let source = try MediaSource(url: url, readCache: readCache)
+            readCache.probe = StreamProbe(source)
+            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source)
+        }
+    }
+
+    /// Opens a file `preparation(for:)` read; the file open until now is left.
+    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil) {
+        let url = prepared.url, readCache = prepared.readCache, source = prepared.source
+        networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
-        readCache.probe = StreamProbe(source)
         readCache.readAheadBytes = min(Int(source.bytesPerSecond * networkPolicy.readAheadSeconds), readCacheBudget(1) / 2)
         // Segments given while no file was open are for this one; those of the file open now go with it.
         let pendingSegments = index == nil && !segmentsSource.isEmpty
@@ -1786,7 +1804,11 @@ public final class PlayerCore {
     }
 
     private func readCacheBudget(_ factor: Double) -> Int {
-        Int(Double(max(config.readCacheMiB, config.readCacheMiB > 0 ? networkPolicy.minReadCacheMiB : 0) << 20) * factor)
+        Self.readCacheBudget(config: config, policy: networkPolicy, factor: factor)
+    }
+
+    private static func readCacheBudget(config: Config, policy: NetworkPolicy, factor: Double) -> Int {
+        Int(Double(max(config.readCacheMiB, config.readCacheMiB > 0 ? policy.minReadCacheMiB : 0) << 20) * factor)
     }
 
     private func watchMemoryPressure() {
@@ -1799,4 +1821,16 @@ public final class PlayerCore {
         source.resume()
         memoryPressure = source
     }
+}
+
+/// What `PlayerCore.preparation(for:)` read of a file, for `PlayerCore.open(_:)`. Made on one thread and handed to
+/// another once; nothing else touches it in between.
+public struct PreparedOpen: @unchecked Sendable {
+    public let url: URL
+    let policy: NetworkPolicy
+    let readCache: ReadCache
+    let source: MediaSource
+
+    /// Releases what was read, for an open that was abandoned.
+    public func discard() { readCache.close() }
 }

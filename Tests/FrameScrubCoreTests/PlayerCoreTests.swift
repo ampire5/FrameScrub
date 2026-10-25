@@ -45,6 +45,25 @@ final class HapticLog {
         return (player, delegate, root)
     }
 
+    /// A file read on another thread (`preparation`) opens like `open(url)`, over the file open until then; a
+    /// preparation that is discarded leaves the player as it was.
+    @Test func aPreparedOpenReplacesTheFileOnScreen() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        let other = Fixtures.url(Fixtures.withAudio)
+        let prepare = player.preparation(for: other)
+        let prepared = try await Task.detached { try prepare() }.value
+        #expect(player.url == Fixtures.url(Fixtures.h264))   // nothing changed while it was read
+        let unused = try await Task.detached { try prepare() }.value
+        unused.discard()
+        delegate.frames.removeAll()
+        player.open(prepared)
+        #expect(player.url == other)
+        #expect(player.info?.width == 640)
+        #expect(await eventually { !delegate.frames.isEmpty })
+        #expect(delegate.frames.first.map { readFrameNumber($0.pixelBuffer) } == 0)
+    }
+
     // MARK: Scrub audio
 
     /// The scrub audio is set up beside the video; these tests start once it is in.
