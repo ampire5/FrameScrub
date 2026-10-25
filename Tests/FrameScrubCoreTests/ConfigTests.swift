@@ -69,20 +69,15 @@ import Testing
 
     @Test func parsesPluginKeys() {
         let (c, warnings) = Config.parse("""
-        plugin-url=http://host:8000/page/
-        plugin-width=560
         plugin-open-allowed=http://host:8000,file://
         """)
         #expect(warnings.isEmpty)
-        #expect(c.pluginURL == "http://host:8000/page/")
-        #expect(c.pluginWidth == 560)
         #expect(c.pluginOpenAllowed == "http://host:8000,file://")
-        #expect(c.text(forKey: "plugin-width") == "560")
-        let (bad, badWarnings) = Config.parse("plugin-width=100\nplugin-width=2000\nplugin-width=wide")
-        #expect(badWarnings.count == 3)
-        #expect(bad.pluginWidth == 400)
-        #expect(Config().pluginURL.isEmpty && Config().pluginOpenAllowed.isEmpty)
-        #expect(Config.pluginWidthRange == 240...1200)
+        #expect(c.text(forKey: "plugin-open-allowed") == "http://host:8000,file://")
+        #expect(Config().pluginOpenAllowed.isEmpty)
+        // The single-page keys of the first prototype are gone: unknown now.
+        #expect(Config.parse("plugin-url=http://h/p\nplugin-width=560").1.count == 2)
+        #expect(!Config.keys.contains("plugin-url") && !Config.keys.contains("plugin-width"))
     }
 
     @Test func stashOffByDefault() {
@@ -740,24 +735,16 @@ import Testing
     }
 
     @Test func slotNamingMissingPluginStillParses() {
-        let (c, warnings) = Config.parse("slot-left=plugin:Gone, overlay, glass, after-choice, 500, hidden\nvolume=50")
+        let (c, warnings) = Config.parse("slot-left=plugin:Gone, overlay, glass, after-choice, 500, hidden, at-once\nvolume=50")
         #expect(warnings.isEmpty)
         #expect(c.slots[.left]?.content == .plugin(name: "Gone"))
         #expect(c.volume == 50)
     }
 
     @Test func slotSizeIsClampedPerEdge() {
-        let (c, _) = Config.parse("slot-left=empty, pinned, dark, manual, 5000, hidden\nslot-bottom=empty, pinned, dark, manual, 5000, hidden")
+        let (c, _) = Config.parse("slot-left=empty, pinned, dark, manual, 5000, hidden, at-once\nslot-bottom=empty, pinned, dark, manual, 5000, hidden, at-once")
         #expect(c.slots[.left]?.size == 1200)
         #expect(c.slots[.bottom]?.size == 900)
-    }
-
-    @Test func legacyPluginURLListedAsPlugin() {
-        let (c, _) = Config.parse("plugin-url=http://h/page\nplugin=Notes | http://h/notes")
-        #expect(c.allPlugins.map(\.name) == ["Notes", "Plugin"])
-        #expect(c.allPlugins.last?.url.absoluteString == "http://h/page")
-        let (listed, _) = Config.parse("plugin-url=http://h/page\nplugin=Plugin | http://h/other")
-        #expect(listed.allPlugins.map(\.url.absoluteString) == ["http://h/other"])
     }
 
     @Test func slotKeysWriteBack() throws {
@@ -775,11 +762,11 @@ import Testing
         #expect(back.plugins.map(\.name) == ["Notes"])
     }
 
-    @Test func missingSlotKeysUseMigration() {
-        #expect(Config.parse("volume=50").0.slots == SlotDefaults.migrate(pluginURL: ""))
-        #expect(Config.parse("plugin-url=http://h/p").0.slots == SlotDefaults.migrate(pluginURL: "http://h/p"))
-        let (c, _) = Config.parse("plugin-url=http://h/p\nslot-right=playlist, overlay, dark, manual, 300, hidden")
-        #expect(c.slots[.right]?.content == .playlist)
-        #expect(c.slots[.bottom] == SlotDefaults.migrate(pluginURL: "http://h/p")[.bottom])
+    @Test func missingSlotKeysKeepTheDefaults() {
+        #expect(Config.parse("volume=50").0.slots == SlotDefaults.standard)
+        let (c, _) = Config.parse("slot-right=playlist, overlay, dark, manual, 300, hidden, at-once")
+        #expect(c.slots[.right]?.content == .playlist && c.slots[.right]?.size == 300)
+        #expect(c.slots[.bottom] == .default(for: .bottom))
+        #expect(c.slots[.left] == .default(for: .left))
     }
 }

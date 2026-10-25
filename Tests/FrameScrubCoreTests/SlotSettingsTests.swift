@@ -24,16 +24,12 @@ import Testing
         #expect(try #require(SlotSetting(text: "playlist, overlay, glass, mouse-leaves, 400, hidden, at-once")).reveal == .atOnce)
     }
 
-    @Test func olderTextRevealsAtOnce() throws {
-        // Written before the reveal field: six fields, revealed at once.
-        // after-choice was their default: such a slot now hides when the pointer leaves, as new ones do.
-        let s = try #require(SlotSetting(text: "playlist, overlay, glass, after-choice, 400, hidden"))
-        #expect(s.reveal == .atOnce)
-        #expect(s.text == "playlist, overlay, glass, mouse-leaves, 400, hidden, at-once")
-        #expect(try #require(SlotSetting(text: "playlist, overlay, glass, manual, 400, hidden")).autoHide == .manual)
+    @Test func revealFieldIsRequired() throws {
+        #expect(SlotSetting(text: "playlist, overlay, glass, mouse-leaves, 400, hidden") == nil)
+        #expect(SlotSetting(text: "playlist, overlay, glass, after-choice, 400, hidden, sideways") == nil)
+        #expect(try #require(SlotSetting(text: "playlist, overlay, glass, manual, 400, hidden, at-once")).autoHide == .manual)
         #expect(try #require(SlotSetting(text: "playlist, overlay, glass, after-choice, 400, hidden, at-once")).autoHide
                 == .afterChoice)
-        #expect(SlotSetting(text: "playlist, overlay, glass, after-choice, 400, hidden, sideways") == nil)
     }
 
     @Test func defaultHidesWhenThePointerLeaves() {
@@ -42,7 +38,7 @@ import Testing
     }
 
     @Test func emptyAndPlaylist() throws {
-        let empty = try #require(SlotSetting(text: "empty, pinned, dark, manual, 300, hidden"))
+        let empty = try #require(SlotSetting(text: "empty, pinned, dark, manual, 300, hidden, at-once"))
         #expect(empty.content == .empty && empty.mode == .pinned && empty.backdrop == .dark)
         #expect(empty.autoHide == .manual && empty.size == 300 && !empty.shown)
         let playlist = try #require(SlotSetting(text: "playlist, overlay, glass, after-choice, 400, hidden, at-once"))
@@ -50,17 +46,17 @@ import Testing
     }
 
     @Test func badTextIsNil() {
-        #expect(SlotSetting(text: "plugin:, overlay, glass, after-choice, 560, shown") == nil)
-        #expect(SlotSetting(text: "playlist, sideways, glass, after-choice, 560, shown") == nil)
+        #expect(SlotSetting(text: "plugin:, overlay, glass, after-choice, 560, shown, at-once") == nil)
+        #expect(SlotSetting(text: "playlist, sideways, glass, after-choice, 560, shown, at-once") == nil)
         #expect(SlotSetting(text: "playlist, overlay, glass, after-choice, abc, shown") == nil)
         #expect(SlotSetting(text: "playlist, overlay, glass") == nil)
     }
 
     @Test func sizeIsClamped() throws {
-        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 50, hidden")).clamped(for: .left).size == 240)
-        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 5000, hidden")).clamped(for: .right).size == 1200)
-        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 50, hidden")).clamped(for: .bottom).size == 120)
-        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 5000, hidden")).clamped(for: .bottom).size == 900)
+        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 50, hidden, at-once")).clamped(for: .left).size == 240)
+        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 5000, hidden, at-once")).clamped(for: .right).size == 1200)
+        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 50, hidden, at-once")).clamped(for: .bottom).size == 120)
+        #expect(try #require(SlotSetting(text: "empty, pinned, dark, manual, 5000, hidden, at-once")).clamped(for: .bottom).size == 900)
     }
 
     @Test func backdropCycles() {
@@ -82,20 +78,11 @@ import Testing
         #expect(PluginEntry(line: "Notes | file:///Users/me/notes.html") != nil)
     }
 
-    @Test func defaultsWithoutPlugin() {
-        let slots = SlotDefaults.migrate(pluginURL: "")
+    @Test func standardDefaults() {
+        let slots = SlotDefaults.standard
         #expect(slots[.right] == SlotSetting(content: .playlist, mode: .overlay, backdrop: .glass, autoHide: .mouseLeaves,
                                              size: 400, shown: false))
-        #expect(slots[.left]?.content == .empty)
-        #expect(slots[.bottom]?.content == .empty)
-    }
-
-    @Test func defaultsWithPlugin() {
-        let slots = SlotDefaults.migrate(pluginURL: "http://h/p")
-        #expect(slots[.right]?.content == .plugin(name: "Plugin"))
-        #expect(slots[.right]?.mode == .pinned)
-        #expect(slots[.right]?.size == 400)
-        #expect(slots[.bottom]?.content == .playlist)
-        #expect(slots[.bottom]?.mode == .overlay)
+        #expect(slots[.left] == .default(for: .left))
+        #expect(slots[.bottom] == .default(for: .bottom))
     }
 }

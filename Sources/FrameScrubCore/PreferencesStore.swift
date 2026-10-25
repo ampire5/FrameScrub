@@ -40,7 +40,7 @@ public final class PreferencesStore {
 
     private func persist(_ keys: [String]) throws {
         let existing = FileManager.default.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
-        // What the file means without the key: the default, or for `slot-*` what the file's other keys migrate to.
+        // What the file means without the key: the default.
         let (meant, _) = Config.parse(existing)
         let needed = keys.filter {
             config.text(forKey: $0) != meant.text(forKey: $0) || ConfigText.containsKey($0, in: existing)

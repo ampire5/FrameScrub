@@ -219,16 +219,6 @@ struct PreferencesView: View {
                     Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
                 }
             }
-            Section {
-                LabeledContent("Page") {
-                    CommitField(prompt: "http://host:8000/page/", value: model.binding(\.pluginURL, ["plugin-url"]))
-                }
-            } header: {
-                Text("Plugin")
-            } footer: {
-                Text("A web page for the slots (View › Slots), listed as “Plugin”; more pages: `plugin=Name | URL` lines in framescrub.conf. Drag a slot's edge to size it. Pages allowed to open local files: `plugin-open-allowed`.")
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
     }

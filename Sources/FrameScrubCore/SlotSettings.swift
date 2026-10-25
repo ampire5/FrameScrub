@@ -9,7 +9,7 @@ public enum SlotEdge: String, CaseIterable, Sendable, Codable {
     public var key: String { "slot-\(rawValue)" }
 
     /// Points the slot may take: its width for the sides, its height for the bottom.
-    public var sizeRange: ClosedRange<Int> { self == .bottom ? 120...900 : Config.pluginWidthRange }
+    public var sizeRange: ClosedRange<Int> { self == .bottom ? 120...900 : 240...1200 }
 }
 
 /// A pinned slot takes its room from the video; an overlay slot lies over the video, which keeps its size.
@@ -102,26 +102,17 @@ public struct SlotSetting: Equatable, Sendable {
     }
 
     public init?(text: String) {
-        // The last five fields are fixed (six with the reveal); whatever comes before them is the content, so a
-        // plugin's name may hold a comma.
+        // The last six fields are fixed; whatever comes before them is the content, so a plugin's name may hold a comma.
         var fields = text.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-        var reveal = SlotReveal.atOnce
-        var older = true
-        if let last = fields.last, !["shown", "hidden"].contains(last.lowercased()) {
-            guard let given = SlotReveal(rawValue: last.lowercased()) else { return nil }
-            reveal = given
-            older = false
-            fields.removeLast()
-        }
+        guard let reveal = fields.last.flatMap({ SlotReveal(rawValue: $0.lowercased()) }) else { return nil }
+        fields.removeLast()
         guard fields.count >= 6 else { return nil }
         let tail = Array(fields.suffix(5))
         guard let content = SlotContent(text: fields.dropLast(5).joined(separator: ",")),
               let mode = SlotMode(rawValue: tail[0].lowercased()),
               let backdrop = SlotBackdrop(rawValue: tail[1].lowercased()),
-              var autoHide = SlotAutoHide(rawValue: tail[2].lowercased()),
+              let autoHide = SlotAutoHide(rawValue: tail[2].lowercased()),
               let size = Int(tail[3]) else { return nil }
-        // Text from before the reveal field had after-choice as its default; slots now hide when the pointer leaves.
-        if older && autoHide == .afterChoice { autoHide = .mouseLeaves }
         let shown: Bool
         switch tail[4].lowercased() {
         case "shown": shown = true
@@ -171,22 +162,15 @@ public struct PluginEntry: Equatable, Sendable {
     }
 }
 
-/// The slots of a config without `slot-*` keys, so the playlist and the v1 plugin panel keep their places.
+/// The slots of a config without `slot-*` keys.
 public enum SlotDefaults {
-    /// The name `plugin-url` is listed under.
-    public static let legacyPluginName = "Plugin"
+    /// The name a `framescrub://` link's page is listed under.
+    public static let linkPluginName = "Plugin"
 
-    /// No `plugin-url`: the playlist in the right slot, over the video. With one: that page pinned on the right
-    /// (`pluginWidth` wide, as the v1 panel was) and the playlist at the bottom.
-    public static func migrate(pluginURL: String, pluginWidth: Int = 400) -> [SlotEdge: SlotSetting] {
+    /// The playlist in the right slot, over the video; the others as `SlotSetting.default(for:)`.
+    public static let standard: [SlotEdge: SlotSetting] = {
         var slots = Dictionary(uniqueKeysWithValues: SlotEdge.allCases.map { ($0, SlotSetting.default(for: $0)) })
-        if pluginURL.isEmpty {
-            slots[.right]!.content = .playlist
-        } else {
-            slots[.right] = SlotSetting(content: .plugin(name: legacyPluginName), mode: .pinned, backdrop: .dark,
-                                        autoHide: .mouseLeaves, size: pluginWidth, shown: false)
-            slots[.bottom]!.content = .playlist
-        }
+        slots[.right]!.content = .playlist
         return slots
-    }
+    }()
 }

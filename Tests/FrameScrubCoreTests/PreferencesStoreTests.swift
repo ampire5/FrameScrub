@@ -27,17 +27,6 @@ import Testing
         #expect(try String(contentsOf: file, encoding: .utf8) == "volume=50\nseek-mode=keyframe\npreview=yes\n")
     }
 
-    @Test func aSlotEqualToTheDefaultIsWrittenWhenTheFileMeansAnotherOne() throws {
-        // With plugin-url and no slot-* keys the bottom slot migrates to the playlist; clearing it back to the plain
-        // default must be written, or the playlist returns on the next launch.
-        let file = try url(containing: "plugin-url=http://host:8000/page/\n")
-        let (config, _) = Config.parse(try String(contentsOf: file, encoding: .utf8))
-        let store = PreferencesStore(config: config, url: file)
-        try store.update([SlotEdge.bottom.key]) { $0.slots[.bottom] = .default(for: .bottom) }
-        let (reread, _) = Config.parse(try String(contentsOf: file, encoding: .utf8))
-        #expect(reread.slots[.bottom] == .default(for: .bottom))
-    }
-
     @Test func aDefaultChangeOnAMissingFileCreatesNothing() throws {
         let file = try url()
         let store = PreferencesStore(config: Config(), url: file)

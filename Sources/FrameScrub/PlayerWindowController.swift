@@ -2531,7 +2531,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func buildSlots(in container: ContainerView) {
         pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
-        for entry in globalConfig.allPlugins { pluginPolicy.trust(entry.url) }
+        for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
         slots = SlotsController(container: container, above: startScreen, config: globalConfig, playlistView: playlistPanel)
         slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
@@ -2608,7 +2608,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `framescrub.stash` for the plugins listed in the settings: Stash's address and key, nil without a server.
     private func applyPluginStash(_ config: Config, to page: PluginPanel) {
         page.stash = config.stashEnabled ? .init(url: config.stashURL, apiKey: config.stashAPIKey) : nil
-        page.stashOrigins = Set(config.allPlugins.compactMap { PluginOrigin(url: $0.url) })
+        page.stashOrigins = Set(config.plugins.compactMap { PluginOrigin(url: $0.url) })
     }
 
     /// The pages get `window.framescrub` for the origins now trusted.
@@ -2646,7 +2646,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Settings changed: which origins may open files, and the plugin list (a slot whose plugin changed loads it).
     private func applyPluginConfig(_ config: Config, previous: Config) {
         pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
-        for entry in config.allPlugins { pluginPolicy.trust(entry.url) }
+        for entry in config.plugins { pluginPolicy.trust(entry.url) }
         applyPluginTrust()
         for page in slots.pages { applyPluginStash(config, to: page) }
         slots.configChanged(config)

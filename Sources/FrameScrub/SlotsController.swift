@@ -76,7 +76,7 @@ import FrameScrubCore
         self.container = container
         self.above = above
         self.playlistView = playlistView
-        plugins = config.allPlugins
+        plugins = config.plugins
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
@@ -222,10 +222,10 @@ import FrameScrubCore
             show(slot, focus: false)
             return true
         }
-        linkPlugin = PluginEntry(name: SlotDefaults.legacyPluginName, url: url)
+        linkPlugin = PluginEntry(name: SlotDefaults.linkPluginName, url: url)
         guard let slot = firstEmptySlot ?? slots[.right] else { return false }
         let before = slot.setting.content
-        setContent(.plugin(name: SlotDefaults.legacyPluginName), of: slot)
+        setContent(.plugin(name: SlotDefaults.linkPluginName), of: slot)
         slot.savedContent = before
         persist(slot)
         slot.page?.load(url, from: .link)
@@ -382,7 +382,7 @@ import FrameScrubCore
 
     /// Settings changed: the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
     func configChanged(_ config: Config) {
-        plugins = config.allPlugins
+        plugins = config.plugins
         for slot in orderedSlots { install(slot.setting.content, in: slot) }
     }
 

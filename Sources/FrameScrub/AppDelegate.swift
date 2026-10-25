@@ -56,7 +56,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout)
         preferences = PreferencesStore(config: config)
-        migratePluginDefaults()
         gestureBindings = GesturePreferences(layout: config.keyLayout)
         let folderColors = FolderColors()
         self.folderColors = folderColors
@@ -127,27 +126,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
-    }
-
-    /// The prototype kept `plugin-url` and `plugin-open-allowed` in the user defaults: once, they move to
-    /// framescrub.conf (the file's own values win), then the defaults are removed.
-    private func migratePluginDefaults() {
-        let defaults = UserDefaults.standard
-        let oldURL = defaults.string(forKey: "plugin-url") ?? ""
-        let oldAllowed = defaults.stringArray(forKey: "plugin-open-allowed") ?? []
-        guard !oldURL.isEmpty || !oldAllowed.isEmpty else { return }
-        do {
-            try preferences.update(["plugin-url", "plugin-open-allowed"]) { config in
-                if config.pluginURL.isEmpty { config.pluginURL = oldURL }
-                var policy = PluginPolicy(openAllowedText: config.pluginOpenAllowed)
-                for origin in oldAllowed.compactMap(PluginOrigin.init(string:)) { policy.allowOpening(from: origin) }
-                config.pluginOpenAllowed = policy.openAllowedText
-            }
-            defaults.removeObject(forKey: "plugin-url")
-            defaults.removeObject(forKey: "plugin-open-allowed")
-        } catch {
-            pendingNotice = "Cannot move the plugin settings to framescrub.conf: \(error.localizedDescription)"
-        }
     }
 
     @objc private func togglePluginPanel(_ sender: Any?) {

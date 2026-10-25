@@ -306,8 +306,8 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
 - **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds the playlist,
-  a plugin page (`plugin=Name | URL`, repeatable; `plugin-url` counts as `Plugin`, as does the `plugin=` of a
-  `framescrub://open` link) or nothing, whose **+** menu fills it. A slot is pinned (takes room from the video) or lies
+  a plugin page (`plugin=Name | URL`, repeatable; the `plugin=` page of a
+  `framescrub://open` link is listed as `Plugin`) or nothing, whose **+** menu fills it. A slot is pinned (takes room from the video) or lies
   over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when
   asked, and slides in when the pointer touches its edge (or on a click on its tongue). Each is kept in `slot-left` / `slot-right` / `slot-bottom`.
   A page drives the player through `window.framescrub` (bridge version 2, documented at the top of
@@ -428,8 +428,6 @@ stash-url=                      # Stash server, e.g. http://localhost:9999; empt
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
 stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
-plugin-url=                     # the older single page, listed as the plugin "Plugin" (more: plugin=Name | URL lines); empty = none
-plugin-width=400                # 240…1200 points: the right slot's width when slot-* are absent and plugin-url is set
 plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
 slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: view (empty, playlist, plugin:<name>), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
 slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
