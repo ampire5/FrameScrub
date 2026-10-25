@@ -52,6 +52,17 @@ import Testing
         #expect(message(["cmd": "open"]) == nil)
     }
 
+    /// A path to open is taken as a file without asking the disk: on a share every question is a round trip, made on
+    /// the main thread. (A path that is a directory would otherwise come back as a directory URL.)
+    @Test func aPathToOpenIsNotLookedUp() {
+        let dir = FileManager.default.temporaryDirectory.path
+        guard case let .open(.file(url, _)) = message(["cmd": "open", "path": dir]) else { Issue.record("not an open"); return }
+        #expect(!url.hasDirectoryPath)
+        let items = message(["cmd": "setPlaylist", "items": [["path": dir]]])
+        guard case let .setPlaylist(list, _, _) = items, case let .file(item, _) = list.first else { Issue.record("no item"); return }
+        #expect(!item.hasDirectoryPath)
+    }
+
     @Test func openAStashScene() {
         #expect(message(["cmd": "open", "scene": "42", "paths": ["/mnt/a.mp4"]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget())))

@@ -279,7 +279,7 @@ extension PlaylistItem {
         case "path":
             let path = try args.string("path")
             guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
-            self = .file(URL(fileURLWithPath: path), title: title)
+            self = .file(URL(filePath: path, directoryHint: .notDirectory), title: title)   // not looked up: a share answers over the network
         case "url":
             self = .stream(try args.streamURL("url"), title: title)
         default:
@@ -321,7 +321,7 @@ extension PluginOpen {
         case "path":
             let path = try args.string("path")
             guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
-            self = .file(URL(fileURLWithPath: path), landing: landing)
+            self = .file(URL(filePath: path, directoryHint: .notDirectory), landing: landing)   // not looked up: a share answers over the network
         case "url":
             self = .stream(try args.streamURL("url"), landing: landing)
         default:

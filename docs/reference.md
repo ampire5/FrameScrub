@@ -481,6 +481,8 @@ app-icon=horse                  # Dock icon while running: horse, or a picture o
 
 Seeking stays quick on high-bitrate files from network volumes (SMB/NFS/AFP):
 
+- Every file opens in the background: the window stays responsive while a share answers (or while macOS asks
+  whether FrameScrub may read a network volume); "Opening <name>…" shows when it takes longer than 0.3 s.
 - All decoders of a file (forward, backward, seek-bar thumbnails, audio, export) read it through one cache of
   2 MiB blocks (`read-cache`): each block crosses the network once, and sequential reading (playback, export)
   loads the next ~3 s ahead. Under memory pressure this budget is cut like the frame cache.

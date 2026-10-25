@@ -50,10 +50,26 @@ All of it happens inside `PlayerCore.open`, called from `PlayerWindowController.
   `open: replaced by another open`.
 - While a stream is opening, ⌘W abandons it and goes back like a close; `hasOpenFile` is true.
 
+### Files too (2026-10-26)
+
+Every file opens the same way (the split above), not only streams: an SMB open blocked the window 0.2–1.1 s, and the
+first open of a share by a newly signed build waits in `open()` for macOS's "access files on a network volume"
+question (the window froze 9 minutes in a bench). Besides the preparation, the main thread asked the share four more
+things, each found by `sample`:
+
+- `NetworkPolicy.resolve` (`statfs`) when the preparation was made: now inside it;
+- `URL(fileURLWithPath:)` of a page's `open({path})`, a playlist item, a `framescrub://open` link, a Recent card or a
+  launch argument: it `lstat`s the path to learn whether it is a folder (124 ms per open on SMB); now
+  `URL(filePath:directoryHint: .notDirectory)`;
+- `noteNewRecentDocumentURL` (the file's type: `getattrlist`, 140 ms per open) and the title bar's proxy icon
+  (`representedURL`: icon and name, 0.1–0.4 s, behind the file's own reads): the preparation's thread reads these
+  values into one `NSURL`, and both are set from it in the pass that finishes the open (a URL's cached values last
+  only until the main run loop turns: set at the first picture, the cache was gone);
+- "Opening <name>…" appears only when an open takes longer than 0.3 s.
+
 ## Out of scope
 
-Files on network volumes still open on the main thread (an SMB open is ~0.1–0.4 s; the same split can take them
-later). No change to read-ahead depth, parallel requests or pbxd.
+No change to read-ahead depth, parallel requests or pbxd.
 
 ## Tests
 
@@ -86,3 +102,16 @@ the main thread was blocked). Same evening, CDN ~3.2 MB/s, five different traile
 |---|---|---|---|
 | before (b4b7fb6) | 848–1 673 ms | 1 015–1 872 ms | 800–1 622 ms |
 | after | 565–1 071 ms | 732–1 381 ms | 2–37 ms |
+
+Files on SMB (2026-10-26, same M4, the same bench page with `request("open", {path})`; files never opened before, a
+new set for each row, 4K MKV/MP4 of 3–60 GB on two NAS; "slowest reply" is the longest main-thread block):
+
+| | `open` answered | playing | slowest reply |
+|---|---|---|---|
+| before (846ffe3), share A | 229–1 210 ms | 273–1 297 ms | 177–1 080 ms |
+| background preparation only, share A | 142–1 539 ms | 320–1 749 ms | 21–933 ms (Recent, proxy icon, `lstat`) |
+| all of the above, share B | 305–619 ms | 348–682 ms | 41–77 ms |
+| all of the above, local files | 40–307 ms | 87–666 ms | 2–7 ms |
+
+While macOS's access question was up (a new build, the Downloads folder) the window answered within 43 ms, the open
+waiting 182 s for the answer.
