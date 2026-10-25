@@ -60,17 +60,17 @@ final class GatedSource: ByteSource, @unchecked Sendable {
     var readCalls: Int { lock.withLock { calls } }
     func release() { gate.signal() }
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int {
-        try read(at: offset, count: count, into: buffer, progress: { _ in })
+        try read(at: offset, count: count, into: buffer, progress: { _ in true })
     }
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
-              progress: @escaping @Sendable (Int) -> Void) throws -> Int {
+              progress: @escaping @Sendable (Int) -> Bool) throws -> Int {
         lock.withLock { calls += 1 }
         let half = try base.read(at: offset, count: count / 2, into: buffer)
-        progress(half)
+        _ = progress(half)
         gate.wait()
         if lock.withLock({ failures > 0 ? { failures -= 1; return true }() : false }) { throw POSIXError(.EIO) }
         let rest = try base.read(at: offset + Int64(half), count: count - half, into: buffer + half)
-        progress(half + rest)
+        _ = progress(half + rest)
         return half + rest
     }
 }
@@ -247,5 +247,22 @@ private func readOffMain(_ cache: ReadCache, at offset: Int64, count: Int) async
         source.release()
         #expect(try await readOffMain(cache, at: Int64(half + 100), count: 1000) == file[(half + 100)..<(half + 1100)])
         #expect(source.readCalls == 2)
+    }
+
+    /// A block evicted the moment its load ends (the budget fell below one block meanwhile) still serves the reader
+    /// that loaded it: one load, not a reload loop.
+    @Test func aBlockEvictedAsItArrivesStillServesItsReader() async throws {
+        let url = Fixtures.url(Fixtures.withAudio)
+        let file = try Data(contentsOf: url)
+        let source = try GatedSource(url: url)
+        let cache = try ReadCache(url: url, budgetBytes: 64 << 20, source: source)
+        let half = file.count / 2
+        let late = Task { try await readOffMain(cache, at: Int64(half + 100), count: 1000) }
+        try await Task.sleep(for: .milliseconds(150))
+        cache.budgetBytes = 0
+        source.release()
+        #expect(try await late.value == file[(half + 100)..<(half + 1100)])
+        #expect(!cache.isCached(block: 0))
+        #expect(source.readCalls == 1)
     }
 }

@@ -227,13 +227,15 @@ public final class PlayerCore {
 
     /// The part of opening `url` that reads it (the byte source, the read cache, the first probe), as work that
     /// touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
-    public func preparation(for url: URL) -> @Sendable () throws -> PreparedOpen {
+    /// `cancellation` stops it while it reads.
+    public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
         let policy = NetworkPolicy.resolve(config.networkMode, url: url)
         let budget = Self.readCacheBudget(config: config, policy: policy, factor: pressureFactor)
         let config = config
         nonisolated(unsafe) let byteSource = byteSource
         return {
             let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
+            try cancellation?.watch(readCache)
             let source = try MediaSource(url: url, readCache: readCache)
             readCache.probe = StreamProbe(source)
             return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source)
@@ -1820,6 +1822,35 @@ public final class PlayerCore {
         }
         source.resume()
         memoryPressure = source
+    }
+}
+
+/// Stops a `PlayerCore.preparation` that is no longer wanted: its read cache closes, so the reads it waits for end
+/// with `ECANCELED` and their downloads stop.
+public final class OpenCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cache: ReadCache?
+    private var cancelled = false
+
+    public init() {}
+
+    public func cancel() {
+        lock.withLock { () -> ReadCache? in
+            cancelled = true
+            return cache
+        }?.close()
+    }
+
+    /// The preparation's read cache, closed at once if the cancel came first.
+    func watch(_ readCache: ReadCache) throws {
+        let late = lock.withLock { () -> Bool in
+            cache = readCache
+            return cancelled
+        }
+        if late {
+            readCache.close()
+            throw POSIXError(.ECANCELED)
+        }
     }
 }
 

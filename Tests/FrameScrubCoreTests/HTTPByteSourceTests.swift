@@ -101,6 +101,7 @@ import Testing
         let n = try source.read(at: 1000, count: count, into: buffer) { filled in
             let matches = Data(bytes: base, count: filled) == expected[1000..<(1000 + filled)]
             reports.add(filled, matches: matches, at: CACurrentMediaTime())
+            return true
         }
         let returned = CACurrentMediaTime()
         #expect(n == count)
@@ -109,6 +110,23 @@ import Testing
         #expect(reports.values.last == count)
         #expect(reports.allMatched)
         #expect(try #require(reports.firstAt) - started < (returned - started) / 2)
+    }
+
+    /// A report answered false stops the request: the read throws `ECANCELED` without waiting for the rest.
+    @Test func aReportAnsweredFalseStopsTheRead() throws {
+        let server = try RangeServer(file: Fixtures.url(Fixtures.withAudio))
+        defer { server.stop() }
+        let source = try HTTPByteSource(url: server.url)
+        server.trickle = (bytes: 16 << 10, delay: 0.2)   // the whole read would take ~1.6 s
+        let count = 128 << 10
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: count, alignment: 16)
+        defer { buffer.deallocate() }
+        let started = CACurrentMediaTime()
+        let error = #expect(throws: POSIXError.self) {
+            try source.read(at: 0, count: count, into: buffer) { _ in false }
+        }
+        #expect(error?.code == .ECANCELED)
+        #expect(CACurrentMediaTime() - started < 0.8)
     }
 
     /// An answer that is not the range asked for hands nothing over.
@@ -121,7 +139,7 @@ import Testing
         defer { buffer.deallocate() }
         let reports = Reports()
         #expect(throws: POSIXError.self) {
-            try source.read(at: 0, count: 100, into: buffer) { reports.add($0, matches: true, at: 0) }
+            try source.read(at: 0, count: 100, into: buffer) { reports.add($0, matches: true, at: 0); return true }
         }
         #expect(reports.values.isEmpty)
     }

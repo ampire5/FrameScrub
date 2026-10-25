@@ -44,12 +44,12 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
     }
 
     public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int {
-        try read(at: offset, count: count, into: buffer, progress: { _ in })
+        try read(at: offset, count: count, into: buffer, progress: { _ in true })
     }
 
     /// One ranged GET whose body is copied into `buffer` as it arrives, reporting each step.
     public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
-                     progress: @escaping @Sendable (Int) -> Void) throws -> Int {
+                     progress: @escaping @Sendable (Int) -> Bool) throws -> Int {
         guard offset < size, count > 0 else { return 0 }
         let last = min(offset + Int64(count), size) - 1
         let sink = BodySink(buffer: buffer, capacity: Int(last - offset) + 1, progress: progress)
@@ -57,6 +57,7 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
         task.delegate = sink
         task.resume()
         sink.done.wait()
+        if sink.stopped { throw POSIXError(.ECANCELED) }
         if let error = sink.error { throw Self.failure(error, name: url.lastPathComponent) }
         guard sink.status == 206 else {
             if sink.status == 416 { return 0 }
@@ -139,18 +140,20 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
 }
 
 /// Receives one ranged response for `HTTPByteSource.read`: the body goes straight into the reader's buffer (clipped
-/// to the range asked for), only for a 206, and every chunk is reported; `done` is signalled when the task ends.
+/// to the range asked for), only for a 206, and every chunk is reported (a report answered false cancels the
+/// request); `done` is signalled when the task ends.
 /// The session's delegate queue is serial, and the reader looks at the fields only after `done`.
 private final class BodySink: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     let done = DispatchSemaphore(value: 0)
     private let buffer: UnsafeMutableRawPointer
     private let capacity: Int
-    private let progress: @Sendable (Int) -> Void
+    private let progress: @Sendable (Int) -> Bool
+    private(set) var stopped = false
     private(set) var status = 0
     private(set) var filled = 0
     private(set) var error: Error?
 
-    init(buffer: UnsafeMutableRawPointer, capacity: Int, progress: @escaping @Sendable (Int) -> Void) {
+    init(buffer: UnsafeMutableRawPointer, capacity: Int, progress: @escaping @Sendable (Int) -> Bool) {
         self.buffer = buffer
         self.capacity = capacity
         self.progress = progress
@@ -167,12 +170,15 @@ private final class BodySink: NSObject, URLSessionDataDelegate, @unchecked Senda
         guard n > 0 else { return }
         data.withUnsafeBytes { buffer.advanced(by: filled).copyMemory(from: $0.baseAddress!, byteCount: n) }
         filled += n
-        progress(filled)
+        if !progress(filled) {
+            stopped = true
+            dataTask.cancel()
+        }
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         // A status other than 206 was cancelled on purpose: that is the status, not a transport failure.
-        if let error, status == 206 || (error as? URLError)?.code != .cancelled { self.error = error }
+        if let error, !stopped, status == 206 || (error as? URLError)?.code != .cancelled { self.error = error }
         done.signal()
     }
 }

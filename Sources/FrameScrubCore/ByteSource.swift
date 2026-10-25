@@ -9,9 +9,10 @@ public protocol ByteSource: AnyObject, Sendable {
     /// Reads up to `count` bytes at `offset`; returns the number read (0 at end of file).
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int
     /// The same read, calling `progress(n)` (on any thread) whenever the first `n` bytes are in the buffer, so a
-    /// reader can use them before the rest arrives; the last report is the number returned.
+    /// reader can use them before the rest arrives; the last report is the number returned. `progress` returning
+    /// false stops the read (it throws `ECANCELED`) where the source can stop early.
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
-              progress: @escaping @Sendable (Int) -> Void) throws -> Int
+              progress: @escaping @Sendable (Int) -> Bool) throws -> Int
 }
 
 extension ByteSource {
@@ -19,9 +20,9 @@ extension ByteSource {
 
     /// Reads, then reports once: for a source whose reads arrive whole.
     public func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
-                     progress: @escaping @Sendable (Int) -> Void) throws -> Int {
+                     progress: @escaping @Sendable (Int) -> Bool) throws -> Int {
         let n = try read(at: offset, count: count, into: buffer)
-        if n > 0 { progress(n) }
+        if n > 0 { _ = progress(n) }
         return n
     }
 }

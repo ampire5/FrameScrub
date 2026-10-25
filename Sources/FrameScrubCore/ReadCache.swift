@@ -42,8 +42,12 @@ public final class ReadCache: @unchecked Sendable {
     private var closed = false
     private var readAhead = 2 * blockSize
     private let prefetchQueue = DispatchQueue(label: "framescrub.readahead", qos: .utility)
-    /// Loads of blocks a reader waits for, from a source whose bytes arrive gradually: one per waiting reader at most.
+    /// Loads of blocks readers wait for, from a source whose bytes arrive gradually, at the waiting reader's QoS. A
+    /// reader may move on before its block is complete (a seek), so at most `maxGradualLoads` run here; past that a
+    /// reader loads on its own thread, as from a file.
     private let loadQueue = DispatchQueue(label: "framescrub.blockload", qos: .userInitiated, attributes: .concurrent)
+    private var gradualLoads = 0
+    static let maxGradualLoads = 4
     private var streamProbe: StreamProbe?
 
     /// The file's stream parameters from its first open, for every later `MediaSource` of the session (set once,
@@ -135,7 +139,21 @@ public final class ReadCache: @unchecked Sendable {
         var started = false
         while true {
             if closed { lock.unlock(); throw POSIXError(.ECANCELED) }
-            if let failure = waitingOn?.failure { lock.unlock(); throw failure }
+            if let partial = waitingOn, partial.done {
+                if let failure = partial.failure {
+                    // From a file a reader that only waited loads again itself, as before partial blocks.
+                    guard started || source.arrivesGradually else { waitingOn = nil; continue }
+                    lock.unlock()
+                    throw failure
+                }
+                // Its own bytes, even if the block was evicted since (a budget below one block evicts at once).
+                if !started { counters.hits += 1 }
+                lock.unlock()
+                let n = min(count, partial.filled - start)
+                guard n > 0 else { return 0 }
+                buffer.copyMemory(from: partial.storage + start, byteCount: n)
+                return n
+            }
             if var hit = blocks[b] {
                 clock += 1
                 hit.lastUse = clock
@@ -164,8 +182,12 @@ public final class ReadCache: @unchecked Sendable {
             loading[b] = partial
             waitingOn = partial
             started = true
-            if source.arrivesGradually {
-                loadQueue.async { self.load(b, into: partial) }
+            if source.arrivesGradually, gradualLoads < Self.maxGradualLoads {
+                gradualLoads += 1
+                loadQueue.async(flags: .inheritQoS) {
+                    self.load(b, into: partial)
+                    self.lock.withLock { self.gradualLoads -= 1 }
+                }
                 lock.wait()
             } else {
                 lock.unlock()
@@ -181,21 +203,27 @@ public final class ReadCache: @unchecked Sendable {
         let result = Result {
             guard partial.length > 0 else { return 0 }
             return try readFile(at: b * Int64(Self.blockSize), count: partial.length, into: partial.storage) { [weak self] n in
-                guard let self else { return }
-                self.lock.withLock {
+                guard let self else { return false }
+                return self.lock.withLock {
                     partial.filled = n
                     self.lock.broadcast()
+                    return !self.closed   // a closed cache stops its downloads
                 }
             }
         }
         lock.withLock {
             if loading[b] === partial { loading[b] = nil }
+            partial.done = true
             switch result {
             case let .success(n):
                 partial.filled = n
                 if !closed {
                     clock += 1
-                    blocks[b] = Block(data: Data(bytes: partial.storage, count: n), lastUse: clock)
+                    // The block keeps the partial's buffer (no copy); readers holding either keep it alive.
+                    let data = Data(bytesNoCopy: partial.storage, count: n, deallocator: .custom { _, _ in
+                        withExtendedLifetime(partial) {}
+                    })
+                    blocks[b] = Block(data: data, lastUse: clock)
                     evictLocked()
                 }
             case let .failure(error):
@@ -253,7 +281,7 @@ public final class ReadCache: @unchecked Sendable {
 
     /// One read of the underlying file, counted.
     func readFile(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
-                  progress: (@Sendable (Int) -> Void)? = nil) throws -> Int {
+                  progress: (@Sendable (Int) -> Bool)? = nil) throws -> Int {
         let n = try progress.map { try source.read(at: offset, count: count, into: buffer, progress: $0) }
             ?? source.read(at: offset, count: count, into: buffer)
         lock.withLock {
@@ -266,11 +294,13 @@ public final class ReadCache: @unchecked Sendable {
     }
 }
 
-/// A block being loaded: its bytes go into `storage` in order, `filled` of them so far (guarded by the cache's lock).
+/// A block being loaded: its bytes go into `storage` in order, `filled` of them so far; `done` once the load ended,
+/// with its `failure` if it failed (all guarded by the cache's lock).
 private final class PartialBlock: @unchecked Sendable {
     let storage: UnsafeMutableRawPointer
     let length: Int
     var filled = 0
+    var done = false
     var failure: Error?
 
     init(length: Int) {

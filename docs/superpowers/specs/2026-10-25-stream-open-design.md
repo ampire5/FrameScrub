@@ -25,6 +25,9 @@ All of it happens inside `PlayerCore.open`, called from `PlayerWindowController.
   A reader whose offset is already in returns what is there (a short read; AVIO asks again for the rest), instead of
   waiting for the whole block. A reader beyond what has arrived waits for more or for the end. A failed load fails
   the readers still waiting; bytes already handed out stay valid.
+- At most 4 such loads run on the cache's own queue (a reader may seek away before its block is complete); past that
+  a reader loads on its own thread. A closed cache stops its downloads (`progress` answers false and the request is
+  cancelled), and the reader that started a load is served from it even if the block was evicted meanwhile.
 - Block size, eviction, read-ahead and the number of requests stay as they are: one ranged GET per 2 MiB block.
   (Smaller blocks would pay the first-byte wait more often: at 0.4 s per request and 0.8 MB/s a 256 KiB block runs
   at a third of the link.)
@@ -37,6 +40,8 @@ All of it happens inside `PlayerCore.open`, called from `PlayerWindowController.
 - `openFile` keeps its synchronous path for files on this Mac (unchanged behaviour). For a stream it leaves the file
   on screen at once (the player stops), shows "Opening <name>…", runs `prepare` on a `.userInitiated` queue and
   finishes the open on the main thread.
+- `prepare` runs on a dispatch queue (it blocks; not on Swift's cooperative pool) and carries an `OpenCancellation`:
+  an abandoned open closes its read cache, so its reads end and its downloads stop.
 - Every open and every close counts (`fileOpens`): an answer that arrives after another open, ⌘W or a failure
   shown in between is dropped and its read cache closed. Superseded opens report nothing to the user.
 - `openFile` reports its outcome to a closure: `.opened`, `.failed` or `.superseded`. A file's open calls it before

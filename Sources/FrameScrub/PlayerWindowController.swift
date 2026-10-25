@@ -290,8 +290,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Counts opens and the closes and failures that replace a file on screen: a stream read in the background opens
     /// only if nothing came after it.
     private var fileOpens = 0
-    /// The stream being read for an open, until it opens or is abandoned.
+    /// The stream being read for an open, until it opens or is abandoned, and how to stop its reads.
     private var openingURL: URL?
+    private var openingCancellation: OpenCancellation?
     private static let openingMessage = "Opening the stream…"
 
     /// Opens `url`; `fallbackPosition` is where to start when nothing is remembered for it (Stash's resume point).
@@ -301,8 +302,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
                           landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         StartupTrace.beginOpen(url.lastPathComponent)
-        fileOpens += 1
-        endOpening()
+        abandonOpening()
         cancelEdgeDrag()   // the marks it moves are this file's
         cancelStashTitleWait()
         stashSession?.leave()   // the file on screen until now
@@ -327,10 +327,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         failedURL = nil
         openedAt = ProcessInfo.processInfo.systemUptime
         indexingShownAt = nil
-        let prepare = core.preparation(for: url)
         guard ByteSources.isRemote(url) else {
             do {
-                finishOpen(url, try prepare(), fallbackPosition: fallbackPosition, landing: landing)
+                finishOpen(url, try core.preparation(for: url)(), fallbackPosition: fallbackPosition, landing: landing)
                 done?(.opened)
             } catch {
                 showFailure(OpenFailure(error), url: url)
@@ -342,17 +341,27 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         closeCore()
         startScreen.isHidden = true
         stashLibrary?.isHidden = true
+        window?.representedURL = nil
+        updateTitle(url)
+        statsFileChanged()
         openingURL = url
+        let cancellation = OpenCancellation()
+        openingCancellation = cancellation
         osd.onClick = nil
         osd.show(Self.openingMessage, duration: nil)   // stays until the open ends
+        let prepare = core.preparation(for: url, cancellation: cancellation)
         let open = fileOpens
         Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) { Result { try prepare() } }.value
+            // Blocking reads: on a dispatch thread, not the cooperative pool.
+            let result = await withCheckedContinuation { (answer: CheckedContinuation<Result<PreparedOpen, Error>, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async { answer.resume(returning: Result { try prepare() }) }
+            }
             guard let self, open == fileOpens else {
                 try? result.get().discard()
                 done?(.superseded)
                 return
             }
+            openingCancellation = nil   // the cache is the player's now
             endOpening()
             switch result {
             case let .success(prepared):
@@ -363,6 +372,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 done?(.failed)
             }
         }
+    }
+
+    /// Whatever opened or was shown next replaces a stream still being read: its answer is dropped and its reads stop.
+    private func abandonOpening() {
+        fileOpens += 1
+        openingCancellation?.cancel()
+        openingCancellation = nil
+        endOpening()
     }
 
     /// A stream's open is over (opened, failed or abandoned): its message goes.
@@ -434,8 +451,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Leaves the previous file and keeps the reason on screen until another file opens.
     private func showFailure(_ failure: OpenFailure, url: URL) {
-        fileOpens += 1   // a stream still being read must not open over the reason
-        endOpening()
+        abandonOpening()   // a stream still being read must not open over the reason
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -464,8 +480,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// ⌘W / the back button: leaves the file and shows where it came from; with no file, closes the window.
     func closeFile() {
         guard hasOpenFile else { window?.performClose(nil); return }
-        fileOpens += 1   // a stream still being read is abandoned
-        endOpening()
+        abandonOpening()
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)   // the start screen shows it next
         cancelStashTitleWait()
@@ -564,8 +579,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A scene whose file was not found on the shares: the reason stays on screen until another file opens.
     private func showStashFailure(_ failure: OpenFailure, scene: StashScene) {
-        fileOpens += 1   // a stream still being read must not open over the reason
-        endOpening()
+        abandonOpening()   // a stream still being read must not open over the reason
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -849,6 +863,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
+        abandonOpening()   // a stream answering later must not open in a closed window
         stashSession?.flushBeforeQuit()
         for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
         slotWrites = [:]
@@ -2474,10 +2489,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     return
                 }
                 openFile(url, origin: origin, fallbackPosition: position) { [weak self] outcome in
-                    guard let self, outcome == .opened, case let .stash(id, _) = origin else { return }
-                    stashSession.began(sceneID: id, duration: core.durationSeconds)
+                    guard let self, outcome != .superseded else { return }
+                    if outcome == .opened, case let .stash(id, _) = origin {
+                        stashSession.began(sceneID: id, duration: core.durationSeconds)
+                    }
+                    showMessage("Cannot delete \(name): \(error.localizedDescription)", duration: 5)
                 }
-                showMessage("Cannot delete \(name): \(error.localizedDescription)", duration: 5)
             }
         }
     }

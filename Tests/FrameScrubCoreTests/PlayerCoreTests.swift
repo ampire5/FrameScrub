@@ -64,6 +64,18 @@ final class HapticLog {
         #expect(delegate.frames.first.map { readFrameNumber($0.pixelBuffer) } == 0)
     }
 
+    /// A cancelled preparation reads nothing more: it ends with `ECANCELED` and the player is untouched.
+    @Test func aCancelledPreparationStops() async throws {
+        let (player, _, _) = try makePlayer()
+        defer { player.close() }
+        let cancellation = OpenCancellation()
+        cancellation.cancel()
+        let prepare = player.preparation(for: Fixtures.url(Fixtures.withAudio), cancellation: cancellation)
+        let error = await #expect(throws: POSIXError.self) { try await Task.detached { try prepare() }.value }
+        #expect(error?.code == .ECANCELED)
+        #expect(player.url == Fixtures.url(Fixtures.h264))
+    }
+
     // MARK: Scrub audio
 
     /// The scrub audio is set up beside the video; these tests start once it is in.
