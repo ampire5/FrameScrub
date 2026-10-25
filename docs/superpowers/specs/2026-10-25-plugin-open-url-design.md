@@ -18,13 +18,14 @@ its own backend), other URL schemes, resume positions for streams.
   fails with `url must be http(s)`. No consent is asked: nothing local is read. Exactly one of `path`, `scene`, `url`.
 - `playlist(items)` / `enqueue(items)`: an item may be `{url, title?}`, validated the same way; one bad item refuses the
   whole call as today.
-- `fileopened` and `info`: `source` is `"stream"` (as for Stash's stream), `path` is `null`, and a new `url` field
-  carries the URL. `state.path` stays `null` for a stream; `state.name` is the item's `title`, else the URL's last path
-  component.
+- `fileopened`: for any stream (a page's URL or Stash's) `path` is `null` and a new `url` field carries the URL;
+  `source` is `"stream"`. For a file `url` is `null`.
+- `info`: a new `url` field, the stream's URL or `null`; `path` keeps today's meaning (for a stream, its URL), so
+  pages that read it for Stash's stream keep working.
 
 ## Player
 
-- `PluginOpen` gains `.stream(URL, landing: LinkTarget)`; `ListPlaylist` items gain `.url(URL, title:)`.
+- `PluginOpen` gains `.stream(URL, landing: LinkTarget)`; `PlaylistItem` gains `.stream(URL, title:)`.
 - Opening goes through the same `openFile` path as Stash's stream: no folder, no file facts, no place in Recent, no
   resume position. Landing (`t`, segments, lock, advance) applies as for a file.
 - A list item that cannot be opened fires `error` and, at autoadvance, the next item is tried once, as for scenes.
@@ -34,4 +35,4 @@ its own backend), other URL schemes, resume positions for streams.
 
 - README › Plugins: `open` and playlist items with `url`, the `url` field of `fileopened` and `info`.
 - Tests: `PluginMessage` parsing (`url` accepted for http/https, refused for `file:`, `ftp:`, relative, missing host;
-  `url` with `path` or `scene` refused), `ListPlaylist` items with `url`, the `fileopened` payload for a stream.
+  `url` with `path` or `scene` refused), `PlaylistItem.stream` in `ListPlaylist` and `enqueue`, the `fileopened` payload for a stream.
