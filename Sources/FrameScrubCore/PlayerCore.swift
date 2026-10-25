@@ -225,15 +225,16 @@ public final class PlayerCore {
         open(try preparation(for: url)(), fallbackPosition: fallbackPosition)
     }
 
-    /// The part of opening `url` that reads it (the byte source, the read cache, the first probe), as work that
-    /// touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
-    /// `cancellation` stops it while it reads.
+    /// The part of opening `url` that reads it (the volume, the byte source, the read cache, the first probe), as work
+    /// that touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
+    /// Making it touches nothing: even the volume's kind (a `statfs`, which waits for an SMB server) is asked when it
+    /// runs. `cancellation` stops it while it reads.
     public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
-        let policy = NetworkPolicy.resolve(config.networkMode, url: url)
-        let budget = Self.readCacheBudget(config: config, policy: policy, factor: pressureFactor)
-        let config = config
+        let config = config, factor = pressureFactor
         nonisolated(unsafe) let byteSource = byteSource
         return {
+            let policy = NetworkPolicy.resolve(config.networkMode, url: url)
+            let budget = Self.readCacheBudget(config: config, policy: policy, factor: factor)
             let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
             try cancellation?.watch(readCache)
             let source = try MediaSource(url: url, readCache: readCache)

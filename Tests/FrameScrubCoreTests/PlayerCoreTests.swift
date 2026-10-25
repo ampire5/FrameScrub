@@ -64,6 +64,16 @@ final class HapticLog {
         #expect(delegate.frames.first.map { readFrameNumber($0.pixelBuffer) } == 0)
     }
 
+    /// Making a preparation touches nothing (the window makes it on the main thread): a missing file fails only when
+    /// the preparation runs.
+    @Test func aPreparationReadsNothingUntilItRuns() async throws {
+        let (player, _, root) = try makePlayer()
+        defer { player.close() }
+        let prepare = player.preparation(for: root.appendingPathComponent("missing.mp4"))
+        await #expect(throws: (any Error).self) { try await Task.detached { try prepare() }.value }
+        #expect(player.url == Fixtures.url(Fixtures.h264))
+    }
+
     /// A cancelled preparation reads nothing more: it ends with `ECANCELED` and the player is untouched.
     @Test func aCancelledPreparationStops() async throws {
         let (player, _, _) = try makePlayer()
