@@ -542,6 +542,9 @@ file never loads it) and kept, so going back finds the same page.
   fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
   `source: "file" | "stream"`; for a stream `fileopened` gives the URL as `url` and `path: null`, and `info` adds
   `url`.
+- A stream (Stash's or a plugin page's) opens in the background: the previous file stops at once, "Opening the
+  stream…" shows until it plays, and the window stays responsive. Another open or ⌘W abandons it. Its bytes are used
+  as they arrive, so it plays once the start of the file is in, not after a whole 2 MiB block.
 - `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found
   on the shares (or streamed) as for ▶. A plugin page's `open({scene})` without `paths` does the same.
 

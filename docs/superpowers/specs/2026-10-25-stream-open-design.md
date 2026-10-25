@@ -1,6 +1,6 @@
 # Streams open off the main thread and play from the first bytes
 
-Date: 2026-10-25. Status: design agreed.
+Date: 2026-10-25. Status: implemented.
 
 ## Problem
 
@@ -59,3 +59,16 @@ later). No change to read-ahead depth, parallel requests or pbxd.
 - `PlayerCore`: `prepare` then `open(prepared)` opens like `open(url)`.
 - Bench: `docs/bench.md`-style numbers for ▶ → playing with pbxd before and after, and the main thread's longest
   block during an open.
+
+## Measured
+
+2026-10-25, M4 MacBook Pro, pbxd trailers (1080p, PornBox CDN), each trailer opened once (pbxd asks PornBox for its
+address on the first request), the two ways alternating. `HTTPByteSource` + `ReadCache` + the first `MediaSource`,
+i.e. `PlayerCore.preparation`, on a test thread:
+
+| | size (`0-0`) | probe | open |
+|---|---|---|---|
+| before (whole 2 MiB block) | 309–966 ms | 1 542–2 394 ms | 1 877–2 713 ms |
+| after (bytes as they arrive) | 314–509 ms | 185–1 141 ms | 541–1 533 ms (3 of 4 under 750 ms) |
+
+Before, all of the open ran on the main thread; after, the main thread does only `open(prepared)` and the window.
