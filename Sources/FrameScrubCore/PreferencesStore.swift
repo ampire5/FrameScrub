@@ -2,7 +2,7 @@ import Foundation
 
 /// The settings the user edits (Preferences window, menus, export sheet). A change is applied in memory
 /// and announced to the observers first; then only its keys are written to framescrub.conf, in place.
-/// Keys that still have their default value and are not in the file are not added to it.
+/// Keys that are not in the file and still have the value the file means without them (their default) are not added.
 public final class PreferencesStore {
     public private(set) var config: Config
     private let url: URL
@@ -40,9 +40,10 @@ public final class PreferencesStore {
 
     private func persist(_ keys: [String]) throws {
         let existing = FileManager.default.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
-        let defaults = Config()
+        // What the file means without the key: the default, or for `slot-*` what the file's other keys migrate to.
+        let (meant, _) = Config.parse(existing)
         let needed = keys.filter {
-            config.text(forKey: $0) != defaults.text(forKey: $0) || ConfigText.containsKey($0, in: existing)
+            config.text(forKey: $0) != meant.text(forKey: $0) || ConfigText.containsKey($0, in: existing)
         }
         guard !needed.isEmpty else { return }
         try config.write(keys: needed, to: url)

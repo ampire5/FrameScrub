@@ -86,27 +86,45 @@ private struct SliderRow: View {
     }
 }
 
+/// One tab of the settings window. Each lives in its own hosting controller (`PreferencesWindowController`):
+/// a SwiftUI `TabView` rebuilt and laid out the heavy forms on every switch, which was a visible lag on slower Macs.
 struct PreferencesView: View {
-    @ObservedObject var model: PreferencesModel
+    enum Tab: CaseIterable, Hashable {
+        case general, scrolling, saving, display, mouse, stash
+        var title: String {
+            switch self {
+            case .general: return "General"
+            case .scrolling: return "Scrolling"
+            case .saving: return "Saving"
+            case .display: return "Display"
+            case .mouse: return "Mouse & Trackpad"
+            case .stash: return "Stash"
+            }
+        }
+    }
+
+    @ObservedObject var feed: PreferencesTabFeed
+    var tab: Tab
     var mouseTab: AnyView? = nil
+    private var model: PreferencesModel { feed.model }
     /// The wheel mode of the player (SmartShift's choice, remembered); missing means free spin.
     @AppStorage(PlayerWindowController.wheelFreeSpinKey) private var wheelFreeSpin = true
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                general.tabItem { Text("General") }
-                scrolling.tabItem { Text("Scrolling") }
-                saving.tabItem { Text("Saving") }
-                display.tabItem { Text("Display") }
-                if let mouseTab { mouseTab.tabItem { Text("Mouse & Trackpad") } }
-                StashPreferencesView(model: model).tabItem { Text("Stash") }
+            switch tab {
+            case .general: general
+            case .scrolling: scrolling
+            case .saving: saving
+            case .display: display
+            case .mouse: mouseTab
+            case .stash: StashPreferencesView(feed: feed)
             }
             if let message = model.errorMessage {
                 Text(message).foregroundStyle(.red).font(.callout).fixedSize(horizontal: false, vertical: true).padding(8)
             }
         }
-        .frame(width: 560, height: 580)
+        .frame(width: PreferencesTabsController.contentSize.width, height: PreferencesTabsController.contentSize.height)
     }
 
     /// `scrub-audio-pitch` as an on/off toggle: on is `natural`.
@@ -161,6 +179,11 @@ struct PreferencesView: View {
                     Text("Hardware (VideoToolbox)").tag(HardwareDecoding.yes)
                     Text("Software").tag(HardwareDecoding.no)
                 }
+                Picker("Network volumes", selection: model.binding(\.networkMode, ["network-mode"])) {
+                    Text("Read gently (automatic)").tag(NetworkMode.auto)
+                    Text("Always read gently").tag(NetworkMode.yes)
+                    Text("Never").tag(NetworkMode.no)
+                }
                 Toggle("Resume where I left off", isOn: model.binding(\.resumePlayback, ["resume-playback"]))
                 Toggle("Play the next video in the folder at the end", isOn: model.binding(\.playlistAutoadvance, ["playlist-autoadvance"]))
                 Toggle("Start playing when a file opens", isOn: model.binding(\.autoplay, ["autoplay"]))
@@ -200,12 +223,10 @@ struct PreferencesView: View {
                 LabeledContent("Page") {
                     CommitField(prompt: "http://host:8000/page/", value: model.binding(\.pluginURL, ["plugin-url"]))
                 }
-                StepperRow(title: "Width", value: "\(model.config.pluginWidth) pt",
-                           number: model.binding(\.pluginWidth, ["plugin-width"]), range: Config.pluginWidthRange, step: 20)
             } header: {
-                Text("Plugin panel (⌥⌘P)")
+                Text("Plugin")
             } footer: {
-                Text("A web page beside the video that drives the player. Pages allowed to open local files: `plugin-open-allowed` in framescrub.conf.")
+                Text("A web page for the slots (View › Slots), listed as “Plugin”; more pages: `plugin=Name | URL` lines in framescrub.conf. Drag a slot's edge to size it. Pages allowed to open local files: `plugin-open-allowed`.")
                     .foregroundStyle(.secondary)
             }
         }

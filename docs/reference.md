@@ -305,11 +305,15 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   (`K −0.80 s / +2.20 s`).
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
-- **View › Show Plugin Panel** (⌥⌘P) shows a web page (`plugin-url`, or the `plugin=` of a `framescrub://open` link)
-  beside the video; the page drives the player through `window.framescrub` (the contract is documented at the top of
-  `Sources/FrameScrub/PluginPanel.swift`). Dragging the panel's edge sets its width (`plugin-width`); **Focus Plugin
-  Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local videos
-  only after you allow its origin once (`plugin-open-allowed`).
+- **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds the playlist,
+  a plugin page (`plugin=Name | URL`, repeatable; `plugin-url` counts as `Plugin`, as does the `plugin=` of a
+  `framescrub://open` link) or nothing, whose **+** menu fills it. A slot is pinned (takes room from the video) or lies
+  over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when
+  asked, and slides in when the pointer touches its edge (or on a click on its tongue). Each is kept in `slot-left` / `slot-right` / `slot-bottom`.
+  A page drives the player through `window.framescrub` (bridge version 2, documented at the top of
+  `Sources/FrameScrub/PluginPanel.swift`), and may hand it a playlist. ⌥⌘P shows the first slot holding a page; **Focus
+  Plugin Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local
+  videos only after you allow its origin once (`plugin-open-allowed`).
 - **Settings** (⌘,) has six tabs: General, Scrolling, Saving, Display, Mouse & Trackpad, and Stash. Changes apply
   at once. Edits keep the comments in `framescrub.conf` / `input.conf`; default values that are not in the
   file are not added.
@@ -370,6 +374,7 @@ Tour, C1 and C2 act on a press** and are never held for a combination.
 ```ini
 cache-size=2048                 # MiB of decoded frames kept around the playhead
 read-cache=256                  # MiB of file data kept in 2 MiB blocks for all decoders; 0 = off (next file)
+network-mode=auto               # auto | yes | no — read files on network volumes gently (see Network files); auto asks the volume
 scrub-px-per-frame=8            # trackpad points per frame at slow speed
 scrub-accel-from=20             # 5…120 frames/s: a scrub faster than this takes bigger steps (twice as fast, twice the steps)
 scrub-accel-max=240             # 30…2000 frames/s: acceleration takes the scrub to at most this (fast scrub multiplies on top)
@@ -423,9 +428,12 @@ stash-url=                      # Stash server, e.g. http://localhost:9999; empt
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
 stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
-plugin-url=                     # web page for View › Show Plugin Panel (⌥⌘P), e.g. http://host:8000/page/; empty = none
-plugin-width=400                # 240…1200 points, width of the plugin panel (dragging its edge writes it)
+plugin-url=                     # the older single page, listed as the plugin "Plugin" (more: plugin=Name | URL lines); empty = none
+plugin-width=400                # 240…1200 points: the right slot's width when slot-* are absent and plugin-url is set
 plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
+slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: view (empty, playlist, plugin:<name>), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
+slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
+slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video
@@ -481,6 +489,14 @@ Seeking stays quick on high-bitrate files from network volumes (SMB/NFS/AFP):
 - The exact frame index of MP4/MOV/M4V files comes from the file header in a fraction of a second. Other
   formats (MKV, WebM, TS, …) are scanned in the background, pausing while a seek waits for its frame; a scan
   longer than a second shows "Indexing N%". Seeks to keyframes (`seek-mode=keyframe`) work meanwhile.
+- **Network mode** (`network-mode`, General tab > Network volumes; `auto` applies it to files on a volume that is not local
+  and to `http(s)` addresses; the stats panel's Read line says "network mode"). On a share that delivers a few MB/s every
+  reader divides the same bandwidth, so playback gets what the others leave. In this mode: only the playing reader reads
+  ahead, and ~40 s of video instead of 3 s (the read cache is at least 512 MiB), which rides out the seconds-long stalls
+  shares have; the seek-bar preview, the black-bar sampler and the backward decoder read only the blocks they need; the preview
+  waits 250 ms for the pointer to rest; black bars are looked for on 4 keyframes (not 10), 20 s after the file opened; paused,
+  FrameScrub keeps 8 s of decoded frames above the playhead and 3 s below (not what the whole `cache-size` holds), so
+  the file is not read for frames nobody asked for. `FRAMESCRUB_READ_TRACE=<file>` logs every read of the file by reader.
 - With a key held, the picture follows the seeks with the frames that are ready on the way; the backward
   decoder starts 250 ms after a jump, once the frame you jumped to is shown.
 - Frames nothing refers to are not decoded when they would be thrown away: in the run-up from a keyframe to an

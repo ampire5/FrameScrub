@@ -109,7 +109,7 @@ public final class ReadCache: @unchecked Sendable {
     /// Serves one `AVIOContext` read: up to `count` bytes at `offset`, at most to the end of its block.
     /// `cached: false` (the index scan) goes straight to the file so it does not evict useful blocks.
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer, cached: Bool,
-              cursor: inout ReadCursor) throws -> Int {
+              cursor: inout ReadCursor, readAhead: Bool = true) throws -> Int {
         let useBlocks = lock.withLock { () -> Bool in
             if cached { counters.requests += 1 }   // the hit rate is about readers that use the cache
             return cached && budget >= Self.blockSize
@@ -123,7 +123,7 @@ public final class ReadCache: @unchecked Sendable {
         data.withUnsafeBytes { buffer.copyMemory(from: $0.baseAddress! + start, byteCount: n) }
         if b == cursor.lastBlock + 1 { cursor.run += 1 } else if b != cursor.lastBlock { cursor.run = 0 }
         cursor.lastBlock = b
-        if cursor.run >= 1 { prefetch(after: b) }
+        if cursor.run >= 1, readAhead { prefetch(after: b) }
         return n
     }
 

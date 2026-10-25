@@ -121,4 +121,25 @@ import Testing
     @Test func theQuestionNamesTheOrigin() {
         #expect(PluginPolicy.consentQuestion(for: page) == "Allow http://host:8000 to open files in FrameScrub?")
     }
+
+    @Test func listOfFilesNeedsOneConsent() throws {
+        let origin = try #require(PluginOrigin(url: URL(string: "https://notes.example")!))
+        var policy = PluginPolicy(trusted: [origin], openAllowedText: "")
+        let a = URL(fileURLWithPath: "/v/a.mp4"), b = URL(fileURLWithPath: "/v/b.mkv")
+        #expect(policy.decision(forOpening: [a, b], from: origin) == .needsConsent)
+        policy.allowOpening(from: origin)
+        #expect(policy.decision(forOpening: [a, b], from: origin) == .allowed)
+    }
+
+    @Test func listWithANonVideoIsRefused() throws {
+        let origin = try #require(PluginOrigin(url: URL(string: "https://notes.example")!))
+        let policy = PluginPolicy(trusted: [origin], openAllowedText: "https://notes.example")
+        let files = [URL(fileURLWithPath: "/v/a.mp4"), URL(fileURLWithPath: "/v/notes.txt")]
+        #expect(policy.decision(forOpening: files, from: origin) == .notMedia)
+    }
+
+    @Test func listWithoutFilesNeedsNothing() throws {
+        let origin = try #require(PluginOrigin(url: URL(string: "https://notes.example")!))
+        #expect(PluginPolicy(trusted: [origin], openAllowedText: "").decision(forOpening: [], from: origin) == .allowed)
+    }
 }

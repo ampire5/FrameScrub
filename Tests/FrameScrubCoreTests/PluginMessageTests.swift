@@ -254,7 +254,7 @@ import Testing
     @Test func jsonHasEveryKeyInOrderWithNullsForNothing() {
         let state = PluginState(t: 1.5, frame: 36, fps: 24, duration: 10, playing: false, visible: true)
         #expect(state.json == """
-        {"duration":10,"durationFrames":0,"fps":24,"frame":36,"loop":null,"name":null,"path":null,"playing":false,\
+        {"duration":10,"durationFrames":0,"fps":24,"frame":36,"loop":null,"name":null,"panel":null,"path":null,"playing":false,\
         "ready":false,"scene":null,"segments":null,"t":1.5,"visible":true}
         """)
     }
@@ -263,7 +263,7 @@ import Testing
         let state = PluginState(ready: true, path: "/Volumes/V/a b.mp4", name: "a b.mp4", scene: "42", t: 2, frame: 50,
                                 fps: 25, duration: 60, durationFrames: 1500, playing: true, loop: 1...3, visible: false)
         #expect(state.json == """
-        {"duration":60,"durationFrames":1500,"fps":25,"frame":50,"loop":[1,3],"name":"a b.mp4","path":"/Volumes/V/a b.mp4",\
+        {"duration":60,"durationFrames":1500,"fps":25,"frame":50,"loop":[1,3],"name":"a b.mp4","panel":null,"path":"/Volumes/V/a b.mp4",\
         "playing":true,"ready":true,"scene":"42","segments":null,"t":2,"visible":false}
         """)
     }
@@ -272,7 +272,7 @@ import Testing
         let segments = PluginState.Segments(list: [1...2, 3.5...4], current: 1, locked: true, advance: .next)
         let state = PluginState(t: 3.5, segments: segments)
         #expect(state.json == """
-        {"duration":0,"durationFrames":0,"fps":0,"frame":0,"loop":null,"name":null,"path":null,"playing":false,\
+        {"duration":0,"durationFrames":0,"fps":0,"frame":0,"loop":null,"name":null,"panel":null,"path":null,"playing":false,\
         "ready":false,"scene":null,"segments":{"advance":"next","current":1,"list":[[1,2],[3.5,4]],"locked":true},\
         "t":3.5,"visible":true}
         """)
@@ -307,5 +307,80 @@ import Testing
         let state = PluginState(path: "/a\u{2028}b.mp4")
         #expect(state.json?.contains("\u{2028}") == true)
         #expect(state.json.flatMap(PluginState.init(json:))?.path == "/a\u{2028}b.mp4")
+    }
+
+    @Test func stateCarriesPanel() throws {
+        var state = PluginState()
+        #expect(state.json?.contains(#""panel":null"#) == true)
+        state.panel = PanelInfo(slot: .bottom, mode: .overlay, backdrop: .clear, shown: true, focused: false)
+        let json = try #require(state.json)
+        #expect(json.contains(#""panel":{"backdrop":"clear","focused":false,"mode":"overlay","shown":true,"slot":"bottom"}"#))
+        #expect(PluginState(json: json)?.panel == state.panel)
+    }
+}
+
+/// Bridge v2: hide, setPlaylist, enqueue.
+extension PluginMessageTests {
+    @Test func hideParses() {
+        #expect(message(["cmd": "hide"]) == .hide)
+    }
+
+    @Test func setPlaylistScenesAndFiles() {
+        let json = posted(#"{"cmd":"setPlaylist","items":[{"scene":12,"title":"A"},{"path":"/v/b.mp4"}],"index":1,"name":"Studio"}"#)
+        #expect(message(json) == .setPlaylist(items: [.scene(id: "12", title: "A"),
+                                                       .file(URL(fileURLWithPath: "/v/b.mp4"), title: nil)],
+                                               index: 1, name: "Studio"))
+    }
+
+    @Test func setPlaylistDefaultsIndexZero() {
+        #expect(message(posted(#"{"cmd":"setPlaylist","items":[{"scene":"7"}]}"#))
+                == .setPlaylist(items: [.scene(id: "7", title: nil)], index: 0, name: nil))
+    }
+
+    @Test func setPlaylistEmptyFails() {
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[]}"#)) == "setPlaylist: items is empty")
+        #expect(reason(posted(#"{"cmd":"setPlaylist"}"#)) == "setPlaylist: items is missing")
+    }
+
+    @Test func setPlaylistTooManyFails() {
+        let items = (0...ListPlaylist.maxItems).map { ["scene": $0] }
+        #expect(reason(["cmd": "setPlaylist", "items": items]) == "setPlaylist: too many items")
+    }
+
+    @Test func setPlaylistBadItemNamesPosition() {
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1},{"foo":2}]}"#))
+                == "setPlaylist: items[1] needs scene or path")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":""}]}"#)) == "setPlaylist: items[0]: scene is empty")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1,"title":5}]}"#))
+                == "setPlaylist: items[0]: title must be a string")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[3]}"#)) == "setPlaylist: items must be a list of objects")
+    }
+
+    @Test func setPlaylistRelativePathFails() {
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"path":"v/b.mp4"}]}"#))
+                == "setPlaylist: items[0]: path must be absolute")
+    }
+
+    @Test func setPlaylistIndexOutOfRangeFails() {
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1}],"index":1}"#))
+                == "setPlaylist: index is out of range")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1}],"index":0.5}"#))
+                == "setPlaylist: index is out of range")
+        // Far past Int's range: refused, not trapped on the conversion.
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1}],"index":1e300}"#))
+                == "setPlaylist: index is out of range")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1}],"index":-1e300}"#))
+                == "setPlaylist: index is out of range")
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1}],"name":3}"#))
+                == "setPlaylist: name must be a string")
+    }
+
+    @Test func enqueueParses() {
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"scene":3,"title":"C"}]}"#))
+                == .enqueue([.scene(id: "3", title: "C")]))
+    }
+
+    @Test func enqueueEmptyFails() {
+        #expect(reason(posted(#"{"cmd":"enqueue","items":[]}"#)) == "enqueue: items is empty")
     }
 }

@@ -690,6 +690,17 @@ import Testing
         #expect(ExportSettings(config: config).color.isIdentity)
     }
 
+    @Test func parsesNetworkMode() {
+        #expect(Config().networkMode == .auto)
+        let (c, warnings) = Config.parse("network-mode=yes")
+        #expect(warnings.isEmpty)
+        #expect(c.networkMode == .yes)
+        #expect(c.text(forKey: "network-mode") == "yes")
+        let (bad, badWarnings) = Config.parse("network-mode=smb")
+        #expect(bad.networkMode == .auto)
+        #expect(badWarnings.count == 1)
+    }
+
     @Test func parsesHardwareDecoding() {
         #expect(Config().hwdec == .auto)
         let (c, warnings) = Config.parse("hwdec=no")
@@ -705,5 +716,70 @@ import Testing
         #expect(HardwareDecoding.auto.prefersHardware)
         #expect(HardwareDecoding.yes.prefersHardware)
         #expect(!HardwareDecoding.no.prefersHardware)
+    }
+
+    @Test func pluginLinesAccumulate() {
+        let (c, warnings) = Config.parse("plugin=Notes | http://h/notes\nplugin=Chapters | file:///tmp/ch.html")
+        #expect(warnings.isEmpty)
+        #expect(c.plugins.map(\.name) == ["Notes", "Chapters"])
+        #expect(c.plugins.last?.url.absoluteString == "file:///tmp/ch.html")
+    }
+
+    @Test func duplicatePluginNamesKeepFirst() {
+        let (c, _) = Config.parse("plugin=Notes | http://h/one\nplugin=Notes | http://h/two\nvolume=50")
+        #expect(c.plugins.count == 1)
+        #expect(c.plugins.first?.url.absoluteString == "http://h/one")
+        #expect(c.volume == 50)
+    }
+
+    @Test func badPluginLineWarns() {
+        let (c, warnings) = Config.parse("plugin=Notes\nvolume=50")
+        #expect(c.plugins.isEmpty)
+        #expect(warnings.count == 1)
+        #expect(c.volume == 50)
+    }
+
+    @Test func slotNamingMissingPluginStillParses() {
+        let (c, warnings) = Config.parse("slot-left=plugin:Gone, overlay, glass, after-choice, 500, hidden\nvolume=50")
+        #expect(warnings.isEmpty)
+        #expect(c.slots[.left]?.content == .plugin(name: "Gone"))
+        #expect(c.volume == 50)
+    }
+
+    @Test func slotSizeIsClampedPerEdge() {
+        let (c, _) = Config.parse("slot-left=empty, pinned, dark, manual, 5000, hidden\nslot-bottom=empty, pinned, dark, manual, 5000, hidden")
+        #expect(c.slots[.left]?.size == 1200)
+        #expect(c.slots[.bottom]?.size == 900)
+    }
+
+    @Test func legacyPluginURLListedAsPlugin() {
+        let (c, _) = Config.parse("plugin-url=http://h/page\nplugin=Notes | http://h/notes")
+        #expect(c.allPlugins.map(\.name) == ["Notes", "Plugin"])
+        #expect(c.allPlugins.last?.url.absoluteString == "http://h/page")
+        let (listed, _) = Config.parse("plugin-url=http://h/page\nplugin=Plugin | http://h/other")
+        #expect(listed.allPlugins.map(\.url.absoluteString) == ["http://h/other"])
+    }
+
+    @Test func slotKeysWriteBack() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("slots-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "plugin=Notes | http://h/notes\n".write(to: url, atomically: true, encoding: .utf8)
+        var c = Config()
+        c.slots[.right] = SlotSetting(content: .plugin(name: "Notes"), mode: .pinned, backdrop: .clear,
+                                      autoHide: .manual, size: 520, shown: true)
+        try c.write(keys: ["slot-right"], to: url)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let (back, warnings) = Config.parse(text)
+        #expect(warnings.isEmpty)
+        #expect(back.slots[.right] == c.slots[.right])
+        #expect(back.plugins.map(\.name) == ["Notes"])
+    }
+
+    @Test func missingSlotKeysUseMigration() {
+        #expect(Config.parse("volume=50").0.slots == SlotDefaults.migrate(pluginURL: ""))
+        #expect(Config.parse("plugin-url=http://h/p").0.slots == SlotDefaults.migrate(pluginURL: "http://h/p"))
+        let (c, _) = Config.parse("plugin-url=http://h/p\nslot-right=playlist, overlay, dark, manual, 300, hidden")
+        #expect(c.slots[.right]?.content == .playlist)
+        #expect(c.slots[.bottom] == SlotDefaults.migrate(pluginURL: "http://h/p")[.bottom])
     }
 }

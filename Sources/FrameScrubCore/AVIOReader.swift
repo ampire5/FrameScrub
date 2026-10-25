@@ -6,6 +6,8 @@ import Foundation
 final class AVIOReader {
     let cache: ReadCache
     let cached: Bool
+    /// Whether a run of consecutive blocks makes the cache load the next ones in the background.
+    let readAhead: Bool
     /// Index-only reads (spec §2.1): return zeros of the requested length without touching the file.
     var zeroData = false
     private(set) var context: UnsafeMutablePointer<AVIOContext>!
@@ -14,8 +16,9 @@ final class AVIOReader {
 
     /// Cached readers take small reads (blocks do the batching); an uncached one (the index scan) reads a whole
     /// block's worth at a time, or every 64 KiB would pay the network's latency.
-    init(cache: ReadCache, cached: Bool) throws {
+    init(cache: ReadCache, cached: Bool, readAhead: Bool = true) throws {
         self.cache = cache
+        self.readAhead = readAhead
         self.cached = cached
         let bufferSize = Int32(cached ? 64 << 10 : ReadCache.blockSize)
         guard let buffer = av_malloc(Int(bufferSize)) else { throw FFmpegError(-1, "allocate I/O buffer") }
@@ -43,7 +46,7 @@ final class AVIOReader {
             return Int32(n)
         }
         do {
-            let got = try cache.read(at: position, count: n, into: buffer, cached: cached, cursor: &cursor)
+            let got = try cache.read(at: position, count: n, into: buffer, cached: cached, cursor: &cursor, readAhead: readAhead)
             guard got > 0 else { return cff_error_eof() }
             position += Int64(got)
             return Int32(got)

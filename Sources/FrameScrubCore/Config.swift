@@ -139,6 +139,8 @@ public struct Config: Equatable, Sendable {
     /// Seconds one press may search; then it stops and says how far it looked.
     public var sceneSearchTime = 4.0
     public var hwdec = HardwareDecoding.auto
+    /// Gentle reading of network volumes (`NetworkPolicy`).
+    public var networkMode = NetworkMode.auto
     public var resumePlayback = true
     public var playlistAutoadvance = true
     /// Start playing every file as it opens (after the resume position is applied).
@@ -169,6 +171,16 @@ public struct Config: Equatable, Sendable {
     /// `plugin-width`: the plugin panel's width in points.
     public var pluginWidth = 400
     public static let pluginWidthRange = 240...1200
+    /// `plugin=Name | URL` lines, in file order; a name given twice keeps its first page.
+    public var plugins: [PluginEntry] = []
+    /// `slot-left` / `slot-right` / `slot-bottom`; a slot without its key gets `SlotDefaults.migrate(pluginURL:)`'s.
+    public var slots = SlotDefaults.migrate(pluginURL: "")
+    /// Every page the slots can show: `plugins`, then `plugin-url` as `Plugin` unless a `plugin=` line has that name.
+    public var allPlugins: [PluginEntry] {
+        guard !pluginURL.isEmpty, let url = URL(string: pluginURL),
+              !plugins.contains(where: { $0.name == SlotDefaults.legacyPluginName }) else { return plugins }
+        return plugins + [PluginEntry(name: SlotDefaults.legacyPluginName, url: url)]
+    }
     /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
     public var pluginOpenAllowed = ""
     public var preview = true
@@ -257,7 +269,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-url", "plugin-width", "plugin-open-allowed", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-url", "plugin-width", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -293,12 +305,15 @@ public struct Config: Equatable, Sendable {
         case "plugin-url": return pluginURL
         case "plugin-width": return String(pluginWidth)
         case "plugin-open-allowed": return pluginOpenAllowed
+        case _ where SlotEdge.allCases.contains(where: { $0.key == key }):
+            return slots[SlotEdge.allCases.first { $0.key == key }!]?.text
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
         case "scene-lookahead": return String(sceneLookahead)
         case "scene-check-time": return formatNumber(sceneCheckTime)
         case "scene-search-time": return formatNumber(sceneSearchTime)
         case "hwdec": return hwdec.rawValue
+        case "network-mode": return networkMode.rawValue
         case "scrub-px-per-frame": return formatNumber(scrub.pxPerFrame)
         case "scrub-accel-from": return formatNumber(scrub.accelFrom)
         case "scrub-accel-max": return formatNumber(scrub.accelMax)
@@ -385,6 +400,7 @@ public struct Config: Equatable, Sendable {
     public static func parse(_ text: String) -> (Config, [String]) {
         var config = Config()
         var warnings: [String] = []
+        var slotKeys = Set<SlotEdge>()
         for (number, raw) in text.components(separatedBy: .newlines).enumerated() {
             let line = stripComment(raw)
             guard !line.isEmpty else { continue }
@@ -395,8 +411,14 @@ public struct Config: Equatable, Sendable {
             }
             let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
             let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
-            if !config.set(key, value) { warnings.append("\(location): bad option '\(key)=\(value)'") }
+            if config.set(key, value) {
+                if let edge = SlotEdge.allCases.first(where: { $0.key == key }) { slotKeys.insert(edge) }
+            } else {
+                warnings.append("\(location): bad option '\(key)=\(value)'")
+            }
         }
+        let migrated = SlotDefaults.migrate(pluginURL: config.pluginURL, pluginWidth: config.pluginWidth)
+        for edge in SlotEdge.allCases where !slotKeys.contains(edge) { config.slots[edge] = migrated[edge] }
         return (config, warnings)
     }
 
@@ -452,6 +474,7 @@ public struct Config: Equatable, Sendable {
         case "scene-check-time": guard let v = double(0...30) else { return false }; sceneCheckTime = v
         case "scene-search-time": guard let v = double(0.5...120) else { return false }; sceneSearchTime = v
         case "hwdec": guard let v = HardwareDecoding(rawValue: value.lowercased()) else { return false }; hwdec = v
+        case "network-mode": guard let v = NetworkMode(rawValue: value.lowercased()) else { return false }; networkMode = v
         case "resume-playback": guard let v = bool() else { return false }; resumePlayback = v
         case "playlist-autoadvance": guard let v = bool() else { return false }; playlistAutoadvance = v
         case "autoplay": guard let v = bool() else { return false }; autoplay = v
@@ -469,6 +492,13 @@ public struct Config: Equatable, Sendable {
         case "plugin-url": pluginURL = value
         case "plugin-width": guard let v = int(Config.pluginWidthRange) else { return false }; pluginWidth = v
         case "plugin-open-allowed": pluginOpenAllowed = value
+        case "plugin":
+            guard let entry = PluginEntry(line: value) else { return false }
+            if !plugins.contains(where: { $0.name == entry.name }) { plugins.append(entry) }
+        case _ where SlotEdge.allCases.contains(where: { $0.key == key }):
+            let edge = SlotEdge.allCases.first { $0.key == key }!
+            guard let setting = SlotSetting(text: value) else { return false }
+            slots[edge] = setting.clamped(for: edge)
         case "preview": guard let v = bool() else { return false }; preview = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v
         case "export-mode": guard let v = ExportMode(rawValue: value.lowercased()) else { return false }; exportMode = v

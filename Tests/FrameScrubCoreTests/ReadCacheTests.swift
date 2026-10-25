@@ -143,6 +143,17 @@ final class SlowCountingSource: ByteSource, @unchecked Sendable {
         #expect(!cache.isCached(block: 8))
     }
 
+    @Test func aReaderWithoutReadAheadLoadsOnlyWhatItAsksFor() async throws {
+        let cache = try ReadCache(url: Fixtures.url(Fixtures.hevc10), budgetBytes: 64 << 20)
+        cache.readAheadBytes = 4 * ReadCache.blockSize
+        var cursor = ReadCursor()
+        var byte: UInt8 = 0
+        _ = try cache.read(at: 0, count: 1, into: &byte, cached: true, cursor: &cursor, readAhead: false)
+        _ = try cache.read(at: Int64(ReadCache.blockSize), count: 1, into: &byte, cached: true, cursor: &cursor, readAhead: false)
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(!cache.isCached(block: 2))
+    }
+
     @Test func zeroBudgetReadsExactlyWhatIsAsked() throws {
         let source = try CountingByteSource(url: Fixtures.url(Fixtures.h264))
         let cache = try ReadCache(url: Fixtures.url(Fixtures.h264), budgetBytes: 0, source: source)

@@ -1,9 +1,11 @@
 import AppKit
 import FrameScrubCore
 
-/// The folder's videos, current one highlighted; a click opens a file. On top: a name filter and the order.
+/// The playlist (shown in a slot): the folder's videos or a page's list, current one highlighted; a click opens a row.
+/// On top: a name filter and, for a folder, the order.
 final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
-    var onSelect: ((URL) -> Void)?
+    /// A row was clicked: its index among the rows shown.
+    var onSelect: ((Int) -> Void)?
     /// The filter text changed (live, as it is typed).
     var onFilter: ((String) -> Void)?
     /// The order picked from the menu.
@@ -16,22 +18,17 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     private let sortButton = NSPopUpButton(frame: .zero, pullsDown: false)
     private let table = NSTableView()
     private let scroll = NSScrollView()
-    private var files: [URL] = []
+    private var rows: [PlaylistRow] = []
     /// `playlist-font-size`; the rows grow with it.
     var fontSize: CGFloat = 14 {
         didSet {
             guard fontSize != oldValue else { return }
             table.rowHeight = (fontSize * 1.8).rounded()
             table.reloadData()
-            if files.indices.contains(table.selectedRow) { table.scrollRowToVisible(table.selectedRow) }
+            if rows.indices.contains(table.selectedRow) { table.scrollRowToVisible(table.selectedRow) }
         }
     }
     private var updating = false
-    private static let widthKey = "PlaylistWidth"   // window state, not a setting
-    private lazy var width = widthAnchor.constraint(equalToConstant: {
-        let saved = UserDefaults.standard.double(forKey: Self.widthKey)
-        return saved > 0 ? saved : 260
-    }())
 
     init() {
         super.init(frame: .zero)
@@ -39,8 +36,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         // The table refuses first responder, so the selected row is drawn unemphasized (light gray in a light
         // appearance), which would make the white labels unreadable. A dark appearance (inherited by the table
         // and scroll view) keeps the selection colours consistent with the dark overlay.
-        appearance = NSAppearance(named: .darkAqua)
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.7).cgColor
+        appearance = NSAppearance(named: .darkAqua)   // the slot draws the backdrop
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
@@ -86,27 +82,9 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: bar.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
-        let grip = ResizeGripView()
-        grip.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(grip)   // above the scroll view: the left edge drags the width
-        NSLayoutConstraint.activate([
-            grip.leadingAnchor.constraint(equalTo: leadingAnchor), grip.widthAnchor.constraint(equalToConstant: 6),
-            grip.topAnchor.constraint(equalTo: topAnchor), grip.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-        grip.onDrag = { [weak self] dx in self?.resize(by: dx) }
-        grip.onEnd = { [weak self] in
-            guard let self else { return }
-            UserDefaults.standard.set(Double(width.constant), forKey: Self.widthKey)
-        }
-        width.isActive = true
-        isHidden = true
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        alphaValue > 0.01 ? super.hitTest(point) : nil   // faded out: clicks reach the video
-    }
 
     /// Where the names start in a row: under the filter field's text, so one text edge runs down the panel.
     private var nameInset: CGFloat = 30
@@ -126,11 +104,6 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         }
     }
 
-    private func resize(by dx: CGFloat) {
-        let limit = max(160, (superview?.bounds.width ?? 800) - 80)
-        width.constant = min(max(width.constant - dx, 160), limit)   // the panel is pinned on the right: dragging left widens
-    }
-
     /// Whether the filter field has the keyboard (the panel stays while it does).
     var isEditingFilter: Bool {
         guard let editor = window?.firstResponder as? NSText else { return false }
@@ -141,8 +114,17 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         window?.makeFirstResponder(search)
     }
 
+    /// A folder: its order can be picked.
     func showSort(_ sort: PlaylistSort) {
+        sortButton.isHidden = false
+        search.placeholderString = "Filter (⌘F)"
         sortButton.selectItem(at: PlaylistSort.allCases.firstIndex(of: sort) ?? 0)
+    }
+
+    /// A page's list: kept in the page's order; `name` (if the page gave one) shows in the filter field.
+    func showList(name: String?) {
+        sortButton.isHidden = true
+        search.placeholderString = name.map { "Filter \($0) (⌘F)" } ?? "Filter (⌘F)"
     }
 
     @objc private func filterChanged() { onFilter?(search.stringValue) }
@@ -169,19 +151,20 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         }
     }
 
-    func update(files: [URL], current: Int) {
+    /// `current`: the row of the item playing; -1 when it is not shown.
+    func update(rows: [PlaylistRow], current: Int) {
         updating = true
         defer { updating = false }
-        if files != self.files {   // unchanged list: only move the selection, no reload inside the table's own callback
-            self.files = files
+        if rows != self.rows {   // unchanged list: only move the selection, no reload inside the table's own callback
+            self.rows = rows
             table.reloadData()
         }
-        guard files.indices.contains(current) else { return }
+        guard rows.indices.contains(current) else { table.deselectAll(nil); return }
         table.selectRowIndexes([current], byExtendingSelection: false)
         table.scrollRowToVisible(current)
     }
 
-    func numberOfRows(in tableView: NSTableView) -> Int { files.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let id = NSUserInterfaceItemIdentifier("cell")
@@ -211,7 +194,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         // room for descenders and sit the names low).
         cell.constraints.first { $0.identifier == "baseline" }?.constant = (font.capHeight / 2).rounded()
         cell.constraints.first { $0.identifier == "leading" }?.constant = nameInset
-        cell.textField?.stringValue = files[row].lastPathComponent
+        cell.textField?.stringValue = rows[row].title
         return cell
     }
 
@@ -224,58 +207,8 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     }
 
     func tableViewSelectionDidChange(_ notification: Notification) {
-        guard !updating, files.indices.contains(table.selectedRow) else { return }
-        onSelect?(files[table.selectedRow])
-    }
-}
-
-/// Click-through area that reports the pointer entering (true) and leaving (false) it: the playlist's hover area.
-/// The parts `excludes` names (window points) do not count as in it: moving onto one is leaving, moving off it into
-/// the rest is entering.
-final class HoverZoneView: NSView {
-    var onHover: ((Bool) -> Void)?
-    var excludes: ((NSPoint) -> Bool)?
-    private var hovered = false
-
-    override init(frame: NSRect) {
-        super.init(frame: frame)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp,
-                                                              .inVisibleRect],
-                                       owner: self))
-    }
-
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
-    override func mouseEntered(with event: NSEvent) { setHovered(!(excludes?(event.locationInWindow) ?? false)) }
-    override func mouseMoved(with event: NSEvent) { setHovered(!(excludes?(event.locationInWindow) ?? false)) }
-    override func mouseExited(with event: NSEvent) { setHovered(false) }
-
-    private func setHovered(_ inside: Bool) {
-        guard inside != hovered else { return }
-        hovered = inside
-        onHover?(inside)
-    }
-}
-
-/// The playlist's left edge: a resize cursor, and horizontal drags reported as deltas.
-private final class ResizeGripView: NSView {
-    var onDrag: ((CGFloat) -> Void)?
-    var onEnd: (() -> Void)?
-    private var lastX: CGFloat?
-
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .resizeLeftRight) }
-    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-    // Handled here, not passed up the responder chain: otherwise AppKit does not send this view the drags.
-    override func mouseDown(with event: NSEvent) { lastX = event.locationInWindow.x }
-    override func mouseDragged(with event: NSEvent) {
-        let x = event.locationInWindow.x
-        if let lastX { onDrag?(x - lastX) }
-        lastX = x
-    }
-    override func mouseUp(with event: NSEvent) {
-        lastX = nil
-        onEnd?()
+        guard !updating, rows.indices.contains(table.selectedRow) else { return }
+        onSelect?(table.selectedRow)
     }
 }
 

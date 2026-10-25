@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private static let openFileNotification = Notification.Name("com.framescrub.open-file")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        prebuildPreferencesWindow()
         StartupTrace.mark("launched")
         let (config, configWarnings) = Config.load()
         if config.singleInstance, let primary = Self.primaryInstance() {
@@ -155,6 +156,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc private func focusPluginPanel(_ sender: Any?) {
         controller?.focusPluginPanel()
+    }
+
+    @objc private func toggleSlot(_ sender: NSMenuItem) {
+        guard let edge = (sender.representedObject as? String).flatMap(SlotEdge.init(rawValue:)) else { return }
+        controller?.toggleSlot(edge)
+    }
+
+    @objc private func togglePinOfSlot(_ sender: Any?) { controller?.togglePinOfCurrentSlot() }
+    @objc private func cycleBackdropOfSlot(_ sender: Any?) { controller?.cycleBackdropOfCurrentSlot() }
+    @objc private func clearSlot(_ sender: Any?) { controller?.clearCurrentSlot() }
+
+    /// View › Slots: each slot by its chord (⌃⌘ and the arrow towards its edge), and what acts on the current slot.
+    private func makeSlotsMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Slots", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "Slots")
+        let edges: [(SlotEdge, String, Int)] = [(.left, "Left Slot", NSLeftArrowFunctionKey),
+                                                (.right, "Right Slot", NSRightArrowFunctionKey),
+                                                (.bottom, "Bottom Slot", NSDownArrowFunctionKey)]
+        for (edge, title, key) in edges {
+            let slot = menu.addItem(withTitle: title, action: #selector(toggleSlot(_:)),
+                                    keyEquivalent: String(Character(UnicodeScalar(key)!)))
+            slot.keyEquivalentModifierMask = [.command, .control]
+            slot.representedObject = edge.rawValue
+            slot.target = self
+        }
+        menu.addItem(.separator())
+        for (title, action) in [("Pin / Float", #selector(togglePinOfSlot(_:))),
+                                ("Next Backdrop", #selector(cycleBackdropOfSlot(_:))),
+                                ("Clear Slot", #selector(clearSlot(_:)))] {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        item.submenu = menu
+        return item
     }
 
     /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
@@ -322,11 +356,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func showPreferences(_ sender: Any?) {
-        if preferencesWindow == nil {
-            let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
-            preferencesWindow = PreferencesWindowController(store: preferences, mouseTab: tab)
+        makePreferencesWindow().show()
+    }
+
+    @discardableResult
+    private func makePreferencesWindow() -> PreferencesWindowController {
+        if let preferencesWindow { return preferencesWindow }
+        let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
+        let window = PreferencesWindowController(store: preferences, mouseTab: tab)
+        preferencesWindow = window
+        return window
+    }
+
+    /// Builds the settings window while the app is idle after launch (~0.1 s of main thread), so ⌘, only shows it.
+    /// Not while a video is playing: a hitch there matters more than a slower first ⌘,.
+    private func prebuildPreferencesWindow() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, controller?.hasOpenFile != true else { return }
+            makePreferencesWindow()
         }
-        preferencesWindow?.show()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -624,6 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let focusPlugin = viewMenu.addItem(withTitle: "Focus Plugin Panel", action: #selector(focusPluginPanel(_:)), keyEquivalent: "p")
         focusPlugin.keyEquivalentModifierMask = [.command, .option, .control]
         focusPlugin.target = self
+        viewMenu.addItem(makeSlotsMenu())
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding

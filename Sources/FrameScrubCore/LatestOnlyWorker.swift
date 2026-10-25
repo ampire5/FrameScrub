@@ -14,6 +14,9 @@ public final class LatestOnlyWorker<Value: Sendable>: @unchecked Sendable {
         self.handler = handler
     }
 
+    /// Whether a newer value is waiting (a handler that sleeps first can drop its own work).
+    public var hasPending: Bool { lock.withLock { pending != nil } }
+
     public func submit(_ value: Value) {
         let start: Bool = lock.withLock {
             pending = value

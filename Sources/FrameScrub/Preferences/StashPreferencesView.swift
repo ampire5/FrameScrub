@@ -37,7 +37,8 @@ struct CommitField: View {
 
 /// Settings → Stash (Stash spec §3.7): the server, its API key, extra path rules, and a check of all three.
 struct StashPreferencesView: View {
-    @ObservedObject var model: PreferencesModel
+    @ObservedObject var feed: PreferencesTabFeed
+    private var model: PreferencesModel { feed.model }
     @State private var rules = ""
     @State private var check: String?
     @State private var checking = false

@@ -69,9 +69,11 @@ struct GestureTableView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            List {
-                ForEach(model.rows, id: \.idString) { row in rowView(row) }
+            // A Form, not a List: a List fills its rows only once it is on screen, so the first show of the tab stalled.
+            Form {
+                Section { ForEach(model.rows, id: \.idString) { row in rowView(row) } }
             }
+            .formStyle(.grouped)
             HStack {
                 Menu("Add binding") {
                     ForEach([GestureDevice.trackpad, .wheel], id: \.rawValue) { device in

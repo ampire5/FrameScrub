@@ -2,6 +2,12 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct InputMapTests {
+    @Test func slotChordsAreMenuOwned() throws {
+        for key in ["LEFT", "RIGHT", "DOWN"] {
+            #expect(KeyChord.menuOwned.contains(try #require(KeyChord.parse("Ctrl+Meta+\(key)"))))
+        }
+    }
+
     @Test func theHeldRightButtonIsAModifier() {
         let chord = KeyChord.parse("MBTN_RIGHT+WHEEL_LEFT")
         #expect(chord == KeyChord(key: "WHEEL_LEFT", modifiers: .rightButton))

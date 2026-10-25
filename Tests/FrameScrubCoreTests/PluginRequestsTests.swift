@@ -22,6 +22,8 @@ import Testing
                 == .frame(PluginFrameRequest(position: .frame(37), maxSize: 128)))
         #expect(message(["cmd": "frame", "t": 0, "maxSize": 4096])
                 == .frame(PluginFrameRequest(position: .seconds(0), maxSize: 512)))   // capped
+        #expect(message(["cmd": "frame", "t": 0, "maxSize": 1e300])
+                == .frame(PluginFrameRequest(position: .seconds(0), maxSize: 512)))   // capped, not trapped
         #expect(reason(["cmd": "frame"]) == "frame: t or frame is missing")
         #expect(reason(["cmd": "frame", "t": 1, "frame": 2]) == "frame: t or frame, not both")
         #expect(reason(["cmd": "frame", "t": -1]) == "frame: t must not be negative")
@@ -79,7 +81,12 @@ import Testing
 
     @Test func playlistJSON() {
         #expect(PluginPlaylist(index: 11, count: 48, total: 50, name: "a.mp4").json
-                == #"{"count":48,"index":11,"name":"a.mp4","total":50}"#)
+                == #"{"count":48,"index":11,"name":"a.mp4","source":"folder","total":50}"#)
+    }
+
+    @Test func playlistReplyHasSource() {
+        #expect(PluginPlaylist(index: 0, count: 3, total: 3, name: "Chapters", source: .list).json?
+            .contains(#""source":"list""#) == true)
     }
 
     @Test func frameJSONCarriesADataURL() {

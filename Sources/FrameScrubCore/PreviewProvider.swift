@@ -19,6 +19,8 @@ public final class PreviewProvider: @unchecked Sendable {
     private let readCache: ReadCache?
     private let rotation: Int
     private let widthPixels: Int
+    private let settle: Double
+    private let readAhead: Bool
     private let renderer = FrameImageRenderer()
     private let cache = LRUCache<Int64, CGImage>(capacity: 200)
     private let lock = NSLock()
@@ -29,12 +31,15 @@ public final class PreviewProvider: @unchecked Sendable {
     private var decodes = 0
     private var worker: LatestOnlyWorker<Double>!
 
-    public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil) {
+    public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
+                policy: NetworkPolicy = .local) {
         self.url = url
         self.readCache = readCache
         self.index = index
         rotation = rotationClockwise
         self.widthPixels = max(1, widthPixels)
+        settle = policy.previewSettle
+        readAhead = policy.sideReadAhead
         worker = LatestOnlyWorker<Double>(label: "framescrub.preview") { [weak self] seconds in self?.handle(seconds) }
     }
 
@@ -58,8 +63,13 @@ public final class PreviewProvider: @unchecked Sendable {
             deliver(hit, requested: seconds, frameSeconds: current.seconds(forPTS: key))
             return
         }
+        // A share reads one preview in a second or more: let the pointer rest first, and drop this request when it moved on.
+        if settle > 0 {
+            Thread.sleep(forTimeInterval: settle)
+            if worker.hasPending { return }
+        }
         if decoder == nil {
-            do { decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache), index: current) } catch {
+            do { decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache, readAhead: readAhead), index: current) } catch {
                 lock.withLock { failed = true }
                 DispatchQueue.main.async { [weak self] in self?.onUnavailable?() }
                 return
