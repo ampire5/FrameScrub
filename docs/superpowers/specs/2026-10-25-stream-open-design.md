@@ -72,3 +72,12 @@ i.e. `PlayerCore.preparation`, on a test thread:
 | after (bytes as they arrive) | 314–509 ms | 185–1 141 ms | 541–1 533 ms (3 of 4 under 750 ms) |
 
 Before, all of the open ran on the main thread; after, the main thread does only `open(prepared)` and the window.
+
+In the app (a bench page in a slot: `request("open", {url})` of pbxd trailers never opened before, then the first
+`state` playing after the stream's `fileopened`; meanwhile `request("info")` every 50 ms, its slowest reply is how long
+the main thread was blocked). Same evening, CDN ~3.2 MB/s, five different trailers each:
+
+| | `open` answered | playing | slowest reply |
+|---|---|---|---|
+| before (b4b7fb6) | 848–1 673 ms | 1 015–1 872 ms | 800–1 622 ms |
+| after | 565–1 071 ms | 732–1 381 ms | 2–37 ms |
