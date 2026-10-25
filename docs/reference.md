@@ -540,7 +540,8 @@ file never loads it) and kept, so going back finds the same page.
 - A file on no share this Mac can reach (no mount, no rule, or the share will not mount) plays as **Stash's stream**
   (`<stash-url>/scene/<id>/stream`, read with Range requests like a file, the API key sent along). `stash-stream=never`
   fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
-  `source: "file" | "stream"`.
+  `source: "file" | "stream"`; for a stream `fileopened` gives the URL as `url` and `path: null`, and `info` adds
+  `url`.
 - `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found
   on the shares (or streamed) as for ▶. A plugin page's `open({scene})` without `paths` does the same.
 

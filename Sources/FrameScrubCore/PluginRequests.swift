@@ -15,7 +15,8 @@ public struct PluginInfo: Codable, Equatable, Sendable {
     public var rotation: Int
     /// The video codec's name as the demuxer reports it ("h264", "hevc").
     public var codec: String?
-    /// Whether the file is read from disk or from a stream, Stash's or a page's (then `path` is the stream's URL too).
+    /// Whether the file is read from disk or from a stream, Stash's or a page's (then `path` is the path part of the
+    /// stream's URL, percent-decoded).
     public var source: PluginSource
     /// The stream's URL; null for a file.
     public var url: String?

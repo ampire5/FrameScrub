@@ -282,6 +282,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         dropListPlaylist()
         returnTab = .recent
         stashScene = nil
+        stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
         return openFile(url, landing: landing)
     }
@@ -2714,6 +2715,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             dropListPlaylist()
             openStashScene(id: id, paths: paths, landing: landing)
         case let .open(.stream(url, landing)):   // nothing on this Mac is read: no consent to ask
+            guard !isStashURL(url) else { pluginFailed(request, Self.stashURLRefusal("open")); return }
             page.map(slots.pageChosePlay)
             if open(url, landing: landing) { pluginDone(request) }
             else { pluginFailed(request, "open: cannot open \(url.absoluteString)") }
@@ -2843,6 +2845,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A page's list with local files: allowed as `open({path})` would be for each of them, with one question for all.
     private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
                                  then apply: @escaping () -> Void) {
+        let streams = items.compactMap { item -> URL? in if case let .stream(url, _) = item { url } else { nil } }
+        guard !streams.contains(where: isStashURL) else { pluginFailed(request, Self.stashURLRefusal(verb)); return }
         let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
         switch pluginPolicy.decision(forOpening: files, from: origin) {
         case .allowed: apply()
@@ -2853,6 +2857,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             askOpenConsent(origin, asked: asked, verb: verb, request: request, then: apply)
         }
     }
+
+    /// A URL on the Stash server: read with the API key, so a page may not name it (`{scene}` opens Stash's scenes).
+    private func isStashURL(_ url: URL) -> Bool { !StashOpenPolicy.headers(for: url, config: core.config).isEmpty }
+
+    private static func stashURLRefusal(_ verb: String) -> String { "\(verb): a Stash URL: open it by scene" }
 
     /// The first time a page's origin opens local files: ask, remember a yes in `plugin-open-allowed`.
     private func askOpenConsent(_ origin: PluginOrigin, asked: String, verb: String, request: PluginRequest,

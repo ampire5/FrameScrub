@@ -229,6 +229,12 @@ import Testing
         #expect(reason(["cmd": "open", "url": 5]) == "open: url must be a string")
         #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "path": "/v/a.mp4"]) == "open: give one of path, scene, url")
         #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "scene": 3]) == "open: give one of path, scene, url")
+        // null names none: a page may build {path: x.path, url: x.url}
+        #expect(message(posted(#"{"cmd":"open","url":"http://h/a.mp4","path":null}"#))
+                == .open(.stream(URL(string: "http://h/a.mp4")!, landing: LinkTarget())))
+        #expect(message(posted(#"{"cmd":"open","scene":"1","path":null,"url":null}"#))
+                == .open(.stashScene(id: "1", paths: [], landing: LinkTarget())))
+        #expect(reason(posted(#"{"cmd":"open","url":null}"#)) == "open: path, scene or url is missing")
     }
 
     @Test func playlistStreamItems() {
@@ -240,6 +246,8 @@ import Testing
         #expect(reason(posted(#"{"cmd":"enqueue","items":[{"url":"file:///a.mp4"}]}"#)) == "enqueue: items[0]: url must be http(s)")
         #expect(reason(posted(#"{"cmd":"enqueue","items":[{"scene":1},{"url":"http://h/a","path":"/a.mp4"}]}"#))
                 == "enqueue: items[1]: give one of path, scene, url")
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"path":"/a.mp4","url":null}]}"#))
+                == .enqueue([.file(URL(fileURLWithPath: "/a.mp4"), title: nil)]))
     }
 
     @Test func fileOpenedForAStream() {

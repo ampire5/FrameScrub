@@ -209,7 +209,7 @@ Requests that answer (they need a file open, else they reject):
 
 | Request | Reply |
 |---|---|
-| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream", url}`; `url` is the stream's URL, `null` for a file |
+| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream", url}`; `url` is the stream's URL, `null` for a file; for a stream `path` is the URL's path part |
 | `marks` | `{loop, loopFrames, segments: [{start, end, startFrame, endFrame}], openFrame, openStart}`: the A-B range and the cut marks |
 | `playlist` | `{index, count, total, name, source: "folder" \| "list" \| "stash"}`: the file's place in its playlist (from 0) |
 | `frame` `{t \| frame, maxSize?}` | `{t, frame, width, height, dataURL}`: a JPEG fitted into `maxSize` pixels (16…512, default 512) |
@@ -234,7 +234,7 @@ Requests that answer (they need a file open, else they reject):
 
 `segments` locks playback and scrubbing to the given ranges; `advance` is `"repeat"` or `"next"` for what happens at a segment's end (default: `segment-advance` in `framescrub.conf`). It fails with "no segment inside the file" when none falls in the open file, and `lock` fails with "no segments" without any. The same landing works in a link: `framescrub://open?path=…&t=12&seg=10-20,35-40&lock=1&adv=next`.
 
-`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `open({url, t?, …})` plays an `http(s)` URL as a stream, with no consent asked (nothing on this Mac is read); no request headers or cookies are passed, so a page whose stream needs them serves it through its own backend. Exactly one of `path`, `scene`, `url` is given. `source` in `fileopened` and `info` says which.
+`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `open({url, t?, …})` plays an `http(s)` URL as a stream, with no consent asked (nothing on this Mac is read); no request headers or cookies are passed, so a page whose stream needs them serves it through its own backend. A URL on the Stash server is refused ("a Stash URL: open it by scene"): it would be read with the API key. Exactly one of `path`, `scene`, `url` is given. `source` in `fileopened` and `info` says which.
 
 ### Playlists from a page
 

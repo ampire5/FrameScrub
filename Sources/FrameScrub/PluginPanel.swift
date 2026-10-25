@@ -39,8 +39,8 @@ import WebKit
 ///                                     time a page's origin asks, the user is asked to allow it), or {scene, paths?, t?,
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
 ///                                     Stash (stash-stream); without `paths` they are asked of Stash; or {url, t?, …} an
-///                                     http(s) stream, no consent asked, no headers or cookies passed. One of path,
-///                                     scene, url
+///                                     http(s) stream, no consent asked, no headers or cookies passed (a URL on the
+///                                     Stash server is refused: open it by scene). One of path, scene, url
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.hide()               hide the page's slot; the keys go back to the player
 ///     framescrub.playlist(items, {index?, name?})
@@ -58,7 +58,8 @@ import WebKit
 /// Requests with an answer (they need a file open, else they reject):
 ///
 ///     request("info")                 {path, name, fps, duration, durationFrames, width, height, rotation, codec,
-///                                     source: "file" | "stream", url} — url is the stream's URL, null for a file
+///                                     source: "file" | "stream", url} — url is the stream's URL, null for a file;
+///                                     for a stream, path is the URL's path part
 ///     request("marks")                {loop: [a, b] | null, loopFrames: [a, b] | null, segments: [{start, end,
 ///                                     startFrame, endFrame}], openFrame, openStart} — the A-B range and the cut marks
 ///     request("playlist")             {index, count, total, name, source: "folder" | "list" | "stash"} — the file's
@@ -87,8 +88,9 @@ import WebKit
 ///     focus / blur                    the panel took the keyboard / gave it back (View › Focus Plugin Panel, ⌃⌥⌘P,
 ///                                     brings keys to the page; focusPlayer() returns them)
 ///     fileopened                      {path, url, scene, source: "file" | "stream"} once a file is open, however it
-///                                     was opened (path for a file, url for a stream, the other null); always before any `segment` event for that file (a link's or open's
-///                                     segments are applied after it)
+///                                     was opened (path for a file, url for a stream, the other null); always before
+///                                     any `segment` event for that file (a link's or open's segments are applied
+///                                     after it)
 ///     segment                         {current: i | null, locked} when the current segment or the lock changes, playback
 ///                                     included
 ///     action                          {name, t, frame} when the user presses a key bound to the page's action `name` (not

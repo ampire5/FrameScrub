@@ -242,9 +242,9 @@ struct Arguments {
         return url
     }
 
-    /// Which of `path`, `scene`, `url` the object names; more than one is refused.
+    /// Which of `path`, `scene`, `url` the object names (`null` names none); more than one is refused.
     func source() throws(Failure) -> String? {
-        let given = ["path", "scene", "url"].filter(has)
+        let given = ["path", "scene", "url"].filter(given)
         guard given.count <= 1 else { throw Failure("give one of path, scene, url") }
         return given.first
     }
