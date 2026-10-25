@@ -79,6 +79,10 @@ import Testing
         #expect(PlaylistRow(PlaylistItem.file(URL(fileURLWithPath: "/v/a.mp4"), title: nil)).title == "a.mp4")
         #expect(PlaylistRow(PlaylistItem.file(URL(fileURLWithPath: "/v/a.mp4"), title: "Take 1")).title == "Take 1")
         #expect(PlaylistRow(file: URL(fileURLWithPath: "/v/b.mov")).title == "b.mov")
+        #expect(PlaylistRow(PlaylistItem.stream(URL(string: "http://h/x/trailer.mp4?q=best")!, title: nil)).title == "trailer.mp4")
+        #expect(PlaylistRow(PlaylistItem.stream(URL(string: "http://h/x/trailer.mp4")!, title: "T")).title == "T")
+        #expect(PlaylistRow(PlaylistItem.stream(URL(string: "http://h/")!, title: nil)).title == "h")
+        #expect(PlaylistRow(PlaylistItem.stream(URL(string: "http://h")!, title: nil)).title == "h")
     }
 
     @Test func blankTitleFallsBackToName() {
@@ -97,6 +101,13 @@ import Testing
         let file = PlaylistItem.file(URL(fileURLWithPath: "/v/a.mp4"), title: nil)
         let list = try #require(ListPlaylist.enqueue(items(2), onto: nil, current: file))
         #expect(list.items == [file] + items(2))
+        #expect(list.currentIndex == 0)
+    }
+
+    @Test func enqueueInFolderModeKeepsAPageStreamAsAStream() throws {
+        let u = URL(string: "http://h/s/1")!, v = URL(string: "http://h/s/2")!
+        let list = try #require(ListPlaylist.enqueue([.stream(u, title: nil)], onto: nil, current: .stream(v, title: "B")))
+        #expect(list.items == [.stream(v, title: "B"), .stream(u, title: nil)])
         #expect(list.currentIndex == 0)
     }
 

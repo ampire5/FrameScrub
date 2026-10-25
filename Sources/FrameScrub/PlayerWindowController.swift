@@ -2248,7 +2248,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage("Cannot open \(title): skipped", duration: 3)
         }
         switch item {
-        case let .file(url, _):
+        case let .file(url, _), let .stream(url, _):
             returnTab = .recent
             stashScene = nil
             stashOpens += 1   // a scene still being looked for must not replace this file
@@ -2263,10 +2263,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    /// What is on screen as a list item, for `enqueue` in the folder: the Stash scene, else the open file.
+    /// What is on screen as a list item, for `enqueue` in the folder: the Stash scene, else the open stream or file.
     private var currentPlaylistItem: PlaylistItem? {
         if case let .stash(sceneID, _) = origin, core.url != nil { return .scene(id: sceneID, title: window?.title) }
-        return core.url.map { .file($0, title: nil) }
+        guard let url = core.url else { return nil }
+        return ByteSources.isRemote(url) ? .stream(url, title: window?.title) : .file(url, title: nil)
     }
 
     private func folder(of url: URL) -> URL { url.standardizedFileURL.deletingLastPathComponent() }
@@ -2712,6 +2713,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             page.map(slots.pageChosePlay)
             dropListPlaylist()
             openStashScene(id: id, paths: paths, landing: landing)
+        case let .open(.stream(url, landing)):   // nothing on this Mac is read: no consent to ask
+            page.map(slots.pageChosePlay)
+            if open(url, landing: landing) { pluginDone(request) }
+            else { pluginFailed(request, "open: cannot open \(url.absoluteString)") }
+            return
         case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
         case .hide:
             if let page { slots.hide(page: page) }
@@ -2750,7 +2756,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             let details = PluginInfo(path: url.path, name: url.lastPathComponent, fps: info.frameRate,
                                      duration: core.durationSeconds, durationFrames: core.frameCount, width: info.width,
                                      height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec,
-                                     source: PluginSource(url: url))
+                                     source: PluginSource(url: url),
+                                     url: ByteSources.isRemote(url) ? url.absoluteString : nil)
             pluginDone(request, result: details.json)
         case .marks:
             let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
@@ -2878,7 +2885,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func pluginFileOpened() {
         var scene: String?
         if case let .stash(sceneID, _) = origin { scene = sceneID }
-        dispatchToPages(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
+        let source = core.url.map(PluginSource.init) ?? .file
+        dispatchToPages(.fileOpened(path: source == .file ? core.url?.path : nil,
+                                    url: source == .stream ? core.url?.absoluteString : nil, scene: scene, source: source))
     }
 
     /// The player's state for the pages: at once on a state change, else ten times a second while frames show for a page

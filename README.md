@@ -199,7 +199,7 @@ Every verb posts a command and forgets it; a failure fires the `error` event wit
 | `lock(on)` | Lock to the segments or release them |
 | `goSegment(i)` | Seek to the start of segment `i` (from 0) |
 | `actions(list)` | Declare `[{name, label, key?}]`; `[]` withdraws |
-| `open(o)` | Open a file or Stash scene (below) |
+| `open(o)` | Open a file, a Stash scene or an `http(s)` stream (below) |
 | `focusPlayer()` | Keys go to the player again |
 | `hide()` | Hide the page's slot; the keys go back to the player |
 | `playlist(items, {index?, name?})` | The playlist becomes this list and item `index` (default 0) opens (below) |
@@ -209,7 +209,7 @@ Requests that answer (they need a file open, else they reject):
 
 | Request | Reply |
 |---|---|
-| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream"}` |
+| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream", url}`; `url` is the stream's URL, `null` for a file |
 | `marks` | `{loop, loopFrames, segments: [{start, end, startFrame, endFrame}], openFrame, openStart}`: the A-B range and the cut marks |
 | `playlist` | `{index, count, total, name, source: "folder" \| "list" \| "stash"}`: the file's place in its playlist (from 0) |
 | `frame` `{t \| frame, maxSize?}` | `{t, frame, width, height, dataURL}`: a JPEG fitted into `maxSize` pixels (16…512, default 512) |
@@ -224,7 +224,7 @@ Requests that answer (they need a file open, else they reject):
 | Event | When / detail |
 |---|---|
 | `focus` `blur` | The panel took / gave back the keyboard |
-| `fileopened` | `{path, scene, source}` once a file is open, however it was opened; before any `segment` event for it |
+| `fileopened` | `{path, url, scene, source}` once a file is open (`path` for a file, `url` for a stream, the other `null`), however it was opened; before any `segment` event for it |
 | `segment` | `{current, locked}` when the current segment or the lock changes |
 | `action` | `{name, t, frame}` when the user presses a key bound to the page's action (not repeated while held) |
 | `panel` | The same as `state.panel`, whenever it changes (also while the slot is hidden) |
@@ -234,11 +234,11 @@ Requests that answer (they need a file open, else they reject):
 
 `segments` locks playback and scrubbing to the given ranges; `advance` is `"repeat"` or `"next"` for what happens at a segment's end (default: `segment-advance` in `framescrub.conf`). It fails with "no segment inside the file" when none falls in the open file, and `lock` fails with "no segments" without any. The same landing works in a link: `framescrub://open?path=…&t=12&seg=10-20,35-40&lock=1&adv=next`.
 
-`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `source` in `fileopened` and `info` says which.
+`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `open({url, t?, …})` plays an `http(s)` URL as a stream, with no consent asked (nothing on this Mac is read); no request headers or cookies are passed, so a page whose stream needs them serves it through its own backend. Exactly one of `path`, `scene`, `url` is given. `source` in `fileopened` and `info` says which.
 
 ### Playlists from a page
 
-`playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?} | {path, title?}, …]`, 1…2000 of them, and one bad item refuses the whole call. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
+`playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?} | {path, title?} | {url, title?}, …]`, 1…2000 of them, and one bad item refuses the whole call. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
 
 `framescrub.stash` is `{url, apiKey}` for the Stash server in Settings, or `null` without one, so a page can ask Stash itself. Only the plugins in your list get it; a page a link brought gets `null`.
 

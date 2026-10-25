@@ -1,13 +1,14 @@
 import Foundation
 
-/// One entry of a list a plugin page gave as the playlist: a media-server scene or a local file.
+/// One entry of a list a plugin page gave as the playlist: a media-server scene, a local file or an http(s) stream.
 public enum PlaylistItem: Equatable, Sendable {
     case scene(id: String, title: String?)
     case file(URL, title: String?)
+    case stream(URL, title: String?)
 
     public var title: String? {
         switch self {
-        case .scene(_, let title), .file(_, let title): title
+        case .scene(_, let title), .file(_, let title), .stream(_, let title): title
         }
     }
 }
@@ -91,7 +92,8 @@ public struct PlaylistRow: Equatable, Sendable {
     /// A folder's file: its name.
     public init(file: URL) { self.init(title: file.lastPathComponent) }
 
-    /// A list item: the title the page gave, else the file's name or "Scene <id>".
+    /// A list item: the title the page gave, else the file's name, "Scene <id>", or the stream's last path component
+    /// (its host when the path has none).
     public init(_ item: PlaylistItem) {
         if let title = item.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             self.init(title: title)
@@ -100,6 +102,9 @@ public struct PlaylistRow: Equatable, Sendable {
         switch item {
         case let .scene(id, _): self.init(title: "Scene \(id)")
         case let .file(url, _): self.init(file: url)
+        case let .stream(url, _):
+            let name = url.lastPathComponent
+            self.init(title: name.isEmpty || name == "/" ? url.host ?? url.absoluteString : name)
         }
     }
 }

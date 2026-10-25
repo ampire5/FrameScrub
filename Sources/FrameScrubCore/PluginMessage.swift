@@ -1,14 +1,15 @@
 import Foundation
 
-/// What a plugin page asks the player to open: a local file, or a Stash scene whose file is found on the shares (or
-/// streamed); `paths` is empty when the page gave none and they are to be asked of Stash.
+/// What a plugin page asks the player to open: a local file, a Stash scene whose file is found on the shares (or
+/// streamed), or an http(s) stream; `paths` is empty when the page gave none and they are to be asked of Stash.
 public enum PluginOpen: Equatable, Sendable {
     case file(URL, landing: LinkTarget)
     case stashScene(id: String, paths: [String], landing: LinkTarget)
+    case stream(URL, landing: LinkTarget)
 
     public var landing: LinkTarget {
         switch self {
-        case let .file(_, landing), let .stashScene(_, _, landing): landing
+        case let .file(_, landing), let .stashScene(_, _, landing), let .stream(_, landing): landing
         }
     }
 }
@@ -233,10 +234,24 @@ struct Arguments {
         guard let text = value as? String else { throw Failure("\(key) must be a string") }
         return text
     }
+
+    /// An absolute `http` or `https` URL with a host, taken as the page wrote it.
+    func streamURL(_ key: String) throws(Failure) -> URL {
+        guard let url = URL(string: try string(key)), let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = url.host, !host.isEmpty else { throw Failure("\(key) must be http(s)") }
+        return url
+    }
+
+    /// Which of `path`, `scene`, `url` the object names; more than one is refused.
+    func source() throws(Failure) -> String? {
+        let given = ["path", "scene", "url"].filter(has)
+        guard given.count <= 1 else { throw Failure("give one of path, scene, url") }
+        return given.first
+    }
 }
 
 extension Arguments {
-    /// `[{scene, title?} | {path, title?}, …]`: not empty, at most `ListPlaylist.maxItems`; one bad item refuses the
+    /// `[{scene, title?} | {path, title?} | {url, title?}, …]`: not empty, at most `ListPlaylist.maxItems`; one bad item refuses the
     /// whole list, naming its position.
     func playlistItems(_ key: String) throws(Failure) -> [PlaylistItem] {
         let list = try requiredObjectList(key)
@@ -258,14 +273,17 @@ extension PlaylistItem {
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         var title: String?
         if args.given("title") { title = try args.string("title") }
-        if args.has("scene") {
+        switch try args.source() {
+        case "scene":
             self = .scene(id: try args.sceneID("scene"), title: title)
-        } else if args.has("path") {
+        case "path":
             let path = try args.string("path")
             guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
             self = .file(URL(fileURLWithPath: path), title: title)
-        } else {
-            throw PluginMessage.Failure("needs scene or path")
+        case "url":
+            self = .stream(try args.streamURL("url"), title: title)
+        default:
+            throw PluginMessage.Failure("needs scene, path or url")
         }
     }
 }
@@ -285,12 +303,14 @@ extension Arguments {
 }
 
 extension PluginOpen {
-    /// `{path, t?, segments?, lock?, advance?}` or `{scene, paths?, t?, …}`; a scene's id may come as a number.
+    /// `{path, t?, segments?, lock?, advance?}`, `{scene, paths?, t?, …}` or `{url, t?, …}`; a scene's id may come as a
+    /// number.
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         let landing = LinkTarget(time: try args.optionalTime("t"), segments: try args.segmentList("segments") ?? [],
                                  lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
-        if args.has("scene") {
+        switch try args.source() {
+        case "scene":
             let id = try args.sceneID("scene")
             var paths: [String] = []
             if let given = args.json["paths"], !(given is NSNull) {
@@ -298,12 +318,14 @@ extension PluginOpen {
                 paths = list
             }
             self = .stashScene(id: id, paths: paths, landing: landing)
-        } else if args.has("path") {
+        case "path":
             let path = try args.string("path")
             guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
             self = .file(URL(fileURLWithPath: path), landing: landing)
-        } else {
-            throw PluginMessage.Failure("path or scene is missing")
+        case "url":
+            self = .stream(try args.streamURL("url"), landing: landing)
+        default:
+            throw PluginMessage.Failure("path, scene or url is missing")
         }
     }
 }
@@ -350,8 +372,8 @@ public enum PluginEvent: Equatable, Sendable {
     case focus
     case blur
     /// A file is open (after an `open`, a link, or the user's own choice); `source` says whether it is read from a
-    /// file or from Stash's stream.
-    case fileOpened(path: String?, scene: String?, source: PluginSource)
+    /// file (`path`) or from a stream, Stash's or a page's (`url`).
+    case fileOpened(path: String?, url: String?, scene: String?, source: PluginSource)
     /// A command sent without an id failed.
     case error(String)
     /// The current segment or the lock changed (also by playback); `current` is nil outside any segment.
@@ -378,8 +400,8 @@ public enum PluginEvent: Equatable, Sendable {
         switch self {
         case .focus, .blur:
             return nil
-        case let .fileOpened(path, scene, source):
-            return PluginJSON.encode(FileOpened(path: path, scene: scene, source: source))
+        case let .fileOpened(path, url, scene, source):
+            return PluginJSON.encode(FileOpened(path: path, url: url, scene: scene, source: source))
         case let .error(reason):
             return PluginJSON.encode(reason)
         case let .segment(current, locked):
@@ -412,14 +434,16 @@ public enum PluginEvent: Equatable, Sendable {
 
     private struct FileOpened: Encodable {
         var path: String?
+        var url: String?
         var scene: String?
         var source: PluginSource
 
-        enum CodingKeys: String, CodingKey { case path, scene, source }
+        enum CodingKeys: String, CodingKey { case path, url, scene, source }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode(path, forKey: .path)   // nil as null, not an absent key
+            try c.encode(url, forKey: .url)
             try c.encode(scene, forKey: .scene)
             try c.encode(source, forKey: .source)
         }
