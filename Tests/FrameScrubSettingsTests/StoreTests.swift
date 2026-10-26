@@ -194,6 +194,16 @@ import Testing
         #expect(cleared().isEmpty)
         #expect(posted == 0)
     }
+
+    @Test func noFiltersIsAnEmptyList() throws {
+        let store = FrameScrubSettingsStore(preferences: PreferencesStore(config: Config(), url: try conf()),
+                                            defaults: defaults())
+        try store.setValue("", forKey: "auto-color-filters")         // the flags row with every switch off
+        #expect(store.value(forKey: "auto-color-filters") == "")
+        #expect(store.validate("", forKey: "auto-color-filters") == nil)
+        try store.setValue("shadows", forKey: "auto-color-filters")
+        #expect(store.value(forKey: "auto-color-filters") == "shadows")
+    }
 }
 
 func makeTemporaryDirectory() -> URL {

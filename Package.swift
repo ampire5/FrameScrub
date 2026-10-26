@@ -43,6 +43,7 @@ let package = Package(
             name: "FrameScrubSettings",
             dependencies: [
                 "FrameScrubCore",
+                .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
                 .product(name: "StashKit", package: "StashKit"),
             ]

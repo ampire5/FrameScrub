@@ -68,19 +68,31 @@ public final class FrameScrubSettingsStore: SettingsStore {
 
     public func value(forKey key: String) -> String? {
         if key == Self.wheelFreeSpinKey { return wheelFreeSpin ? "yes" : "no" }
-        return preferences.config.text(forKey: key)
+        return preferences.config.text(forKey: key).map { Self.shown($0, forKey: key) }
     }
 
     public func defaultValue(forKey key: String) -> String {
         if key == Self.wheelFreeSpinKey { return "yes" }
-        return Config().text(forKey: key) ?? ""
+        return Config().text(forKey: key).map { Self.shown($0, forKey: key) } ?? ""
+    }
+
+    /// `auto-color-filters=none` is the flags row's empty list.
+    private static func shown(_ text: String, forKey key: String) -> String {
+        key == "auto-color-filters" && text == "none" ? "" : text
+    }
+
+    /// The window's empty list of filters as the file writes it.
+    private static func written(_ value: String, forKey key: String) -> String {
+        key == "auto-color-filters" && value.isEmpty ? "none" : value
     }
 
     /// A line break would write a second line; anything else is what `Config.set` takes.
     public func validate(_ value: String, forKey key: String) -> String? {
         if key == Self.wheelFreeSpinKey { return ["yes", "no"].contains(value) ? nil : "yes or no" }
         var config = preferences.config
-        guard value.rangeOfCharacter(from: .newlines) == nil, config.set(key, value) else { return "Not a valid value" }
+        guard value.rangeOfCharacter(from: .newlines) == nil, config.set(key, Self.written(value, forKey: key)) else {
+            return "Not a valid value"
+        }
         return nil
     }
 
@@ -91,7 +103,7 @@ public final class FrameScrubSettingsStore: SettingsStore {
             announce([key])
             return
         }
-        try preferences.update([key]) { _ = $0.set(key, value) }
+        try preferences.update([key]) { _ = $0.set(key, Self.written(value, forKey: key)) }
     }
 
     /// The level that draws the colour key for the open video: «This file», «This folder» or «Folder <name>».
