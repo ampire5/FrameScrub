@@ -106,6 +106,7 @@ As far as we know, no other Mac app goes this deep into Logitech hardware, and i
 - **Any mouse**: the wheel scrubs, the side wheel seeks, right click plays, and every button and wheel can be rebound in `input.conf`.
 - **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
 - **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
+- **Two mouse profiles**: Viewing (the bindings above) and Editing (the gesture button plays and pauses, the panel saves the frame, the middle button plays the marks). Press the SmartShift button twice, or View → Mouse Buttons for Editing, to switch; your own lines for a profile go to `input-viewing.conf` or `input-editing.conf` next to `input.conf` (`mouse-profile`).
 - **TourBox Lite**: a ready-made preset in `extras/tourbox`.
 
 **Icon**

@@ -439,6 +439,7 @@ slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left 
 slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
+mouse-profile=viewing           # viewing | editing: what the mouse's buttons do (SmartShift pressed twice, or View › Mouse Profile, switches)
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video

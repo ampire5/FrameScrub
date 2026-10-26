@@ -54,15 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return
         }
         NSApp.mainMenu = makeMainMenu()
-        let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout)
+        let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)
-        gestureBindings = GesturePreferences(layout: config.keyLayout)
+        gestureBindings = GesturePreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
                                                 folderColors: folderColors)
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
-        preferences.addObserver { [weak self] in self?.gestureBindings.layout = $0.keyLayout }
+        preferences.addObserver { [weak self] in
+            self?.gestureBindings.layout = $0.keyLayout
+            self?.gestureBindings.profile = $0.mouseProfile
+        }
         preferences.addObserver { [weak self] in self?.appIcon.apply($0.appIcon) }
         appIcon.apply(config.appIcon)
         gestureBindings.addObserver { [weak controller] in controller?.applyInputMap($0) }
@@ -518,6 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let box = item.representedObject as? CommandBox, box.command == .toggleUpscaler, let config = preferences?.config {
             item.state = config.srStill ? .on : .off
         }
+        if let box = item.representedObject as? CommandBox, box.command == .cycleMouseProfile, let config = preferences?.config {
+            item.state = config.mouseProfile == .editing ? .on : .off
+        }
         if let box = item.representedObject as? CommandBox, box.command == .toggleVibrance, let config = controller?.colorConfig {
             item.state = config.vibranceOn ? .on : .off
         }
@@ -667,6 +673,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
         viewMenu.addItem(commandItem("Find in Folder…", .playlistFilter, key: "f"))
         viewMenu.addItem(commandItem("Next Folder Order", .cyclePlaylistSort, key: "", modifiers: []))   // F9 stays an input.conf binding
+        // The SmartShift button pressed twice switches it too (MouseProfile).
+        viewMenu.addItem(commandItem("Mouse Buttons for Editing", .cycleMouseProfile, key: "", modifiers: []))
         viewItem.submenu = viewMenu
         menu.addItem(viewItem)
 

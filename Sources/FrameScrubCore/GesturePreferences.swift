@@ -11,15 +11,27 @@ public final class GesturePreferences {
     public var layout: KeyLayout {
         didSet {
             guard layout != oldValue else { return }
-            inputMap = Self.map(from: (try? String(contentsOf: url, encoding: .utf8)) ?? "", layout: layout)
+            inputMap = map(from: (try? String(contentsOf: url, encoding: .utf8)) ?? "")
             for observer in observers { observer(inputMap) }
         }
     }
 
-    public init(url: URL = Config.directory.appendingPathComponent("input.conf"), layout: KeyLayout = .classic) {
+    /// The mouse profile whose lines go on top (`mouse-profile`); a change rebuilds the map and tells the observers.
+    public var profile: MouseProfile = .viewing {
+        didSet {
+            guard profile != oldValue else { return }
+            inputMap = map(from: (try? String(contentsOf: url, encoding: .utf8)) ?? "")
+            for observer in observers { observer(inputMap) }
+        }
+    }
+
+    public init(url: URL = Config.directory.appendingPathComponent("input.conf"), layout: KeyLayout = .classic,
+                profile: MouseProfile = .viewing) {
         self.url = url
         self.layout = layout
-        inputMap = Self.map(from: (try? String(contentsOf: url, encoding: .utf8)) ?? "", layout: layout)
+        self.profile = profile
+        inputMap = InputMap(layout: layout)
+        inputMap = map(from: (try? String(contentsOf: url, encoding: .utf8)) ?? "")
     }
 
     public var bindings: [GestureBinding] { GestureBinding.bindings(in: inputMap) }
@@ -52,15 +64,16 @@ public final class GesturePreferences {
     private func edit(_ transform: (String) -> String) throws {
         let existing = FileManager.default.fileExists(atPath: url.path) ? try String(contentsOf: url, encoding: .utf8) : ""
         let edited = transform(existing)
-        inputMap = Self.map(from: edited, layout: layout)
+        inputMap = map(from: edited)
         for observer in observers { observer(inputMap) }
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try edited.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private static func map(from text: String, layout: KeyLayout) -> InputMap {
-        var map = InputMap(layout: layout)
-        map.apply(text)
-        return map
+    /// The layout, input.conf (`text`), the profile's lines and the user's `input-<profile>.conf` beside input.conf.
+    private func map(from text: String) -> InputMap {
+        let profileURL = url.deletingLastPathComponent().appendingPathComponent(profile.fileName)
+        return InputMap.build(layout: layout, userText: text, profile: profile,
+                              profileText: (try? String(contentsOf: profileURL, encoding: .utf8)) ?? "")
     }
 }

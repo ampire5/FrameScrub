@@ -31,6 +31,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var lastWheelTime: Double?
     /// `haptic-end` once per push against the first / last file of the playlist.
     private var playlistEndBump = EndBump()
+    /// The SmartShift button pressed twice in a row switches the mouse profile (`MouseProfile`).
+    private var smartShiftPresses = DoublePress()
     private let videoView = VideoView()
     private let startScreen = HomeScreenView(background: nil)
     /// The recent files on the start screen, newest first; a card's id is the file's path.
@@ -1686,6 +1688,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
             goToField.open(with: FrameNaming.timecode(core.currentSeconds))
+        case .cycleMouseProfile:
+            switchMouseProfile()
         case .toggleUpscaler:
             let enable = !core.config.srStill
             do { try preferences.update(["sr-still"]) { $0.srStill = enable } } catch {
@@ -2112,8 +2116,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             // the package's and the press would be written over later. The OSD only shows over the player.
             guard let self, byButton else { return }
             UserDefaults.standard.set(mode == .freeSpin, forKey: Self.wheelFreeSpinKey)
-            if playerInFront { showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet") }
             updatePrecisionWheel()
+            // Pressed twice in a row: the mouse profile switches (and the wheel is back in its mode).
+            if smartShiftPresses.press(at: ProcessInfo.processInfo.systemUptime) {
+                switchMouseProfile()
+            } else if playerInFront {
+                showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet")
+            }
         }
         wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
         playerWasInFront = false
@@ -2468,6 +2477,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage("Cannot save settings: \(error)", duration: 4)
         }
         showMessage("Folder order: \(sort.title)")
+    }
+
+    /// The other mouse profile, kept (`mouse-profile`); the settings' observers rebuild the bindings.
+    private func switchMouseProfile() {
+        let profile = core.config.mouseProfile.next
+        do { try preferences.update(["mouse-profile"]) { $0.mouseProfile = profile } } catch {
+            showMessage("Cannot save settings: \(error)", duration: 4)
+        }
+        showMessage("Mouse buttons: \(profile.title)")
     }
 
     /// ⌘⌫: the file goes to the Trash (or, on a volume without one, is deleted after asking), then the next one opens.
