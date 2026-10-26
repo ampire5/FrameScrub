@@ -100,6 +100,19 @@ import Testing
         #expect(playlist.files.map(\.lastPathComponent) == ["big.mp4", "a.mp4", "b.mp4", "small.mp4"])
     }
 
+    /// Home's sort turned around: oldest first, smallest first (ties still by name), names Z–A.
+    @Test func sortsTheOtherWayRound() throws {
+        let dir = try folder([("b.mp4", 10, 300), ("a.mp4", 10, 10), ("big.mp4", 500, 100), ("small.mp4", 1, 200)])
+        let listing = FolderListing.read(dir)
+        let current = dir.appendingPathComponent("a.mp4")
+        #expect(Playlist(current: current, sort: .date, ascending: true, listing: listing).files.map(\.lastPathComponent)
+                == ["b.mp4", "small.mp4", "big.mp4", "a.mp4"])
+        #expect(Playlist(current: current, sort: .size, ascending: true, listing: listing).files.map(\.lastPathComponent)
+                == ["small.mp4", "a.mp4", "b.mp4", "big.mp4"])
+        #expect(Playlist(current: current, sort: .name, ascending: false, listing: listing).files.map(\.lastPathComponent)
+                == ["small.mp4", "big.mp4", "b.mp4", "a.mp4"])
+    }
+
     @Test func filterKeepsMatchesAndTheCurrentFile() throws {
         let dir = try folder(["Beach day.mp4", "city.mp4", "beach night.mov", "forest.mp4"])
         let playlist = Playlist(current: dir.appendingPathComponent("city.mp4"), filter: "BEACH")

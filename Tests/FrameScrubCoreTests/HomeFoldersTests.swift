@@ -68,4 +68,9 @@ import Testing
         #expect(out[1].subtitle == "1:05" && out[1].progress == nil)
         #expect(out[2].subtitle == nil)
     }
+
+    @Test func homeSortIsThePlaylistOrder() {
+        #expect(HomeFolders.playlistOrder(BrowserSort(key: .date, ascending: false)) == (.date, false))
+        #expect(HomeFolders.playlistOrder(.standard) == (.name, true))
+    }
 }

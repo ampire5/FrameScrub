@@ -44,8 +44,11 @@ public struct Playlist: Equatable, Sendable {
                   listing: FolderListing.read(current.standardizedFileURL.deletingLastPathComponent(), fileManager: fileManager))
     }
 
-    /// Sorts and filters a listing read earlier (`FolderListing.read` can take seconds on a NAS).
-    public init(current: URL, sort: PlaylistSort = .name, filter: String = "", listing: FolderListing) {
+    /// Sorts and filters a listing read earlier (`FolderListing.read` can take seconds on a NAS). `ascending` turns the
+    /// sort's own direction (names A–Z, the newest and the largest first) around, as Home's sort can; equal dates or
+    /// sizes stay by name either way.
+    public init(current: URL, sort: PlaylistSort = .name, ascending: Bool? = nil, filter: String = "",
+                listing: FolderListing) {
         let me = current.standardizedFileURL
         let attributes = listing.videos
         var videos = Array(attributes.keys)
@@ -55,13 +58,13 @@ public struct Playlist: Equatable, Sendable {
         }
         switch sort {
         case .name:
-            videos.sort(by: byName)
+            videos.sort(by: ascending ?? true ? byName : { byName($1, $0) })
         case .date:
-            let date = { attributes[$0]?.date ?? .distantPast }
-            videos.sort { date($0) != date($1) ? date($0) > date($1) : byName($0, $1) }
+            let date = { attributes[$0]?.date ?? .distantPast }, up = ascending ?? false
+            videos.sort { date($0) != date($1) ? (date($0) < date($1)) == up : byName($0, $1) }
         case .size:
-            let size = { attributes[$0]?.size ?? 0 }
-            videos.sort { size($0) != size($1) ? size($0) > size($1) : byName($0, $1) }
+            let size = { attributes[$0]?.size ?? 0 }, up = ascending ?? false
+            videos.sort { size($0) != size($1) ? (size($0) < size($1)) == up : byName($0, $1) }
         }
         totalCount = videos.count
         let needle = filter.trimmingCharacters(in: .whitespaces)

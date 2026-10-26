@@ -8,8 +8,8 @@ import HomeScreenModel
 /// at once on the way back. Clicks and menus go back to the window.
 @MainActor final class FrameScrubHomeSource: HomeSource {
     weak var view: HomeBrowserView?
-    /// A video card opened (any click: one window), from Recent or from a folder.
-    var onOpen: ((URL, BrowserLocation) -> Void)?
+    /// A video card opened (any click: one window), from Recent or from a folder, with the sort it was shown in.
+    var onOpen: ((URL, BrowserLocation, BrowserSort) -> Void)?
     /// A card's menu item: `finder`, `copy`, and Recent's `remove`.
     var onMenu: ((URL, String) -> Void)?
 
@@ -197,7 +197,7 @@ import HomeScreenModel
 
     func open(_ entry: BrowserEntry, in location: BrowserLocation, sort: BrowserSort, how: HomeClick) {
         guard entry.isFile else { return }
-        onOpen?(entry.url, location)
+        onOpen?(entry.url, location, sort)
     }
 
     func rename(_ entry: BrowserEntry, to name: String) async throws -> BrowserEntry {

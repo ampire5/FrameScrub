@@ -59,4 +59,13 @@ public enum HomeFolders {
             return e
         }
     }
+
+    /// Home's sort of a folder as the playlist's order: › and ‹ go through the videos as the grid showed them.
+    public static func playlistOrder(_ sort: BrowserSort) -> (sort: PlaylistSort, ascending: Bool) {
+        switch sort.key {
+        case .name: (.name, sort.ascending)
+        case .date: (.date, sort.ascending)
+        case .size: (.size, sort.ascending)
+        }
+    }
 }

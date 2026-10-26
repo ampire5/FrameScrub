@@ -44,7 +44,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var titleBeforeHome: String?
     private var hasShownHome = false
     /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
-    private var folderReturn: (folder: URL, file: URL)?
+    /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
+    private var folderReturn: (folder: URL, file: URL, order: (sort: PlaylistSort, ascending: Bool))?
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
     /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
@@ -291,10 +292,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
-    func open(_ url: URL, landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+    /// `homeFolder`: the folder it was opened from in Home and Home's order of it (closing goes back there).
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, (sort: PlaylistSort, ascending: Bool))? = nil,
+              then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
-        returnTab = .recent
-        folderReturn = nil
+        returnTab = homeFolder == nil ? .recent : .folders
+        folderReturn = homeFolder.map { (folder: $0.0, file: url, order: $0.1) }
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -778,7 +781,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
-        let back = folderReturn.map { r in core.url.flatMap { $0.deletingLastPathComponent() == r.folder ? (folder: r.folder, file: $0) : nil } ?? r }
+        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0, order: r.order) : nil } ?? r }
         let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
@@ -862,12 +865,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
         let view = HomeView(source: source)
         source.view = view.browser
-        source.onOpen = { [weak self] url, location in   // not looked up: a share answers over the network
+        source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
             guard let self else { return }
-            self.open(url)
             if case .folder(let folder) = location {
-                self.returnTab = .folders
-                self.folderReturn = (folder, url)
+                self.open(url, homeFolder: (folder, HomeFolders.playlistOrder(sort)))   // the playlist in the grid's order
+            } else {
+                self.open(url)
             }
         }
         source.onMenu = { [weak self] url, item in self?.recentMenuChosen(url, item) }
@@ -2467,7 +2470,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func rebuildPlaylist(around url: URL) {
         let folder = folder(of: url)
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
-        playlist = Playlist(current: url, sort: core.config.playlistSort, filter: playlistFilter, listing: listing)
+        // A folder opened from Home goes in Home's order; any other in `playlist-sort`'s.
+        let order = homeOrder(around: url)
+        playlist = Playlist(current: url, sort: order?.sort ?? core.config.playlistSort, ascending: order?.ascending,
+                            filter: playlistFilter, listing: listing)
         updatePlaylistPanel()
     }
 
@@ -2482,7 +2488,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         listRowIndices = []
-        playlistPanel.showSort(core.config.playlistSort)
+        playlistPanel.showSort(homeOrder(around: playlistAnchor)?.sort ?? core.config.playlistSort)
         guard let playlist else { return }
         playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
     }
@@ -2607,7 +2613,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file the playlist is built around (`FolderWait.anchor`).
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
+    /// Home's order of the folder `file` is in, while that folder is the one opened from Home.
+    private func homeOrder(around file: URL?) -> (sort: PlaylistSort, ascending: Bool)? {
+        guard let r = folderReturn, let file, folder(of: file) == r.folder.standardizedFileURL else { return nil }
+        return r.order
+    }
+
     private func setPlaylistSort(_ sort: PlaylistSort) {
+        if let anchor = playlistAnchor, homeOrder(around: anchor) != nil {   // the user's choice here replaces the order Home gave
+            folderReturn?.order = (sort, sort == .name)
+            rebuildPlaylist(around: anchor)
+        }
         guard sort != core.config.playlistSort else { return }
         do { try preferences.update(["playlist-sort"]) { $0.playlistSort = sort } } catch {   // applyConfig rebuilds the list
             showMessage("Cannot save settings: \(error)", duration: 4)
