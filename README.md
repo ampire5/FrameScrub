@@ -32,18 +32,18 @@ For editors, reviewers, animators, photographers pulling stills from video — a
 - **Frames out at full quality.** Save the frame you're on as JPEG, 10-bit HEIC, 16-bit PNG or TIFF in the source colour space (BT.709, HLG, PQ), or export every frame of a range — optionally only the sharpest ones, skipping blurred frames and near-duplicates.
 - **Cut without re-encoding.** Mark ins and outs, save them as clips — separately, joined, or everything *except* the marks — snapped to keyframes, losslessly.
 - **NAS-friendly.** One shared read cache, MP4 indexes from the header, background index scans for MKV/WebM/TS: seeking over SMB stays quick on high-bitrate files.
-- **Your library, your hands.** A start screen with Recent and your [Stash](https://github.com/stashapp/stash) library, mpv-style key bindings, Logitech mouse support with MX Master 4 haptics, a TourBox Lite preset.
+- **Your library, your hands.** Home with Recent, your folders and disks with video thumbnails, and your [Stash](https://github.com/stashapp/stash) library, mpv-style key bindings, Logitech mouse support with MX Master 4 haptics, a TourBox Lite preset.
 
 ## Made for big collections
 
 FrameScrub is built for folders of hundreds of videos on a NAS.
 
-- **It remembers every file.** Each video reopens where you stopped, with its A-B range; the start screen lists Recent videos with how far you got.
+- **It remembers every file.** Each video reopens where you stopped, with its A-B range; Home lists Recent videos with how far you got.
 - **A folder is a playlist.** `F8` shows it, `⌘F` filters it by name, `F9` sorts it by name, newest or largest, and the next video opens on its own at the end.
 - **Cull without leaving the player.** `⌘⌫` moves the video to the Trash and opens the next one (on a share without a Trash it asks first).
 - **Shares are first-class.** One read cache per file for every decoder keeps seeks fast over SMB; a share that is asleep or gone gets a clear message, and Return tries again.
 - **Black bars are found and cropped** across the whole file, so letterboxed videos fill the window.
-- **Your Stash library** as a second start screen, with progress reported back (see [Stash](#stash)).
+- **Your Stash library** in Home's sidebar, with progress reported back (see [Stash](#stash)).
 
 ## Numbers
 
@@ -68,7 +68,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 </tr>
 <tr>
 <td><b>Stats panel</b> (<code>i</code>). Container, codec, profile, bit depth, the decoder in use (VideoToolbox, FFmpeg, software), exact frame index, sharpness, scene change, scaler, colour.</td>
-<td><b>Start screen.</b> Recent videos with where you stopped and how far you got; resume positions are remembered per file.</td>
+<td><b>Home.</b> Recent videos with where you stopped and how far you got, and your folders with thumbnails; resume positions are remembered per file.</td>
 </tr>
 <tr>
 <td colspan="2"><img src="docs/images/cheatsheet.webp" alt="Keys cheat sheet"></td>
@@ -141,7 +141,7 @@ The most useful default (classic) keys. `?` shows every key in effect; **[docs/r
 
 <img src="docs/images/stash.webp" alt="Stash library inside FrameScrub">
 
-FrameScrub plays your **[Stash](https://github.com/stashapp/stash)** library natively. Set the address in Settings → Stash and the start screen gets a **Recent | Stash** switch with the Stash web UI in the window.
+FrameScrub plays your **[Stash](https://github.com/stashapp/stash)** library natively. Set the address in Settings → Stash and Home's sidebar gets **Stash › Library** with the Stash web UI in the window.
 
 - ▶ on a scene opens the file in FrameScrub **straight from its share** — not a transcoded stream — mounting the share if needed (Windows drive letters and `\\server\share` paths are mapped for you).
 - Previous/next and autoadvance follow the Stash list you came from: its filter, sort and pages.
@@ -240,7 +240,7 @@ Requests that answer (they need a file open, else they reject):
 
 ### Playlists from a page
 
-`playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?, t?} | {path, title?, t?} | {url, title?, t?}, …]`, 1…2000 of them, and one bad item refuses the whole call. An item's `t` (seconds, not negative, as `open`'s) is where it starts every time it opens, by index, previous/next or autoadvance, instead of the position remembered for it (`t: 0` always starts from the beginning); without `t` it resumes as any file does. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
+`playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?, t?} | {path, title?, t?} | {url, title?, t?}, …]`, 1…2000 of them, and one bad item refuses the whole call. An item's `t` (seconds, not negative, as `open`'s) is where it starts every time it opens, by index, previous/next or autoadvance, instead of the position remembered for it (`t: 0` always starts from the beginning); without `t` it resumes as any file does. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, Home, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
 
 An `open({path | url, …})` and each `{path | url}` item may also carry `frames: "/absolute/folder"`: where frames saved from it (S, the range export) and its clips go, instead of `frame-dir`, created when needed (the fallback folder when it cannot be written). Naming a folder writes on this Mac's disk, so it needs the same one-time consent as a page's local files (`plugin-open-allowed`). The "Saved to …" message then gives the whole path; a click on it shows the file in the Finder.
 
