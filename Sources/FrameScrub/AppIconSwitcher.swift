@@ -27,10 +27,12 @@ final class AppIconSwitcher {
         picker?.show()
     }
 
-    /// `horse`, the bundled alternates, the pictures in ~/.config/framescrub/icons and `current` when it is a path,
-    /// each with its picture (the bundle's own for `horse` without a file of that name).
-    static func choices(current: String) -> [(word: String, image: NSImage?)] {
-        var words = [AppIcon.bundle] + AppIcon.alternates.filter { bundled($0) != nil }
+    /// `horse` and the bundled alternates (Built-in), the pictures in ~/.config/framescrub/icons and `current` when it
+    /// is a path (Yours), each with its file (the bundle's own for `horse` without a file of that name); the picker makes
+    /// their thumbnails off the main thread.
+    static func choices(current: String) -> [IconChoice] {
+        let builtIn = [AppIcon.bundle] + AppIcon.alternates.filter { bundled($0) != nil }
+        var words = builtIn
         let files = (try? FileManager.default.contentsOfDirectory(at: AppIcon.userDirectory, includingPropertiesForKeys: nil)) ?? []
         let own = files.filter { ["png", "icns"].contains($0.pathExtension.lowercased()) }
             .compactMap { AppIcon.normalized($0.deletingPathExtension().lastPathComponent) }
@@ -39,7 +41,7 @@ final class AppIconSwitcher {
         return words.map { word in
             let url = AppIcon.url(for: word, bundled: bundled)
                 ?? (word == AppIcon.bundle ? Bundle.main.url(forResource: "AppIcon", withExtension: "icns") : nil)
-            return (word: word, image: url.map { NSImage(byReferencing: $0) })
+            return IconChoice(word: word, file: url, section: builtIn.contains(word) ? "Built-in" : "Yours")
         }
     }
 
