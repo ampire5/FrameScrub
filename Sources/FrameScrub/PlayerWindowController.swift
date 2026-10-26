@@ -418,7 +418,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The rest of `openFile` once the file is read: the player takes it and the window follows.
     private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
-        openCore(prepared, fallbackPosition: fallbackPosition)
+        openCore(prepared, fallbackPosition: fallbackPosition, landingTime: landing?.time)
         core.sceneInfo = pageSceneInfos[url]   // a page's name for it: its frames and clips are named so
         core.frameFolder = pageFrameFolders[url]
         StartupTrace.mark("core opened")
@@ -464,10 +464,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
     /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
-    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?) {
+    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?, landingTime: Double? = nil) {
         holdsSegmentEvents = true
         heldSegmentEvent = nil
-        core.open(prepared, fallbackPosition: fallbackPosition)
+        core.open(prepared, fallbackPosition: fallbackPosition, landingTime: landingTime)
         holdsSegmentEvents = false
         pluginFileOpened()
         if let held = heldSegmentEvent {
@@ -1308,6 +1308,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onEnterExit = { [weak self] in
             self?.showCursorAfterScrub()
             self?.updatePrecisionWheel()
+        }
+        let transport = seekBar.transport
+        transport.onPrevious = { [weak self] in self?.runFromSeekBar(.playlistPrev) }
+        transport.onNext = { [weak self] in self?.runFromSeekBar(.playlistNext) }
+        transport.onToggleMute = { [weak self] in self?.runFromSeekBar(.cycleMute) }
+        transport.onVolume = { [weak self] in
+            self?.core.setVolume($0)
+            self?.revealSeekBar()
         }
         core.onIndexReady = { [weak self] in
             self?.previewProvider?.updateIndex($0)
@@ -2374,6 +2382,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The panel shows the page's list while there is one, else the folder.
     private func updatePlaylistPanel() {
+        defer { updateTransport() }   // the seek bar's ⏮ ⏭ follow the same list
         if let listPlaylist {
             listRowIndices = listPlaylist.indices(matching: playlistFilter)
             playlistPanel.showList(name: listPlaylist.name)
@@ -2422,8 +2431,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         hud.show(openedHUD(direction > 0 ? .playlistNext : .playlistPrevious))
     }
 
-    /// Opens the list's item at `index` (a scene's file is looked for only now). One that cannot be opened says so on
-    /// screen and to the pages (`error`); at autoadvance (`plays`) the item after it is tried once.
+    /// Opens the list's item at `index` (a scene's file is looked for only now), at the item's own time when the page
+    /// gave one (over the remembered position). One that cannot be opened says so on screen and to the pages
+    /// (`error`); at autoadvance (`plays`) the item after it is tried once.
     private func openListItem(at index: Int, plays: Bool = false, retried: Bool = false) {
         guard let item = listPlaylist?.select(index) else { return }
         updatePlaylistPanel()   // a scene opens later: the row moves now
@@ -2435,21 +2445,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             openListItem(at: index + 1, plays: true, retried: true)
             showMessage("Cannot open \(title): skipped", duration: 3)
         }
+        let landing = item.time.map { LinkTarget(time: $0) }
         switch item {
-        case let .file(url, _), let .stream(url, _):
+        case let .file(url, _, _), let .stream(url, _, _):
             returnTab = .recent
             stashScene = nil
             stashOpens += 1   // a scene still being looked for must not replace this file
             queueGate.cancel()
-            openFile(url) { [weak self] outcome in
+            openFile(url, landing: landing) { [weak self] outcome in
                 switch outcome {
                 case .opened: if plays { self?.core.play() }
                 case .failed: failed()
                 case .superseded: break
                 }
             }
-        case let .scene(id, _):
-            openStashScene(StashScene(id: id, paths: []), plays: plays, onFailure: failed)
+        case let .scene(id, _, _):
+            openStashScene(StashScene(id: id, paths: []), landing: landing, plays: plays, onFailure: failed)
         }
     }
 
@@ -2733,6 +2744,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.update(frameCount: core.frameCount, position: core.position, cached: core.cache.cachedRanges(),
                        loopA: core.loopA, loopB: core.loopB, marks: marks.segments.map { $0.start...$0.end },
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
+        updateTransport()
+    }
+
+    /// The seek bar's ⏮ ⏭ and volume, as the playlist and the player are now; the controls touch only what changed.
+    /// ⏮ ⏭ follow < and >: a page's list, Stash's queue (whose ends only Stash knows), else the folder.
+    private func updateTransport() {
+        let (previous, next): (Bool, Bool) = if let listPlaylist {
+            (listPlaylist.previous != nil, listPlaylist.next != nil)
+        } else if followsStashQueue {
+            (true, true)
+        } else {
+            (playlist?.previous != nil, playlist?.next != nil)
+        }
+        seekBar.transport.update(hasPrevious: previous, hasNext: next, volume: core.volume, muted: core.isMuted)
+    }
+
+    /// A click on a seek bar control: the command as its key runs it, silently (the bar plays no haptics), and the
+    /// bar stays up.
+    private func runFromSeekBar(_ command: Command) {
+        runInput(command, from: .menu)
+        updateTransport()
+        revealSeekBar()
     }
 
     // MARK: Slots and plugin pages
@@ -3067,9 +3100,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
                                  then apply: @escaping () -> Void) {
         let apply = { [weak self] in self?.whenFramesAllowed(request, origin: origin, verb: verb, then: apply) ?? () }
-        let streams = items.compactMap { item -> URL? in if case let .stream(url, _) = item { url } else { nil } }
+        let streams = items.compactMap { item -> URL? in if case let .stream(url, _, _) = item { url } else { nil } }
         guard !streams.contains(where: isStashURL) else { pluginFailed(request, Self.stashURLRefusal(verb)); return }
-        let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
+        let files = items.compactMap { item -> URL? in if case let .file(url, _, _) = item { url } else { nil } }
         switch pluginPolicy.decision(forOpening: files, from: origin) {
         case .allowed: apply()
         case .notMedia: pluginFailed(request, "\(verb): not a video file")
@@ -3302,6 +3335,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func player(_ player: PlayerCore, showFeedback feedback: Feedback) {
         hud.show(feedback)
+        switch feedback {
+        case .volume, .mute: updateTransport()   // a key's change shows on the slider
+        default: break
+        }
     }
 
     private func revealFrames() {

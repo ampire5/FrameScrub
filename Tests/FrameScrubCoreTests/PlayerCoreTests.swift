@@ -341,6 +341,43 @@ final class HapticLog {
         #expect(nearEnd.position == 0)
     }
 
+    /// An open that lands on a time of its own (a page's `t`, even 0) does not seek to the remembered position first
+    /// nor announce it; the remembered A-B range still comes back.
+    @Test func aLandingTimeSkipsTheRememberedPosition() throws {
+        let url = Fixtures.url(Fixtures.h264)
+        let store = temporaryStore()
+        store.save(ResumeEntry(position: 10, loopA: 2, loopB: 3), for: url)
+        let delegate = RecordingDelegate()
+        let player = PlayerCore(config: Config(), enableAudio: false, fallbackRoot: makeTemporaryDirectory(), resumeStore: store)
+        player.delegate = delegate
+        defer { player.close() }
+        try player.open(url, fallbackPosition: 5, landingTime: 0)
+        #expect(player.position == 0)
+        #expect(player.loopA == 60 && player.loopB == 90)
+        #expect(!delegate.messages.contains { $0.hasPrefix("Resumed at") })
+        player.applyLanding(LinkTarget(time: 0))
+        #expect(player.position == 0)
+    }
+
+    /// The seek bar's volume slider: an absolute level, clamped, shown as a key's change; moving it unmutes.
+    @Test func volumeSliderSetsTheLevelAndUnmutes() throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        player.setVolume(42.4)
+        #expect(player.volume == 42.4 && !player.isMuted)
+        #expect(delegate.feedback.last == .volume(42))
+        player.perform(.cycleMute)
+        #expect(player.isMuted)
+        player.setVolume(150)
+        #expect(player.volume == 100 && !player.isMuted)
+        let shown = delegate.feedback.count
+        player.setVolume(100)   // nothing changed: nothing shown
+        player.setVolume(.nan)
+        #expect(delegate.feedback.count == shown && player.volume == 100)
+        player.setVolume(-5)
+        #expect(player.volume == 0)
+    }
+
     @Test func nearTheEndStartsFromTheBeginning() throws {
         let store = temporaryStore()
         store.save(ResumeEntry(position: 19), for: Fixtures.url(Fixtures.h264))
