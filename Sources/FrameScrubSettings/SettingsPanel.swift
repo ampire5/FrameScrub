@@ -87,6 +87,12 @@ public struct SettingsPanelContext {
         model?.refreshFolderOverrides()
     }
 
+    /// Closes the window if it is open; a field being edited is written first (the window's close does that).
+    public static func close() {
+        guard let window = controller?.window, window.isVisible else { return }
+        controller?.close()
+    }
+
     /// The player switched the wheel mode (SmartShift): the row follows. Nothing before the window was first shown.
     public static func wheelFreeSpinDidChange() {
         store?.wheelFreeSpinDidChange()

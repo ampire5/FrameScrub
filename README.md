@@ -373,6 +373,8 @@ Settings (`⌘,`) is the same window as Loupe's ([SettingsKit](https://github.co
 - **Key Bindings** lists the keys and the mouse buttons that do something, with where each comes from (built-in, the mouse profile, `input.conf`, `input-viewing.conf` / `input-editing.conf`). «+» binds a key you press or a button and how it is pressed (tap, hold, double tap, with the wheel, with the right button), «−» switches a binding off. An edit goes to the file that takes effect: a button the current mouse profile sets is written to that profile's file, anything else to `input.conf`. The wheel, trackpad and pinch gestures have their own table on Mouse & Trackpad.
 - **Colour** shows, under vibrance and auto colour, the value the open video itself or its folder (or a folder above it) sets — «This file: On», «This folder: 0.3» — with «Use Default» to drop it there.
 
+![The Mouse & Trackpad page of Settings](docs/images/settings.webp)
+
 The window edits two plain-text files, keeping your comments:
 
 - `~/.config/framescrub/framescrub.conf` — mpv-style `key=value` settings;
