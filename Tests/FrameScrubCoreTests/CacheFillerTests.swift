@@ -236,6 +236,28 @@ import Testing
         #expect(await eventually { filler.poolReleases >= 1 })   // the forward worker's
     }
 
+    /// Rocking one frame forward and back (2026-10-26): each turn tilted the window between 25% and 75% behind, so
+    /// half of it was evicted and decoded again on every step: ~1400–2800 frames and 100 seeks for 200 steps.
+    @Test func rockingAFrameBackAndForthKeepsTheWindow() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 300)
+        let inserted = InsertLog()
+        filler.onInsert = { inserted.append($0) }
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .paused, direction: 1)
+        try await Task.sleep(for: .seconds(2))   // the window is full
+        let before = inserted.withLock { $0.count }
+        var n = 300
+        for i in 0..<100 {
+            let direction = i % 2 == 0 ? -1 : 1
+            n += direction
+            filler.setFocus(n, mode: .paused, direction: direction)
+            #expect(await eventually(timeout: 5) { cache.contains(n) })
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(inserted.withLock { $0.count } - before < 20)
+    }
+
     @Test func steppingForwardKeepsTheDecoders() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 100)
         filler.start()
