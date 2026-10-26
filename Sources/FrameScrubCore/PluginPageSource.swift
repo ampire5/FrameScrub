@@ -1,6 +1,6 @@
 import Foundation
 
-/// Who asked for a plugin page: the `plugin-url` setting the user wrote, or a `framescrub://` link anyone could have
+/// Who asked for a plugin page: a `plugin=` line the user wrote, or a `framescrub://` link anyone could have
 /// made. The panel loads `http` and `https` pages from either; a `file:` page only from the setting.
 public enum PluginPageSource: Equatable, Sendable {
     case settings

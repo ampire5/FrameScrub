@@ -14,6 +14,8 @@ final class VideoView: NSView {
     var onScroll: ((NSEvent) -> Void)?
     var onMagnify: ((NSEvent) -> Void)?
     var onMouseButton: ((String) -> Void)?
+    /// A single left click on the picture (the slots over the video hide).
+    var onLeftClick: (() -> Void)?
     /// `MBTN_MID`, `MBTN_BACK`, `MBTN_FORWARD` went down: the button, the keyboard modifiers, whether the right button
     /// is held, and the event time.
     var onOtherButton: ((MouseButton, Modifiers, Bool, Double) -> Void)?
@@ -358,6 +360,7 @@ final class VideoView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 1 { onLeftClick?() }
         if event.clickCount == 2 { onMouseButton?("MBTN_LEFT_DBL") }
     }
 

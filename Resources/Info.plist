@@ -17,7 +17,7 @@
     <!-- The Stash server (stash-url) is plain HTTP on the local network. -->
     <key>NSAppTransportSecurity</key>
     <dict>
-        <!-- A plugin page (plugin-url) or a Stash stream may be plain HTTP on a VPN address, which ATS does not count as
+        <!-- A plugin page (plugin=) or a Stash stream may be plain HTTP on a VPN address, which ATS does not count as
              local. NSAllowsArbitraryLoads alone: with NSAllowsLocalNetworking beside it, macOS ignores it. -->
         <key>NSAllowsArbitraryLoads</key><true/>
     </dict>

@@ -40,6 +40,12 @@ public enum PluginMessage: Equatable, Sendable {
     case marks
     case playlist
     case frame(PluginFrameRequest)
+    /// Hide the page's slot; keys go to the player.
+    case hide
+    /// The playlist becomes `items` (`playlist(items, {index, name})` in the page), opened at `index`.
+    case setPlaylist(items: [PlaylistItem], index: Int, name: String?)
+    /// `items` go at the end of the playlist.
+    case enqueue([PlaylistItem])
 
     /// Why a message was refused; the text reaches the page (a rejected promise, or an `error` event).
     public struct Failure: Error, Equatable, Sendable, CustomStringConvertible {
@@ -105,6 +111,21 @@ public enum PluginMessage: Equatable, Sendable {
             return .playlist
         case "frame":
             return .frame(try PluginFrameRequest(args))
+        case "hide":
+            return .hide
+        case "setPlaylist":
+            let items = try args.playlistItems("items")
+            var index = 0
+            if args.given("index") {
+                let i = try args.number("index")
+                guard i == i.rounded(), i >= 0, i < Double(items.count) else { throw Failure("index is out of range") }
+                index = Int(i)
+            }
+            var name: String?
+            if args.given("name") { name = try args.string("name") }
+            return .setPlaylist(items: items, index: index, name: name)
+        case "enqueue":
+            return .enqueue(try args.playlistItems("items"))
         default:
             throw Failure("unknown command")
         }
@@ -221,6 +242,55 @@ struct Arguments {
     }
 }
 
+extension Arguments {
+    /// `[{scene, title?} | {path, title?}, …]`: not empty, at most `ListPlaylist.maxItems`; one bad item refuses the
+    /// whole list, naming its position.
+    func playlistItems(_ key: String) throws(Failure) -> [PlaylistItem] {
+        let list = try requiredObjectList(key)
+        guard !list.isEmpty else { throw Failure("\(key) is empty") }
+        guard list.count <= ListPlaylist.maxItems else { throw Failure("too many \(key)") }
+        var items: [PlaylistItem] = []
+        for (i, json) in list.enumerated() {
+            do {
+                items.append(try PlaylistItem(Arguments(json)))
+            } catch {
+                throw Failure(error.reason.hasPrefix("needs") ? "\(key)[\(i)] \(error.reason)" : "\(key)[\(i)]: \(error.reason)")
+            }
+        }
+        return items
+    }
+}
+
+extension PlaylistItem {
+    init(_ args: Arguments) throws(PluginMessage.Failure) {
+        var title: String?
+        if args.given("title") { title = try args.string("title") }
+        if args.has("scene") {
+            self = .scene(id: try args.sceneID("scene"), title: title)
+        } else if args.has("path") {
+            let path = try args.string("path")
+            guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
+            self = .file(URL(fileURLWithPath: path), title: title)
+        } else {
+            throw PluginMessage.Failure("needs scene or path")
+        }
+    }
+}
+
+extension Arguments {
+    /// A Stash scene id: a non-empty string, or a number.
+    func sceneID(_ key: String) throws(Failure) -> String {
+        let id: String
+        switch json[key] {
+        case let text as String: id = text
+        case let number as NSNumber where CFGetTypeID(number) != CFBooleanGetTypeID(): id = number.stringValue
+        default: throw Failure("\(key) must be a string or a number")
+        }
+        guard !id.isEmpty else { throw Failure("\(key) is empty") }
+        return id
+    }
+}
+
 extension PluginOpen {
     /// `{path, t?, segments?, lock?, advance?}` or `{scene, paths?, t?, …}`; a scene's id may come as a number. The older
     /// single `seg: [a, b]` counts as a one-item `segments` when that is absent (or `null`).
@@ -229,14 +299,8 @@ extension PluginOpen {
         if !args.given("segments"), let pair = try args.optionalSegmentPair("seg") { segments = [pair] }
         let landing = LinkTarget(time: try args.optionalTime("t"), segments: segments, lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
-        if let scene = args.json["scene"] {
-            let id: String
-            switch scene {
-            case let text as String: id = text
-            case let number as NSNumber: id = number.stringValue
-            default: throw PluginMessage.Failure("scene must be a string or a number")
-            }
-            guard !id.isEmpty else { throw PluginMessage.Failure("scene is empty") }
+        if args.has("scene") {
+            let id = try args.sceneID("scene")
             var paths: [String] = []
             if let given = args.json["paths"], !(given is NSNull) {
                 guard let list = given as? [String] else { throw PluginMessage.Failure("paths must be an array of strings") }
@@ -256,10 +320,13 @@ extension PluginOpen {
 /// A message with the id the page's `request()` gave it; a message sent with a verb has none and expects no reply.
 public struct PluginRequest: Equatable, Sendable {
     public var id: Int?
+    /// Which page posted it, when several are open (one per slot); the reply goes back to that page.
+    public var page: Int?
     public var message: PluginMessage
 
-    public init(id: Int? = nil, message: PluginMessage) {
+    public init(id: Int? = nil, page: Int? = nil, message: PluginMessage) {
         self.id = id
+        self.page = page
         self.message = message
     }
 
@@ -300,6 +367,8 @@ public enum PluginEvent: Equatable, Sendable {
     case segment(current: Int?, locked: Bool)
     /// The user pressed (or ran) a key bound to the page's action `name`, with the frame on screen and its time.
     case action(name: String, t: Double, frame: Int)
+    /// The page's slot changed: where it is, how it lies over the video, shown or not, keyboard or not.
+    case panel(PanelInfo)
 
     public var name: String {
         switch self {
@@ -309,6 +378,7 @@ public enum PluginEvent: Equatable, Sendable {
         case .error: "error"
         case .segment: "segment"
         case .action: "action"
+        case .panel: "panel"
         }
     }
 
@@ -325,6 +395,8 @@ public enum PluginEvent: Equatable, Sendable {
             return PluginJSON.encode(SegmentChanged(current: current, locked: locked))
         case let .action(name, t, frame):
             return PluginJSON.encode(ActionPressed(name: name, t: t, frame: frame))
+        case let .panel(info):
+            return info.json
         }
     }
 

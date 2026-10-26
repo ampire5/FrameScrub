@@ -101,12 +101,19 @@ public struct PluginPlaylist: Codable, Equatable, Sendable {
     /// The folder's videos before the filter.
     public var total: Int
     public var name: String
+    /// What the playlist is: the open file's folder, a list a page gave, or the Stash queue.
+    public var source: Source
 
-    public init(index: Int, count: Int, total: Int, name: String) {
+    public enum Source: String, Codable, Sendable {
+        case folder, list, stash
+    }
+
+    public init(index: Int, count: Int, total: Int, name: String, source: Source = .folder) {
         self.index = index
         self.count = count
         self.total = total
         self.name = name
+        self.source = source
     }
 
     public var json: String? { PluginJSON.encode(self) }
@@ -143,7 +150,7 @@ public struct PluginFrameRequest: Equatable, Sendable {
         }
         if let size = try args.optionalNumber("maxSize") {
             guard size >= Double(Self.smallestSize) else { throw PluginMessage.Failure("maxSize must be at least \(Self.smallestSize)") }
-            maxSize = min(Int(size), Self.largestSize)
+            maxSize = Int(min(size, Double(Self.largestSize)))
         } else {
             maxSize = Self.largestSize
         }

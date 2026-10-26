@@ -13,8 +13,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var inputMap: InputMap
     /// The user's bindings (input.conf and the defaults), before any page action key is added.
     private var baseInputMap: InputMap
-    /// The actions the page in the panel declared; dropped when the page goes away.
-    private var pluginActions: [PluginAction] = []
+    /// The actions each plugin page declared (by its token), in the order the pages first declared them: a key goes to
+    /// the page that claimed it first. Dropped when the page goes away.
+    private var pluginActions: [(page: Int, actions: [PluginAction])] = []
     private let gestures: GestureRouter
     /// The bound mouse buttons, from AppKit and from the Logitech mouse (`mouseBridge`).
     private let buttons: MouseButtonRouter
@@ -65,21 +66,25 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let osd = OverlayView(fontSize: 15)
     /// The stats (`i`): sections of the file on screen, in the top right corner; made in `buildViews`.
     private var statsPanel: InfoPanelController!
-    /// A web page beside the video that drives the player (View › Show Plugin Panel, `plugin=` in a link).
-    private let pluginPanel = PluginPanel()
-    /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from `plugin-url`.
+    /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
+    private var slots: SlotsController!
+    /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from the configured plugins.
     private var pluginPolicy = PluginPolicy()
-    private var videoTrailing: NSLayoutConstraint!
-    /// The panel's width (`plugin-width`); a drag of its edge writes the setting once the drag rests.
-    private var pluginWidth: NSLayoutConstraint!
-    private var pluginWidthWrite: Timer?
+    /// The video's edges in the window, set from the slots' layout (pinned slots take room from it).
+    private var videoEdges: [NSLayoutConstraint] = []
+    /// The part of the video no overlay slot covers: the seek bar, the OSD and the stats keep to it.
+    private let visibleArea = NSLayoutGuide()
+    private var visibleEdges: [NSLayoutConstraint] = []
+    private var visibleVideoRect: CGRect?
+    /// Each slot's setting is written once its changes rest for 0.5 s.
+    private var slotWrites: [SlotEdge: Timer] = [:]
     /// Decodes frames for the page's `frame` requests; made on the first request for the open file.
     private var pluginGrabber: PluginFrameGrabber?
     /// While `core.open` runs: segment events wait until the page has heard `fileopened` (Ruling R20).
     private var holdsSegmentEvents = false
     /// The last segment event raised while held; dispatched right after `fileopened`.
     private var heldSegmentEvent: PluginEvent?
-    private var lastPluginPush: TimeInterval = 0
+    private var pushPacing = PluginPushPacing()
     /// The open file's name and folder at once, its size and date once read off the main thread.
     private var fileFacts: FileFacts?
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
@@ -89,12 +94,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let seekBar = SeekBarView()
     private let backButton = BackButton()
     private let previewView = PreviewView()
+    /// The playlist's view; shown in whichever slot holds the playlist.
     private let playlistPanel = PlaylistPanelView()
-    private let playlistZone = HoverZoneView()   // the panel's area: while the playlist is on, the pointer there slides it in
-    private var playlistOn = false { didSet { updatePrecisionWheel() } }
     /// The playlist panel's name filter (kept from file to file until cleared).
     private var playlistFilter = ""
-    private var hidePlaylistWork: DispatchWorkItem?
     private let keyHelp = KeyHelpView()
     private var previewProvider: FrameScrubCore.PreviewProvider?
     private var previewImage: CGImage?
@@ -122,6 +125,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The app's clip queue, shared by every file opened in this window.
     func setClipQueue(_ queue: ClipQueue) { core.clipQueue = queue }
     private var playlist: Playlist?
+    /// A page's list (`playlist(...)`, `enqueue(...)`); while set it is the playlist instead of the folder. Opening a
+    /// file from elsewhere (Finder, Home, a link, a page's `open`) drops it.
+    private var listPlaylist: ListPlaylist?
+    /// The list's items shown in the panel, by the filter: row → item.
+    private var listRowIndices: [Int] = []
     /// The open file's folder as last read; the playlist is sorted and filtered from it.
     private var folderListing: FolderListing?
     /// The folder read running in the background (a NAS folder can take seconds).
@@ -256,11 +264,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// segment and plugin page. A scene's open is asynchronous: true means it was begun.
     @discardableResult
     func open(_ target: OpenLink.Target) -> Bool {
-        if let plugin = target.plugin { showPlugin(plugin, from: .link) }
+        if let plugin = target.plugin { showLinkPlugin(plugin) }
         switch target.subject {
         case let .file(url):
             return open(url, landing: target.landing)
         case let .stashScene(id):
+            dropListPlaylist()
             openStashScene(id: id, paths: [], landing: target.landing)
             return true
         }
@@ -270,6 +279,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// where a link asked to land in it.
     @discardableResult
     func open(_ url: URL, landing: LinkTarget? = nil) -> Bool {
+        dropListPlaylist()
         returnTab = .recent
         stashScene = nil
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -369,7 +379,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pluginFileOpened()
         if let held = heldSegmentEvent {
             heldSegmentEvent = nil
-            pluginPanel.dispatch(held)
+            dispatchToPages(held)
             pushPluginState(force: true)
         }
     }
@@ -455,7 +465,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// ▶ on a Stash scene page, the scene a queue step asked for, or one a link or plugin page named: find the file on
     /// the shares (mounting one if needed) or take Stash's stream, and open it.
-    private func openStashScene(_ scene: StashScene, landing: LinkTarget? = nil) {
+    /// `plays`: start playing once open (autoadvance); `onFailure`: the scene could not be opened.
+    /// Counts scene opens, so only the newest one's answer opens its file.
+    private var stashOpens = 0
+
+    private func openStashScene(_ scene: StashScene, landing: LinkTarget? = nil, plays: Bool = false,
+                                onFailure: (() -> Void)? = nil) {
         if scene.automatic {
             // Stash also opens a page with autoplay=true on a reload: only a step of ours is answered.
             guard queueGate.isPending else { return }
@@ -463,11 +478,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         guard let stashSession = makeStashSession() else {
             showMessage("No Stash server: set stash-url in Settings → Stash", duration: 4)
+            onFailure?()
             return
         }
         returnTab = .stash
+        stashOpens += 1
+        let open = stashOpens
         stashSession.resolve(scene) { [weak self] result in
-            guard let self else { return }
+            // A later open (a quick next step through a list) wins over an answer that arrives after it.
+            guard let self, open == stashOpens else { return }
             stashScene = scene   // only now: during a mount the scene on screen (and ⌘⌫'s dialog) is still the old one
             switch result {
             case let .file(url), let .stream(url):
@@ -479,8 +498,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     hud.show(openedHUD(queueDirection > 0 ? .playlistNext : .playlistPrevious))
                     if opened, queuePlays, core.isPaused { core.play() }
                 }
+                if opened, plays, core.isPaused { core.play() }
+                if !opened { onFailure?() }
             case let .failed(failure):
                 showStashFailure(failure, scene: scene)
+                onFailure?()
             }
         }
     }
@@ -514,14 +536,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if opening { announceStashFile(url) }
             return
         }
-        guard let playlist, playlist.totalCount > 1 else { return }
-        showMessage("\(playlist.positionText) · \(url.lastPathComponent)")
+        guard let position = playlistPositionText else { return }
+        showMessage("\(position) · \(url.lastPathComponent)")
     }
 
     private func updateTitle(_ url: URL) {
         if case .stash = origin { window?.title = stashTitle(for: url); return }
-        guard let playlist, playlist.totalCount > 1 else { window?.title = url.lastPathComponent; return }
-        window?.title = "\(url.lastPathComponent) — \(playlist.positionText)"
+        guard let position = playlistPositionText else { window?.title = url.lastPathComponent; return }
+        window?.title = "\(url.lastPathComponent) — \(position)"
+    }
+
+    /// "12 / 48" in the folder, "3 / 10" in a page's list; nil when the file is alone in it.
+    private var playlistPositionText: String? {
+        if let listPlaylist { return listPlaylist.items.count > 1 ? listPlaylist.positionText : nil }
+        guard let playlist, playlist.totalCount > 1 else { return nil }
+        return playlist.positionText
     }
 
     /// The loaded details of the Stash scene on screen; nil while Stash has not answered (or failed to).
@@ -696,7 +725,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let container = window?.contentView, let url = URL(string: core.config.stashURL) else { return nil }
         let library = StashLibraryView(url: url, interceptors: [
             .scenePlayer(
-                onOpen: { [weak self] in self?.openStashScene($0) },
+                onOpen: { [weak self] scene in
+                    if !scene.automatic { self?.dropListPlaylist() }   // ▶ on a scene page; a queue step is ours
+                    self?.openStashScene(scene)
+                },
                 onBridgeMissing: { [weak self] in
                     self?.showMessage("Stash player not replaced: unsupported Stash version", duration: 5)
                 })
@@ -761,6 +793,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
         stashSession?.flushBeforeQuit()
+        for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
+        slotWrites = [:]
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)
         memoryPressure?.cancel()
@@ -1008,41 +1042,53 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Sets the effective map from the base map and the declared actions (their keys count while the panel is shown),
     /// and brings an open key help up to date.
     private func rebuildInputMap() {
-        inputMap = baseInputMap.merging(PluginActionPolicy.bindable(pluginActions, shown: pluginVisible)).map
+        inputMap = baseInputMap.merging(shownPluginActions).map
         gestures.inputMap = inputMap
         buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
         mouseBridge?.apply(config: core.config, map: inputMap)
         keyHelp.refresh(inputMap, pluginActions: shownPluginActions)
     }
 
-    /// The declared actions as the key help lists them: only while the panel is shown.
-    private var shownPluginActions: [PluginAction] { PluginActionPolicy.bindable(pluginActions, shown: pluginVisible) }
+    /// The declared actions as the key help lists them: those of the pages whose slot is shown.
+    private var shownPluginActions: [PluginAction] {
+        let shown = Set(slots?.shownPages.map(\.token) ?? [])
+        return pluginActions.filter { shown.contains($0.page) }.flatMap(\.actions)
+    }
 
-    /// The page declared its actions (an empty list withdraws them). The reply says what the keys become; with the
-    /// panel hidden that is what they will become once it is shown (nothing is bound before).
-    private func declarePluginActions(_ actions: [PluginAction]) -> PluginActionsReply {
-        pluginActions = actions
+    /// A page declared its actions (an empty list withdraws them). The reply says what the keys become; with the
+    /// page's slot hidden that is what they will become once it is shown (nothing is bound before). A key an earlier
+    /// page claimed is `key taken`.
+    private func declarePluginActions(_ actions: [PluginAction], page: Int) -> PluginActionsReply {
+        if let i = pluginActions.firstIndex(where: { $0.page == page }) {
+            pluginActions[i].actions = actions
+        } else {
+            pluginActions.append((page, actions))
+        }
         rebuildInputMap()
-        let outcome = baseInputMap.merging(actions)
+        let earlier = pluginActions.prefix { $0.page != page }.flatMap(\.actions)
+        let outcome = baseInputMap.merging(earlier).map.merging(actions)
         return PluginActionsReply(bound: outcome.bound, refused: outcome.refused)
     }
 
     /// A new page committed (or the same one again, or the page process died): what the old one declared is void.
-    private func clearPluginActions() {
-        guard !pluginActions.isEmpty else { return }
-        pluginActions = []
+    private func clearPluginActions(of page: Int) {
+        guard let i = pluginActions.firstIndex(where: { $0.page == page }) else { return }
+        pluginActions.remove(at: i)
         rebuildInputMap()
     }
 
-    /// A key bound to a page action: the page hears it when it declared the name and is shown.
+    /// A key bound to a page action: the first shown page that declared the name hears it.
     private func runPluginAction(_ name: String) {
-        guard PluginActionPolicy.shouldDispatch(name, declared: pluginActions, shown: pluginVisible) else {
+        let shown = slots.shownPages
+        guard let entry = pluginActions.first(where: { entry in
+                  entry.actions.contains { $0.name == name } && shown.contains { $0.token == entry.page }
+              }), let page = slots.page(withToken: entry.page) else {
             showMessage("No plugin action: \(name)")
             return
         }
         let frame = core.displayedFrame ?? core.position   // what is on screen, not a seek in flight
         let t = core.index?.seconds(forFrame: frame) ?? core.positionSeconds
-        pluginPanel.dispatch(.action(name: name, t: t, frame: frame))
+        page.dispatch(.action(name: name, t: t, frame: frame))
     }
 
     /// Shows scan progress once the scan has run for a second and the OSD is free, then refreshes it at most
@@ -1069,62 +1115,54 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
         window.contentView = container
-        for view in [videoView, startScreen, hud, osd, seekBar, backButton, previewView, playlistZone, playlistPanel, keyHelp, goToField] as [NSView] {
+        for view in [videoView, startScreen, hud, osd, seekBar, backButton, previewView, keyHelp, goToField] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
-        NSLayoutConstraint.activate([
+        container.addLayoutGuide(visibleArea)
+        videoEdges = [
             videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
             videoView.topAnchor.constraint(equalTo: container.topAnchor),
             videoView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            startScreen.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            startScreen.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            startScreen.topAnchor.constraint(equalTo: container.topAnchor),
-            startScreen.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            hud.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            hud.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
-            hud.topAnchor.constraint(equalTo: container.topAnchor),
-            hud.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            keyHelp.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            keyHelp.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
-            keyHelp.topAnchor.constraint(equalTo: container.topAnchor),
-            keyHelp.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            goToField.centerXAnchor.constraint(equalTo: videoView.centerXAnchor),
-            goToField.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
-            osd.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            osd.trailingAnchor.constraint(lessThanOrEqualTo: videoView.trailingAnchor, constant: -16),
-            seekBar.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            seekBar.trailingAnchor.constraint(equalTo: videoView.trailingAnchor, constant: -16),
-            seekBar.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -12),
+        ]
+        visibleEdges = [
+            visibleArea.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            visibleArea.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            visibleArea.topAnchor.constraint(equalTo: container.topAnchor),
+            visibleArea.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ]
+        NSLayoutConstraint.activate(videoEdges + visibleEdges + [
+            startScreen.leadingAnchor.constraint(equalTo: videoView.leadingAnchor),
+            startScreen.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
+            startScreen.topAnchor.constraint(equalTo: videoView.topAnchor),
+            startScreen.bottomAnchor.constraint(equalTo: videoView.bottomAnchor),
+            hud.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor),
+            hud.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor),
+            hud.topAnchor.constraint(equalTo: visibleArea.topAnchor),
+            hud.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor),
+            keyHelp.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor),
+            keyHelp.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor),
+            keyHelp.topAnchor.constraint(equalTo: visibleArea.topAnchor),
+            keyHelp.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor),
+            goToField.centerXAnchor.constraint(equalTo: visibleArea.centerXAnchor),
+            goToField.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16),
+            osd.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
+            osd.trailingAnchor.constraint(lessThanOrEqualTo: visibleArea.trailingAnchor, constant: -16),
+            seekBar.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
+            seekBar.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor, constant: -16),
+            seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -12),
             seekBar.heightAnchor.constraint(equalToConstant: 44),
-            backButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
-            backButton.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+            backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
+            backButton.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
-            playlistPanel.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
-            playlistPanel.topAnchor.constraint(equalTo: container.topAnchor),
-            playlistPanel.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -8),
-            playlistZone.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
-            playlistZone.topAnchor.constraint(equalTo: playlistPanel.topAnchor),
-            playlistZone.bottomAnchor.constraint(equalTo: playlistPanel.bottomAnchor),
-            playlistZone.widthAnchor.constraint(equalTo: playlistPanel.widthAnchor),
         ])
-        playlistPanel.alphaValue = 0
-        playlistPanel.isHidden = false   // faded out instead: at zero alpha it ignores clicks
-        playlistZone.onHover = { [weak self] inside in
-            self?.showCursorAfterScrub()
-            self?.updatePrecisionWheel()
-            guard let self, playlistOn else { return }
-            if inside { fadePlaylist(in: true) } else { hidePlaylist(after: 0.6) }
-        }
-        // The stats panel may sit in the zone (top right by default): there the pointer is the panel's, so the
-        // playlist neither slides in over it nor stays.
-        playlistZone.excludes = { [weak self] point in self?.isPointerOnStats(at: point) ?? false }
         previewLeading = previewView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16)
         previewLeading.isActive = true
-        osdTop = osd.topAnchor.constraint(equalTo: container.topAnchor, constant: 16)
+        osdTop = osd.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16)
         osdTop.isActive = true
         buildStatsPanel(in: container)
-        buildPluginPanel(in: container)
+        buildSlots(in: container)
         seekBar.onHover = { [weak self] in
             self?.showCursorAfterScrub()
             self?.hover($0)
@@ -1162,14 +1200,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         startScreen.onMenu = { [weak self] path, item in self?.recentMenuChosen(path, item) }
         startScreen.onResize = { [weak self] in self?.resizeStartCards($0) }
-        playlistPanel.onSelect = { [weak self] url in
+        playlistPanel.onSelect = { [weak self] row in
             guard let self else { return }
-            openFile(url)
+            if listPlaylist != nil {
+                if listRowIndices.indices.contains(row) { openListItem(at: listRowIndices[row]) }
+            } else if let playlist, playlist.files.indices.contains(row) {
+                openFile(playlist.files[row])
+            }
             self.window?.makeFirstResponder(videoView)   // not the buildViews parameter (would retain the window)
+            slots.playlistChosePlay()
         }
         playlistPanel.onFilter = { [weak self] text in
             guard let self else { return }
             playlistFilter = text
+            if listPlaylist != nil { updatePlaylistPanel(); return }
             guard let url = playlistAnchor else { return }
             rebuildPlaylist(around: url)
             updateTitle(url)
@@ -1177,16 +1221,27 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         playlistPanel.onSort = { [weak self] in self?.setPlaylistSort($0) }
         playlistPanel.onSubmitFilter = { [weak self] in
             guard let self else { return }
+            if let listPlaylist {
+                self.window?.makeFirstResponder(videoView)
+                if let target = listRowIndices.first(where: { $0 != listPlaylist.currentIndex }) {
+                    openListItem(at: target)
+                    slots.playlistChosePlay()
+                }
+                return
+            }
             waitForFolder()
             guard let playlist else { return }
             let anchor = playlistAnchor
             self.window?.makeFirstResponder(videoView)
-            if let target = playlist.files.first(where: { $0 != anchor }) { openFile(target) }   // the first match other than this file
+            if let target = playlist.files.first(where: { $0 != anchor }) {   // the first match other than this file
+                openFile(target)
+                slots.playlistChosePlay()
+            }
         }
         playlistPanel.onEndFilter = { [weak self] in
             guard let self else { return }
+            _ = slots.escape(in: playlistPanel)
             self.window?.makeFirstResponder(videoView)
-            hidePlaylist(after: 0.6)
         }
 
         goToField.onSubmit = { [weak self] text in
@@ -1217,6 +1272,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.canRedo = { [weak self] in self?.core.canRedoMarks ?? false }
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
+        videoView.onLeftClick = { [weak self] in self?.slots.hideOverlays() }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
         }
@@ -1296,7 +1352,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Black bars are looked for once per file, on keyframes spread over it, by a decoder of its own.
     private func startCropSampler() {
         guard let url = core.url, let index = core.index, let info = core.info else { return }
-        let sampler = CropSampler(url: url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache)
+        let sampler = CropSampler(url: url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache,
+                                  policy: core.networkPolicy)
         cropSampler = sampler
         sampler.start { [weak self] crop in
             MainActor.assumeIsolated {
@@ -1470,6 +1527,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .scrubEdge:
             break   // a wheel binding (`perform`); a key has no wheel to drag the edge with
         case .playlistPrev:
+            if listPlaylist != nil { stepListPlaylist(-1); return }
             if followsStashQueue { stepStashQueue(-1); return }
             waitForFolder()
             if let previous = playlist?.previous {
@@ -1481,6 +1539,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 if playlistEndBump.stepped(moved: false, direction: -1, fresh: core.inputIsFresh) { haptics.play(.end) }
             }
         case .playlistNext:
+            if listPlaylist != nil { stepListPlaylist(1); return }
             if followsStashQueue { stepStashQueue(1); return }
             waitForFolder()
             if let next = playlist?.next {
@@ -1547,13 +1606,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .playlistFilter:
             beginPlaylistFilter()
         case .togglePlaylist:
-            playlistOn.toggle()
-            if playlistOn {
-                fadePlaylist(in: true)
-                hidePlaylist(after: 2)   // shown for a moment, then kept only while the pointer is on it
-            } else {
-                hidePlaylist(after: 0)
-            }
+            slots.togglePlaylist()
         case .cycleABLoopMode:
             let mode = core.config.abLoop.next
             do { try preferences.update(["ab-loop"]) { $0.abLoop = mode } } catch {
@@ -2015,24 +2068,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    private func fadePlaylist(in show: Bool) {
-        hidePlaylistWork?.cancel()
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = show ? 0.1 : 0.3
-            playlistPanel.animator().alphaValue = show ? 1 : 0
-        }
-    }
-
-    private func hidePlaylist(after delay: Double) {
-        hidePlaylistWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, !(playlistOn && (isPointerInPlaylistZone || playlistPanel.isEditingFilter)) else { return }
-            fadePlaylist(in: false)
-        }
-        hidePlaylistWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
     /// The wheel mode (`wheel-precision=yes`: free spin or ratchet, the user's choice in `wheelFreeSpin`) is wanted
     /// of the mouse while the player window is in front, whatever the pointer is over. Precision Scroll is wanted on
     /// free spin only, while the pointer is over the video: not over the seek bar (its wheel steps the preview between
@@ -2049,7 +2084,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         playerWasInFront = inFront
         let overVideo = isPointer(over: videoView) && !isPointer(over: seekBar)
-            && !(playlistOn && isPointer(over: playlistZone))
+            && !(slots?.isPointerOverShownSlot ?? false)
             && !(window.map { isPointerOnStats(at: $0.mouseLocationOutsideOfEventStream) } ?? false)
             && NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window?.windowNumber
         let freeSpin = UserDefaults.standard.object(forKey: Self.wheelFreeSpinKey) as? Bool ?? true
@@ -2090,12 +2125,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return frame.contains(container.convert(point, from: nil))
     }
 
-    /// The pointer is in the playlist's zone and not on the stats panel, which may sit in it.
-    private var isPointerInPlaylistZone: Bool {
-        guard let window, isPointer(over: playlistZone) else { return false }
-        return !isPointerOnStats(at: window.mouseLocationOutsideOfEventStream)
-    }
-
     /// Hides the pointer until it moves, when it rests on the video (not on the playlist, a sheet or another window).
     private func hideCursorOverVideo() {
         guard pointerRestsOnVideo else { return }
@@ -2120,7 +2149,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var pointerRestsOnVideo: Bool {
         guard let window, window.isKeyWindow, window.attachedSheet == nil, let content = window.contentView,
               isPointer(over: content) else { return false }
-        return !(playlistPanel.alphaValue > 0.01 && isPointer(over: playlistPanel))
+        return !(slots?.isPointerOverShownSlot ?? false)
     }
 
     /// (Re)creates the preview decoder for the open file; `preview=no` or a failed decoder leaves the timecode only.
@@ -2143,7 +2172,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let url = core.url, let index = core.index, let info = core.info else { return }
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
         let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
-                                       widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache)
+                                       widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
+                                       policy: core.networkPolicy)
         provider.onImage = { [weak self] result in
             guard let self else { return }
             previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
@@ -2163,9 +2193,80 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let folder = folder(of: url)
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
         playlist = Playlist(current: url, sort: core.config.playlistSort, filter: playlistFilter, listing: listing)
+        updatePlaylistPanel()
+    }
+
+    /// The panel shows the page's list while there is one, else the folder.
+    private func updatePlaylistPanel() {
+        if let listPlaylist {
+            listRowIndices = listPlaylist.indices(matching: playlistFilter)
+            playlistPanel.showList(name: listPlaylist.name)
+            playlistPanel.update(rows: listRowIndices.map { PlaylistRow(listPlaylist.items[$0]) },
+                                 current: listRowIndices.firstIndex(of: listPlaylist.currentIndex) ?? -1)
+            return
+        }
+        listRowIndices = []
         playlistPanel.showSort(core.config.playlistSort)
         guard let playlist else { return }
-        playlistPanel.update(files: playlist.files, current: playlist.currentIndex)
+        playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
+    }
+
+    // MARK: A page's list
+
+    /// Back to the folder as the playlist.
+    private func dropListPlaylist() {
+        guard listPlaylist != nil else { return }
+        listPlaylist = nil
+        updatePlaylistPanel()
+    }
+
+    /// < and > in a page's list: the item before or after; the ends stop as the folder's do.
+    private func stepListPlaylist(_ direction: Int) {
+        guard let listPlaylist else { return }
+        let target = listPlaylist.currentIndex + direction
+        guard listPlaylist.items.indices.contains(target) else {
+            showMessage(direction > 0 ? "Last item" : "First item")
+            if playlistEndBump.stepped(moved: false, direction: direction, fresh: core.inputIsFresh) { haptics.play(.end) }
+            return
+        }
+        _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
+        openListItem(at: target)
+        hud.show(openedHUD(direction > 0 ? .playlistNext : .playlistPrevious))
+    }
+
+    /// Opens the list's item at `index` (a scene's file is looked for only now). One that cannot be opened says so on
+    /// screen and to the pages (`error`); at autoadvance (`plays`) the item after it is tried once.
+    private func openListItem(at index: Int, plays: Bool = false, retried: Bool = false) {
+        guard let item = listPlaylist?.select(index) else { return }
+        updatePlaylistPanel()   // a scene opens later: the row moves now
+        let failed = { [weak self] in
+            guard let self, listPlaylist?.currentIndex == index, listPlaylist?.current == item else { return }   // moved on
+            let title = PlaylistRow(item).title
+            dispatchToPages(.error("cannot open \(title)"))
+            guard plays, !retried, listPlaylist?.next != nil else { return }
+            openListItem(at: index + 1, plays: true, retried: true)
+            showMessage("Cannot open \(title): skipped", duration: 3)
+        }
+        switch item {
+        case let .file(url, _):
+            returnTab = .recent
+            stashScene = nil
+            stashOpens += 1   // a scene still being looked for must not replace this file
+            queueGate.cancel()
+            if openFile(url) {
+                if plays { core.play() }
+            } else {
+                failed()
+            }
+        case let .scene(id, _):
+            openStashScene(StashScene(id: id, paths: []), plays: plays, onFailure: failed)
+        }
+    }
+
+    /// What is on screen as a list item, for `enqueue` in the folder: the Stash scene, else the open file.
+    private var currentPlaylistItem: PlaylistItem? {
+        if case let .stash(sceneID, _) = origin, core.url != nil { return .scene(id: sceneID, title: window?.title) }
+        return core.url.map { .file($0, title: nil) }
     }
 
     private func folder(of url: URL) -> URL { url.standardizedFileURL.deletingLastPathComponent() }
@@ -2342,9 +2443,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func beginPlaylistFilter() {
-        playlistOn = true
-        fadePlaylist(in: true)
-        playlistPanel.beginFilter()
+        slots.showPlaylistForFilter()
     }
 
     private func frame(atBarFraction fraction: Double) -> Int {
@@ -2428,136 +2527,164 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
     }
 
-    // MARK: Plugin panel
+    // MARK: Slots and plugin pages
 
-    private func buildPluginPanel(in container: ContainerView) {
-        pluginPanel.translatesAutoresizingMaskIntoConstraints = false
-        pluginPanel.isHidden = true
-        container.addSubview(pluginPanel)
-        videoTrailing = videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
-        pluginWidth = pluginPanel.widthAnchor.constraint(equalToConstant: CGFloat(globalConfig.pluginWidth))
-        NSLayoutConstraint.activate([
-            videoTrailing,
-            pluginWidth,
-            pluginPanel.topAnchor.constraint(equalTo: container.topAnchor),
-            pluginPanel.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-            pluginPanel.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-        ])
+    private func buildSlots(in container: ContainerView) {
         pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
-        if let url = pluginSettingsURL { pluginPolicy.trust(url) }
-        pluginPanel.trusted = pluginPolicy.trusted
+        for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
+        slots = SlotsController(container: container, above: startScreen, config: globalConfig, playlistView: playlistPanel)
+        slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
+        slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
+        slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
+        slots.onMessage = { [weak self] in self?.showMessage($0) }
+        slots.onPagesChanged = { [weak self] in
+            guard let self else { return }
+            rebuildInputMap()   // a page's keys count only while its slot is shown
+            dispatchPanelInfo()
+            pushPluginState(force: true)
+            updatePrecisionWheel()
+        }
+        slots.onFocusVideo = { [weak self] in
+            guard let self else { return }
+            window?.makeFirstResponder(videoView)
+        }
+        slots.onPageDropped = { [weak self] page in
+            guard let self else { return }
+            clearPluginActions(of: page.token)
+            panelInfoSent[page.token] = nil
+        }
         core.onSegmentChange = { [weak self] current, locked in
             guard let self else { return }
             if holdsSegmentEvents {
                 heldSegmentEvent = .segment(current: current, locked: locked)   // after fileopened (`openCore`)
                 return
             }
-            pluginPanel.dispatch(.segment(current: current, locked: locked))
+            dispatchToPages(.segment(current: current, locked: locked))
             pushPluginState(force: true)
         }
-        pluginPanel.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
-        pluginPanel.onFocusChange = { [weak self] in
+        slots.start()
+    }
+
+    /// A page the slots made: its requests, focus and keys come here.
+    private func configurePluginPage(_ page: PluginPanel) {
+        page.trusted = pluginPolicy.trusted
+        applyPluginStash(globalConfig, to: page)
+        page.onMessage = { [weak self] in self?.pluginMessage($0, from: $1) }
+        page.onFocusChange = { [weak self, weak page] focused in
             self?.endHoldSpeed()   // the key-up may go elsewhere
-            self?.pluginPanel.dispatch($0 ? .focus : .blur)
+            page?.dispatch(focused ? .focus : .blur)
+            self?.dispatchPanelInfo()
+            self?.pushPluginState(force: true)
         }
-        pluginPanel.onUnhandledKey = { [weak self] in self?.handleKey($0, stillDown: $1) }
-        pluginPanel.onKeyUp = { [weak self] in
+        page.onUnhandledKey = { [weak self, weak page] event, stillDown in
+            guard let self else { return }
+            // Esc the page left alone hides its slot when the slot lies over the video.
+            if event.keyCode == 53, !event.isARepeat, let page, slots.escape(in: page) { return }
+            handleKey(event, stillDown: stillDown)
+        }
+        page.onKeyUp = { [weak self] in
             if $0.keyCode == self?.holdKeyCode { self?.endHoldSpeed() }
         }
-        pluginPanel.onPageReplaced = { [weak self] in self?.clearPluginActions() }
-        pluginPanel.onResize = { [weak self] in self?.pluginDragged(to: $0) }
+        page.onPageReplaced = { [weak self, weak page] in
+            guard let self, let page else { return }
+            clearPluginActions(of: page.token)
+            panelInfoSent[page.token] = nil   // the new page has heard nothing yet
+            dispatchPanelInfo()
+        }
     }
 
-    /// `plugin-url` as a URL; nil when empty or unreadable.
-    private var pluginSettingsURL: URL? {
-        globalConfig.pluginURL.isEmpty ? nil : URL(string: globalConfig.pluginURL)
+    /// The `panel` event each page heard last.
+    private var panelInfoSent: [Int: PanelInfo] = [:]
+
+    /// Each page hears where its slot is and how it shows (`panel`), when that changed.
+    private func dispatchPanelInfo() {
+        for page in slots.pages {
+            guard let info = slots.panelInfo(for: page), panelInfoSent[page.token] != info else { continue }
+            panelInfoSent[page.token] = info
+            page.dispatch(.panel(info))
+        }
     }
 
-    /// The edge is being dragged: the panel follows at once, the setting is written once the drag rests for 0.5 s.
-    private func pluginDragged(to width: CGFloat) {
-        let clamped = min(max(Int(width.rounded()), Config.pluginWidthRange.lowerBound), Config.pluginWidthRange.upperBound)
-        setPluginWidth(clamped)
-        pluginWidthWrite?.invalidate()
-        pluginWidthWrite = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
+    /// `framescrub.stash` for the plugins listed in the settings: Stash's address and key, nil without a server.
+    private func applyPluginStash(_ config: Config, to page: PluginPanel) {
+        page.stash = config.stashEnabled ? .init(url: config.stashURL, apiKey: config.stashAPIKey) : nil
+        page.stashOrigins = Set(config.plugins.compactMap { PluginOrigin(url: $0.url) })
+    }
+
+    /// The pages get `window.framescrub` for the origins now trusted.
+    private func applyPluginTrust() {
+        for page in slots.pages { page.trusted = pluginPolicy.trusted }
+    }
+
+    /// The slots moved: the video takes its rect (only a pinned slot changes it), the seek bar, OSD and stats the part
+    /// of it no overlay slot covers.
+    private func slotsLaidOut(video: CGRect, visible: CGRect) {
+        guard let container = window?.contentView else { return }
+        let bounds = container.bounds
+        func set(_ edges: [NSLayoutConstraint], _ rect: CGRect) {
+            let constants = [rect.minX - bounds.minX, rect.maxX - bounds.maxX, bounds.maxY - rect.maxY, bounds.minY - rect.minY]
+            for (edge, constant) in zip(edges, constants) where edge.constant != constant { edge.constant = constant }
+        }
+        set(videoEdges, video)
+        set(visibleEdges, visible)
+        visibleVideoRect = visible
+        statsPanel.place()
+    }
+
+    private func persistSlot(_ edge: SlotEdge, _ setting: SlotSetting) {
+        slotWrites[edge]?.invalidate()
+        slotWrites[edge] = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                do { try self.preferences.update(["plugin-width"]) { $0.pluginWidth = clamped } } catch {
-                    self.showMessage("Cannot save plugin-width: \(error.localizedDescription)", duration: 3)
+                do { try self.preferences.update([edge.key]) { $0.slots[edge] = setting } } catch {
+                    self.showMessage("Cannot save \(edge.key): \(error.localizedDescription)", duration: 3)
                 }
             }
         }
     }
 
-    private func setPluginWidth(_ width: Int) {
-        pluginWidth.constant = CGFloat(width)
-        if pluginVisible { videoTrailing.constant = -CGFloat(width) }
-        videoAreaChanged()
-    }
-
-    /// The video's part of the window changed (the plugin panel came, went or was resized): the stats panel keeps to
-    /// it like the seek bar, whose constraints follow the video by themselves.
-    private func videoAreaChanged() {
-        window?.contentView?.layoutSubtreeIfNeeded()
-        statsPanel.place()
-    }
-
-    /// Settings changed: the panel's width and, when the page was the settings' one (or none yet), its page.
+    /// Settings changed: which origins may open files, and the plugin list (a slot whose plugin changed loads it).
     private func applyPluginConfig(_ config: Config, previous: Config) {
-        if config.pluginWidth != Int(pluginWidth.constant) { setPluginWidth(config.pluginWidth) }
         pluginPolicy.openAllowed = PluginPolicy(openAllowedText: config.pluginOpenAllowed).openAllowed
-        guard config.pluginURL != previous.pluginURL else { return }
-        let old = previous.pluginURL.isEmpty ? nil : URL(string: previous.pluginURL)
-        guard let url = pluginSettingsURL else { return }
-        pluginPolicy.trust(url)
-        pluginPanel.trusted = pluginPolicy.trusted
-        if pluginPanel.url == nil || pluginPanel.url == old {
-            if pluginVisible { showPlugin(url, from: .settings) } else { pluginPanel.load(url, from: .settings) }
-        }
+        for entry in config.plugins { pluginPolicy.trust(entry.url) }
+        applyPluginTrust()
+        for page in slots.pages { applyPluginStash(config, to: page) }
+        slots.configChanged(config)
     }
 
-    /// View › Focus Plugin Panel: the page gets the keyboard (shown first if it was hidden).
+    /// View › Focus Plugin Panel: the first page's slot is shown with the keyboard.
     func focusPluginPanel() {
-        if !pluginVisible { togglePluginPanel() }
-        guard pluginVisible else { return }
-        pluginPanel.focus()
+        slots.togglePlugin(focus: true)
     }
 
-    /// For View › Show Plugin Panel: the page set in Settings (`plugin-url`).
-    var pluginVisible: Bool { !pluginPanel.isHidden }
-
+    /// View › Show Plugin Panel: the slot holding the first page (or the first plugin put into an empty slot).
     func togglePluginPanel() {
-        if pluginVisible {
-            setPluginShown(false)
-        } else if pluginPanel.url != nil {
-            setPluginShown(true)   // the page already loaded, from whichever source
-        } else if let url = pluginSettingsURL {
-            showPlugin(url, from: .settings)
-        } else {
-            showMessage("No plugin page: set one in Settings › General or open a link with plugin=")
-        }
+        slots.togglePlugin()
     }
 
-    /// Shows `url` in the panel; a page the source may not load (a `file:` page from a link) is refused with a notice.
-    func showPlugin(_ url: URL, from source: PluginPageSource) {
+    /// View › Slots: ⌃⌘← / ⌃⌘→ / ⌃⌘↓.
+    func toggleSlot(_ edge: SlotEdge) { slots.toggle(edge) }
+    func togglePinOfCurrentSlot() { slots.togglePinOfCurrent() }
+    func cycleBackdropOfCurrentSlot() { slots.cycleBackdropOfCurrent() }
+    func clearCurrentSlot() { slots.clearCurrent() }
+
+    /// A link's `plugin=` page; one the link may not load (a `file:` page) is refused with a notice.
+    private func showLinkPlugin(_ url: URL) {
         pluginPolicy.trust(url)
-        pluginPanel.trusted = pluginPolicy.trusted
-        guard pluginPanel.load(url, from: source) else {
+        applyPluginTrust()
+        guard slots.showLinkPage(url) else {
             showMessage("Cannot show the plugin page: \(url.absoluteString)", duration: 4)
             return
         }
-        setPluginShown(true)
     }
 
-    private func setPluginShown(_ shown: Bool) {
-        pluginPanel.isHidden = !shown
-        rebuildInputMap()   // the page's keys count only while it is shown
-        videoTrailing.constant = shown ? -pluginWidth.constant : 0
-        videoAreaChanged()
-        if !shown { window?.makeFirstResponder(videoView) }
-        pushPluginState(force: true)
+    /// An event for every page, shown or not.
+    private func dispatchToPages(_ event: PluginEvent) {
+        for page in slots.pages { page.dispatch(event) }
     }
 
     private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {
+        let page = request.page.flatMap { slots.page(withToken: $0) }
         switch request.message {
         case let .seek(t): core.seek(toSeconds: t)
         case .play: if core.isPaused { core.play() }
@@ -2574,12 +2701,40 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case let .goSegment(i):
             guard core.goSegment(i) else { pluginFailed(request, "no such segment"); return }
         case let .actions(list):
-            pluginDone(request, result: declarePluginActions(list).json)
+            pluginDone(request, result: declarePluginActions(list, page: request.page ?? 0).json)
             return
         case .focusPlayer: window?.makeFirstResponder(videoView)
-        case let .open(.file(url, landing)): openFromPlugin(url, landing: landing, origin: origin, request: request); return
-        case let .open(.stashScene(id, paths, landing)): openStashScene(id: id, paths: paths, landing: landing)
+        case let .open(.file(url, landing)):
+            page.map(slots.pageChosePlay)
+            openFromPlugin(url, landing: landing, origin: origin, request: request)
+            return
+        case let .open(.stashScene(id, paths, landing)):
+            page.map(slots.pageChosePlay)
+            dropListPlaylist()
+            openStashScene(id: id, paths: paths, landing: landing)
         case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
+        case .hide:
+            if let page { slots.hide(page: page) }
+        case let .setPlaylist(items, index, name):
+            whenListAllowed(items, verb: "playlist", origin: origin, request: request) { [self] in
+                listPlaylist = ListPlaylist(items: items, index: index, name: name)   // the message checked the index
+                page.map(slots.pageChosePlay)
+                openListItem(at: index)
+                pluginDone(request)
+            }
+            return
+        case let .enqueue(items):
+            whenListAllowed(items, verb: "enqueue", origin: origin, request: request) { [self] in
+                let opensFirst = listPlaylist == nil && currentPlaylistItem == nil
+                guard let list = ListPlaylist.enqueue(items, onto: listPlaylist, current: currentPlaylistItem) else {
+                    pluginFailed(request, "enqueue: too many items")
+                    return
+                }
+                listPlaylist = list
+                if opensFirst { openListItem(at: 0) } else { updatePlaylistPanel(); core.url.map(updateTitle) }
+                pluginDone(request)
+            }
+            return
         }
         pluginDone(request)
     }
@@ -2601,9 +2756,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
             pluginDone(request, result: marks.json)
         case .playlist:
-            let list = playlist.map { PluginPlaylist(index: $0.currentIndex, count: $0.files.count, total: $0.totalCount,
-                                                    name: url.lastPathComponent) }
-                ?? PluginPlaylist(index: 0, count: 1, total: 1, name: url.lastPathComponent)
+            let list = if let listPlaylist {
+                PluginPlaylist(index: listPlaylist.currentIndex, count: listPlaylist.items.count,
+                               total: listPlaylist.items.count, name: url.lastPathComponent, source: .list)
+            } else {
+                playlist.map { PluginPlaylist(index: $0.currentIndex, count: $0.files.count, total: $0.totalCount,
+                                              name: url.lastPathComponent, source: followsStashQueue ? .stash : .folder) }
+                    ?? PluginPlaylist(index: 0, count: 1, total: 1, name: url.lastPathComponent,
+                                      source: followsStashQueue ? .stash : .folder)
+            }
             pluginDone(request, result: list.json)
         case let .frame(frameRequest):
             guard let n = frameRequest.frameNumber(frameCount: core.frameCount, frameForSeconds: index.frameNumber(forSeconds:)) else {
@@ -2624,11 +2785,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A request carried out: a `request()` resolves (with `result`, JSON), a verb hears nothing.
     private func pluginDone(_ request: PluginRequest, result: String? = nil) {
-        if let id = request.id { pluginPanel.reply(.success(id, result: result)) }
+        if let id = request.id, let page = request.page.flatMap({ slots.page(withToken: $0) }) {
+            page.reply(.success(id, result: result))
+        }
     }
 
     private func pluginFailed(_ request: PluginRequest, _ reason: String) {
-        pluginPanel.fail(id: request.id, reason)
+        request.page.flatMap { slots.page(withToken: $0) }?.fail(id: request.id, reason)
     }
 
     /// A `frame` request's picture arrived (or not); nothing is said when another file is open by now.
@@ -2666,23 +2829,43 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .untrusted:
             pluginFailed(request, "open: the page is not trusted")
         case .needsConsent:
-            let alert = NSAlert()
-            alert.messageText = PluginPolicy.consentQuestion(for: origin)
-            alert.informativeText = "The page asked to open \(url.path). Your answer is remembered for this page."
-            alert.addButton(withTitle: "Allow")
-            alert.addButton(withTitle: "Don't Allow")
-            let decide = { [weak self] (response: NSApplication.ModalResponse) in
-                guard let self else { return }
-                guard response == .alertFirstButtonReturn else { pluginFailed(request, "open: not allowed by the user"); return }
-                pluginPolicy.allowOpening(from: origin)
-                let allowed = pluginPolicy.openAllowedText
-                do { try preferences.update(["plugin-open-allowed"]) { $0.pluginOpenAllowed = allowed } } catch {
-                    showMessage("Cannot save plugin-open-allowed: \(error.localizedDescription)", duration: 3)
-                }
-                openIt()
-            }
-            if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }
+            askOpenConsent(origin, asked: "to open \(url.path)", verb: "open", request: request, then: openIt)
         }
+    }
+
+    /// A page's list with local files: allowed as `open({path})` would be for each of them, with one question for all.
+    private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
+                                 then apply: @escaping () -> Void) {
+        let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
+        switch pluginPolicy.decision(forOpening: files, from: origin) {
+        case .allowed: apply()
+        case .notMedia: pluginFailed(request, "\(verb): not a video file")
+        case .untrusted: pluginFailed(request, "\(verb): the page is not trusted")
+        case .needsConsent:
+            let asked = files.count == 1 ? "to play \(files[0].path)" : "to play \(files.count) files"
+            askOpenConsent(origin, asked: asked, verb: verb, request: request, then: apply)
+        }
+    }
+
+    /// The first time a page's origin opens local files: ask, remember a yes in `plugin-open-allowed`.
+    private func askOpenConsent(_ origin: PluginOrigin, asked: String, verb: String, request: PluginRequest,
+                                then allowed: @escaping () -> Void) {
+        let alert = NSAlert()
+        alert.messageText = PluginPolicy.consentQuestion(for: origin)
+        alert.informativeText = "The page asked \(asked). Your answer is remembered for this page."
+        alert.addButton(withTitle: "Allow")
+        alert.addButton(withTitle: "Don't Allow")
+        let decide = { [weak self] (response: NSApplication.ModalResponse) in
+            guard let self else { return }
+            guard response == .alertFirstButtonReturn else { pluginFailed(request, "\(verb): not allowed by the user"); return }
+            pluginPolicy.allowOpening(from: origin)
+            let text = pluginPolicy.openAllowedText
+            do { try preferences.update(["plugin-open-allowed"]) { $0.pluginOpenAllowed = text } } catch {
+                showMessage("Cannot save plugin-open-allowed: \(error.localizedDescription)", duration: 3)
+            }
+            allowed()
+        }
+        if let window { alert.beginSheetModal(for: window, completionHandler: decide) } else { decide(alert.runModal()) }
     }
 
     /// A Stash scene the page asked for: its file is found on the shares as for ▶ on a scene page, and `landing` is
@@ -2695,21 +2878,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func pluginFileOpened() {
         var scene: String?
         if case let .stash(sceneID, _) = origin { scene = sceneID }
-        pluginPanel.dispatch(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
+        dispatchToPages(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
     }
 
-    /// The player's state for the page: at once on a state change, at most ten times a second while frames show.
+    /// The player's state for the pages: at once on a state change, else ten times a second while frames show for a page
+    /// whose slot is on screen and four times a second for one whose slot is hidden (see `PluginPushPacing`).
     private func pushPluginState(force: Bool) {
-        guard pluginVisible else { return }
+        guard let slots, !slots.pages.isEmpty else { return }
         let now = ProcessInfo.processInfo.systemUptime
-        guard force || now - lastPluginPush >= 0.1 else { return }
-        lastPluginPush = now
+        let shownDue = pushPacing.due(shown: true, now: now, force: force)
+        let hiddenDue = pushPacing.due(shown: false, now: now, force: force)
+        guard shownDue || hiddenDue else { return }
         var state = PluginState(ready: core.url != nil, path: core.url?.path, name: core.url?.lastPathComponent,
                                 t: core.positionSeconds, frame: core.position, fps: core.info?.frameRate ?? 0,
                                 duration: core.durationSeconds, durationFrames: core.frameCount, playing: !core.isPaused,
-                                loop: core.loopSeconds, segments: pluginSegments(), visible: pluginVisible)
+                                loop: core.loopSeconds, segments: pluginSegments(), visible: true)
         if case let .stash(sceneID, _) = origin { state.scene = sceneID }
-        pluginPanel.push(state)
+        for page in slots.pages where page.isShownInSlot ? shownDue : hiddenDue {
+            var pageState = state
+            pageState.panel = slots.panelInfo(for: page)
+            pageState.visible = page.isShownInSlot
+            page.push(pageState)
+        }
     }
 
     /// The segment set for the page; nil with none.
@@ -2728,11 +2918,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let panel = InfoPanelController(
             host: container, below: seekBar, keyPrefix: "statsPanel", defaultOrder: StatsContent.defaultOrder,
             defaultPlacement: PanelPlacement(corner: .topRight, dx: 12, dy: 12),
-            area: { [weak container, weak videoView] in
-                // The video's part of the window: the plugin panel, when shown, takes the rest on the right.
+            area: { [weak container, weak self] in
+                // The part of the video no slot covers (y down), above the seek bar.
                 guard let bounds = container?.bounds else { return .zero }
-                let width = videoView?.frame.maxX ?? bounds.width
-                return CGRect(x: 0, y: 0, width: width, height: max(bounds.height - seekBarZone, 0))
+                let visible = self?.visibleVideoRect ?? bounds
+                return CGRect(x: visible.minX, y: bounds.maxY - visible.maxY, width: visible.width,
+                              height: max(visible.height - seekBarZone, 0))
             })
         panel.middleTruncated = ["Folder"]
         // A held button with the wheel is one of the player's chords (MBTN_RIGHT+WHEEL, MBTN_BACK+WHEEL_UP and the
@@ -2769,7 +2960,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.updateStatsTimer()
             self?.updatePrecisionWheel()   // the panel may come or go under the pointer
         }
-        container.onLayout = { [weak panel] in panel?.place() }
+        container.onLayout = { [weak panel, weak self] in
+            self?.slots?.containerDidLayout()
+            panel?.place()
+        }
         statsPanel = panel
     }
 
@@ -2889,6 +3083,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func playerDidReachEnd(_ player: PlayerCore) {
         guard core.config.playlistAutoadvance else { return }
+        if let listPlaylist {
+            if listPlaylist.next != nil { openListItem(at: listPlaylist.currentIndex + 1, plays: true) }
+            return
+        }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
         waitForFolder()
         guard let next = playlist?.next else { return }

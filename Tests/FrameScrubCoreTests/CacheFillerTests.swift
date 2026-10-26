@@ -12,6 +12,23 @@ import Testing
         return (filler, cache)
     }
 
+    @Test func aNetworkPolicyKeepsThePausedWindowSmall() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let cache = FrameCache(budgetBytes: 400 << 20)
+        var policy = NetworkPolicy.network
+        policy.frameAheadSeconds = 1
+        policy.frameBehindSeconds = 0.5
+        let filler = CacheFiller(url: source.url, index: index, cache: cache, estimatedFrameBytes: source.estimatedFrameBytes,
+                                 playbackLookahead: 30, policy: policy, frameRate: 30)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .paused)
+        #expect(await eventually { (285...330).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!cache.contains(331))   // 130 frames of budget would have reached ~346
+        #expect(!cache.contains(284))
+    }
+
     @Test func fillsBothSidesOfFocusWhilePaused() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)   // ~130 frames of 1080p NV12
         filler.start()

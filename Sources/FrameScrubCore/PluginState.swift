@@ -24,6 +24,8 @@ public struct PluginState: Equatable, Sendable, Codable {
     public var segments: Segments?
     /// Whether the panel is on screen.
     public var visible: Bool
+    /// The slot the page is in (bridge v2); nil outside a slot.
+    public var panel: PanelInfo?
 
     /// The segment set as the page sees it: `{list: [[a, b], …], current: i | null, locked, advance}`.
     public struct Segments: Equatable, Sendable, Codable {
@@ -66,7 +68,8 @@ public struct PluginState: Equatable, Sendable, Codable {
 
     public init(ready: Bool = false, path: String? = nil, name: String? = nil, scene: String? = nil, t: Double = 0,
                 frame: Int = 0, fps: Double = 0, duration: Double = 0, durationFrames: Int = 0, playing: Bool = false,
-                loop: ClosedRange<Double>? = nil, segments: Segments? = nil, visible: Bool = true) {
+                loop: ClosedRange<Double>? = nil, segments: Segments? = nil, visible: Bool = true,
+                panel: PanelInfo? = nil) {
         self.ready = ready
         self.path = path
         self.name = name
@@ -80,10 +83,11 @@ public struct PluginState: Equatable, Sendable, Codable {
         self.loop = loop
         self.segments = segments
         self.visible = visible
+        self.panel = panel
     }
 
     private enum Key: String, CodingKey {
-        case ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop, segments, visible
+        case ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop, segments, visible, panel
     }
 
     public init(from decoder: Decoder) throws {
@@ -108,6 +112,7 @@ public struct PluginState: Equatable, Sendable, Codable {
         }
         segments = try c.decodeIfPresent(Segments.self, forKey: .segments)
         visible = try c.decode(Bool.self, forKey: .visible)
+        panel = try c.decodeIfPresent(PanelInfo.self, forKey: .panel)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -125,6 +130,7 @@ public struct PluginState: Equatable, Sendable, Codable {
         try c.encode(loop.map { [$0.lowerBound, $0.upperBound] }, forKey: .loop)
         try c.encode(segments, forKey: .segments)
         try c.encode(visible, forKey: .visible)
+        try c.encode(panel, forKey: .panel)
     }
 
     /// The state as a JSON object with sorted keys; nil only when a number is not finite.
@@ -134,4 +140,24 @@ public struct PluginState: Equatable, Sendable, Codable {
         guard let state = PluginJSON.decode(PluginState.self, from: json) else { return nil }
         self = state
     }
+}
+
+/// Where a plugin page is shown (`state.panel`, the `panel` event): its slot, how the slot lies, what is behind the
+/// page, and whether it is shown and has the keyboard.
+public struct PanelInfo: Equatable, Sendable, Codable {
+    public var slot: SlotEdge
+    public var mode: SlotMode
+    public var backdrop: SlotBackdrop
+    public var shown: Bool
+    public var focused: Bool
+
+    public init(slot: SlotEdge, mode: SlotMode, backdrop: SlotBackdrop, shown: Bool, focused: Bool) {
+        self.slot = slot
+        self.mode = mode
+        self.backdrop = backdrop
+        self.shown = shown
+        self.focused = focused
+    }
+
+    public var json: String? { PluginJSON.encode(self) }
 }

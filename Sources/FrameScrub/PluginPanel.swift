@@ -2,10 +2,10 @@ import AppKit
 import FrameScrubCore
 import WebKit
 
-/// A web page beside the video: a plugin. The page drives the player through `window.framescrub` and hears the
+/// A web page in a slot: a plugin. The page drives the player through `window.framescrub` and hears the
 /// player's state through it; the player knows nothing of what the page is for.
 ///
-/// The bridge, version 1 (`framescrub.version`):
+/// The bridge, version 2 (`framescrub.version`; the script is `PluginBridgeScript`):
 ///
 /// Commands. Each verb posts a command and forgets it; one that fails fires the `error` event with the reason.
 /// `request(cmd, args)` posts the same command and returns a Promise that resolves with the command's result (undefined
@@ -41,6 +41,17 @@ import WebKit
 ///                                     Stash (stash-stream); without `paths` they are asked of Stash. A single
 ///                                     `seg: [a, b]` still counts as one segment
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
+///     framescrub.hide()               hide the page's slot; the keys go back to the player
+///     framescrub.playlist(items, {index?, name?})
+///                                     the playlist becomes this list instead of the folder, and item `index` (default 0)
+///                                     opens: items = [{scene, title?} | {path, title?}], 1…2000 of them; one bad item
+///                                     refuses the whole list. {path} items need what open({path}) needs (one question
+///                                     for all of them). Next / previous, autoadvance and the playlist slot follow the
+///                                     list until a file is opened from elsewhere (Finder, Home, a link, open()). A scene's
+///                                     file is looked for when its turn comes; one that cannot be opened fires `error`
+///                                     (at autoadvance the item after it is tried once)
+///     framescrub.enqueue(items)       add items at the end of the list; with the folder as the playlist, a list of the
+///                                     file on screen and the items begins. Past 2000 in all it is refused whole
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
 /// Requests with an answer (they need a file open, else they reject):
@@ -49,7 +60,8 @@ import WebKit
 ///                                     source: "file" | "stream"} — for a stream, path is Stash's stream URL
 ///     request("marks")                {loop: [a, b] | null, loopFrames: [a, b] | null, segments: [{start, end,
 ///                                     startFrame, endFrame}], openFrame, openStart} — the A-B range and the cut marks
-///     request("playlist")             {index, count, total, name} — the file's place in its folder (index from 0)
+///     request("playlist")             {index, count, total, name, source: "folder" | "list" | "stash"} — the file's
+///                                     place in the playlist (index from 0): its folder, a page's list, Stash's queue
 ///     request("frame", {t | frame, maxSize?})
 ///                                     {t, frame, width, height, dataURL} — that frame as a JPEG data URL fitted into
 ///                                     maxSize x maxSize pixels (16…512, default 512); decoded beside playback
@@ -57,11 +69,17 @@ import WebKit
 ///     request("actions", {actions})  {bound: [{key, name}], refused: [{key, name, reason}]} — what became of each key
 ///                                     (reason "key taken", "user binding" or "not a key"); actions without a key are in neither list
 ///
+/// `framescrub.stash` is {url, apiKey} for Stash from the settings, or null without a server; only the plugins listed
+/// in the settings get it (a page a link brought gets null). The page asks Stash itself.
+///
 /// State. `framescrub.state` is the latest state; `framescrub.onstate = s => …` and the window event "framescrubstate"
 /// (`event.detail`) hear each change, at most ten times a second while frames show:
 ///
 ///     {ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null,
-///      segments: {list: [[a, b], …], current: i | null, locked, advance} | null, visible}
+///      segments: {list: [[a, b], …], current: i | null, locked, advance} | null, visible, panel}
+///
+///     panel                           {slot: "left" | "right" | "bottom", mode: "pinned" | "overlay",
+///                                     backdrop: "dark" | "glass" | "clear", shown, focused} — the page's slot
 ///
 /// Events. `framescrub.on<name> = detail => …`, or the window event "framescrub<name>" with `event.detail`:
 ///
@@ -74,7 +92,9 @@ import WebKit
 ///                                     included
 ///     action                          {name, t, frame} when the user presses a key bound to the page's action `name` (not
 ///                                     repeated while held); t and frame are those on screen, not a seek's target
-///     error                           a reason string, when a verb (sent without a reply) failed
+///     panel                           the same as `state.panel`, whenever it changes (also while the slot is hidden)
+///     error                           a reason string, when a verb (sent without a reply) failed, or a list item
+///                                     could not be opened
 ///
 /// Keys. While the panel has the keyboard, a key the page does not handle goes on to the player as if the player had
 /// it (its auto-repeat and key-up included; a page action's key fires `action`): one that no `keydown` listener
@@ -94,8 +114,17 @@ import WebKit
     /// A page committed in the panel (a first load, a link, a reload) or its process died: what the old page declared
     /// is void. A navigation that is cancelled or fails leaves the old page, and its declarations, in place.
     var onPageReplaced: (() -> Void)?
-    /// The user drags the panel's edge: the width it asks for, in points (not yet clamped).
-    var onResize: ((CGFloat) -> Void)?
+    /// Whether the page's slot is on screen: only then does the page hear the player's state.
+    var isShownInSlot = false
+    /// A text field (or another element that takes typing) in the page has the focus.
+    var isTyping: Bool { keys.editing }
+    /// Tells the pages apart in the requests they post (`PluginRequest.page`).
+    let token = PluginPanel.nextToken()
+    private static var lastToken = 0
+    private static func nextToken() -> Int {
+        lastToken += 1
+        return lastToken
+    }
     /// A key-down the page left unhandled, for the player's keys, and whether its key is still held (WebKit answers
     /// after the page has seen the key, which can be after its key-up).
     var onUnhandledKey: ((NSEvent, _ stillDown: Bool) -> Void)?
@@ -105,6 +134,14 @@ import WebKit
     /// The origins whose pages get `window.framescrub` (the next time a page loads) and whose messages are heard.
     var trusted: Set<PluginOrigin> = [] {
         didSet { if trusted != oldValue { installBridge() } }
+    }
+    /// `framescrub.stash` for the next page that loads: Stash's address and key, nil without a server.
+    var stash: PluginBridgeScript.StashAccess? {
+        didSet { if stash != oldValue { installBridge() } }
+    }
+    /// The origins given `framescrub.stash` (the listed plugins'; a page a link brought gets null).
+    var stashOrigins: Set<PluginOrigin> = [] {
+        didSet { if stashOrigins != oldValue { installBridge() } }
     }
 
     private let webView: PanelWebView
@@ -118,62 +155,6 @@ import WebKit
     private(set) var url: URL?
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
-
-    /// Guarded by the trusted origins, spelled as `location.protocol + "//" + location.host` is ("file://" for a
-    /// local page): the page is the only one that could post, but a page outside the list is not given the bridge.
-    private static func bridge(for origins: Set<PluginOrigin>) -> String {
-        let list = origins.map { "\"\($0.description)\"" }.sorted().joined(separator: ", ")
-        return "if ([\(list)].includes(location.protocol + \"//\" + location.host)) {\n\(bridge)\n}"
-    }
-
-    private static let bridge = """
-    window.framescrub = {
-      version: 1,
-      _next: 1,
-      _pending: {},
-      _post(body) { window.webkit.messageHandlers.framescrub.postMessage(body); },
-      send(cmd, args) { this._post(Object.assign({cmd}, args || {})); },
-      request(cmd, args) {
-        return new Promise((resolve, reject) => {
-          const id = this._next++;
-          this._pending[id] = {resolve, reject};
-          this._post(Object.assign({cmd, id}, args || {}));
-        });
-      },
-      _reply(id, result, error) {
-        const p = this._pending[id];
-        if (!p) return;
-        delete this._pending[id];
-        if (error == null) p.resolve(result == null ? undefined : JSON.parse(result));
-        else p.reject(new Error(error));
-      },
-      _event(name, detail) {
-        const handler = this["on" + name];
-        if (handler) handler(detail);
-        window.dispatchEvent(new CustomEvent("framescrub" + name, {detail}));
-      },
-      seek(t) { this.send("seek", {t}); },
-      play() { this.send("play"); },
-      pause() { this.send("pause"); },
-      step(n) { this.send("step", {n}); },
-      loop(a, b) { this.send("loop", a == null ? {} : {a, b}); },
-      segments(list, opts) {
-        const args = {segments: list};
-        if (opts && opts.lock !== undefined) args.lock = opts.lock;
-        if (opts && opts.advance !== undefined) args.advance = opts.advance;
-        this.send("segments", args);
-      },
-      lock(on) { this.send("lock", {on}); },
-      goSegment(i) { this.send("goSegment", {i}); },
-      actions(list) { this.send("actions", {actions: list}); },
-      open(o) { this.send("open", o); },
-      focusPlayer() { this.send("focusPlayer"); },
-      state: null,
-      onstate: null,
-      _state(s) { this.state = s; this._event("state", s); },
-    };
-    \(keyScript)
-    """
 
     /// Keys for the player: before the page's listeners, whether its focus takes typing (sent when that changes); after
     /// them (a listener added to window while the event is still capturing runs after every page listener), a
@@ -230,23 +211,11 @@ import WebKit
             self?.keys.released($0.keyCode)
             self?.onKeyUp?($0)
         }
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0.08, alpha: 1).cgColor
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         addSubview(webView)
-        let edge = NSBox()
-        edge.boxType = .custom
-        edge.fillColor = NSColor(white: 1, alpha: 0.12)
-        edge.borderWidth = 0
-        edge.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(edge)
-        let splitter = SplitterView()
-        splitter.translatesAutoresizingMaskIntoConstraints = false
-        splitter.onDrag = { [weak self] width in self?.onResize?(width) }
-        addSubview(splitter)
         crashed.target = self
         crashed.action = #selector(reloadPressed)
         crashed.bezelStyle = .rounded
@@ -263,27 +232,19 @@ import WebKit
             failure.leadingAnchor.constraint(equalTo: webView.leadingAnchor, constant: 16),
             failure.trailingAnchor.constraint(equalTo: webView.trailingAnchor, constant: -16),
             failure.bottomAnchor.constraint(equalTo: crashed.topAnchor, constant: -12),
-            edge.leadingAnchor.constraint(equalTo: leadingAnchor),
-            edge.topAnchor.constraint(equalTo: topAnchor),
-            edge.bottomAnchor.constraint(equalTo: bottomAnchor),
-            edge.widthAnchor.constraint(equalToConstant: 1),
-            webView.leadingAnchor.constraint(equalTo: edge.trailingAnchor),
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
             webView.trailingAnchor.constraint(equalTo: trailingAnchor),
             webView.topAnchor.constraint(equalTo: topAnchor),
             webView.bottomAnchor.constraint(equalTo: bottomAnchor),
             crashed.centerXAnchor.constraint(equalTo: webView.centerXAnchor),
             crashed.centerYAnchor.constraint(equalTo: webView.centerYAnchor),
-            splitter.leadingAnchor.constraint(equalTo: leadingAnchor),
-            splitter.topAnchor.constraint(equalTo: topAnchor),
-            splitter.bottomAnchor.constraint(equalTo: bottomAnchor),
-            splitter.widthAnchor.constraint(equalToConstant: SplitterView.width),
         ])
         handler.receive = { [weak self] message in
             guard let self, let body = message.body as? [String: Any],
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
             let id = PluginRequest.id(of: body)
             switch PluginMessage.parse(body) {
-            case let .success(command): onMessage?(PluginRequest(id: id, message: command), origin)
+            case let .success(command): onMessage?(PluginRequest(id: id, page: token, message: command), origin)
             case let .failure(failure): fail(id: id, failure.reason)
             }
         }
@@ -336,8 +297,9 @@ import WebKit
     private func installBridge() {
         content.removeAllUserScripts()
         guard !trusted.isEmpty else { return }
-        content.addUserScript(WKUserScript(source: Self.bridge(for: trusted), injectionTime: .atDocumentStart,
-                                           forMainFrameOnly: true))
+        let source = PluginBridgeScript.source(trusted: trusted, stash: stash, stashOrigins: stashOrigins,
+                                               extra: Self.keyScript)
+        content.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
 
     @available(*, unavailable)
@@ -367,10 +329,10 @@ import WebKit
 
     @objc private func reloadPressed() { reload() }
 
-    /// Sends the player's state to the page (no-op until the bridge exists). The JSON travels as an argument and is
-    /// parsed in the page: splicing it into script source would break on U+2028 and U+2029.
+    /// Sends the player's state to the page (no-op until the bridge exists), also while its slot is hidden. The JSON travels
+    /// as an argument and is parsed in the page: splicing it into script source would break on U+2028 and U+2029.
     func push(_ state: PluginState) {
-        guard !isHidden, let json = state.json else { return }
+        guard let json = state.json else { return }
         call("if (window.framescrub) window.framescrub._state(JSON.parse(json))", ["json": json])
     }
 
@@ -514,29 +476,6 @@ import WebKit
         } else {
             completion(alert.runModal())
         }
-    }
-}
-
-/// The grab zone along the panel's leading edge: dragging it resizes the panel (it sits to the right of the video, so
-/// a drag to the left widens it).
-@MainActor private final class SplitterView: NSView {
-    static let width: CGFloat = 6
-    /// The width the drag asks for.
-    var onDrag: ((CGFloat) -> Void)?
-    private var startX: CGFloat = 0
-    private var startWidth: CGFloat = 0
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .resizeLeftRight)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        startX = event.locationInWindow.x
-        startWidth = superview?.frame.width ?? 0
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        onDrag?(startWidth + (startX - event.locationInWindow.x))
     }
 }
 

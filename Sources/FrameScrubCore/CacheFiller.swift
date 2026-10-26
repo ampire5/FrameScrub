@@ -23,6 +23,9 @@ public final class CacheFiller {
     private let readCache: ReadCache?
     private var hardwarePreferred: Bool
     private let estimatedFrameBytes: Int
+    private let policy: NetworkPolicy
+    /// Frames kept above and below the playhead when not playing (`NetworkPolicy`), nil = what the budget allows.
+    private let windowCap: (ahead: Int, behind: Int)?
     private let playbackLookahead: Int
     private let condition = NSCondition()
     private let finished = DispatchGroup()
@@ -88,6 +91,7 @@ public final class CacheFiller {
 
     public init(url: URL, index: FrameIndex, cache: FrameCache, estimatedFrameBytes: Int,
                 playbackLookahead: Int, preferHardware: Bool = true, readCache: ReadCache? = nil,
+                policy: NetworkPolicy = .local, frameRate: Double = 30,
                 now: @escaping () -> Double = CACurrentMediaTime) {
         self.url = url
         self.now = now
@@ -96,6 +100,10 @@ public final class CacheFiller {
         self.cache = cache
         self.estimatedFrameBytes = estimatedFrameBytes
         self.playbackLookahead = playbackLookahead
+        self.policy = policy
+        windowCap = policy.frameAheadSeconds.map {
+            (max(2, Int($0 * frameRate)), max(0, Int((policy.frameBehindSeconds ?? $0) * frameRate)))
+        }
         hardwarePreferred = preferHardware
     }
 
@@ -281,7 +289,11 @@ public final class CacheFiller {
         var ahead = min(room, max(2, Int(Double(room) * (1 - share))))
         if mode == .playing { ahead = min(ahead, playbackLookahead) }
         if mode == .reversing { ahead = min(room, Self.reverseAhead) }
-        let behind = mode == .playing ? 0 : mode == .reversing ? room - ahead : min(room - ahead, Int(Double(room) * share))
+        var behind = mode == .playing ? 0 : mode == .reversing ? room - ahead : min(room - ahead, Int(Double(room) * share))
+        if let cap = windowCap, mode != .reversing {
+            ahead = min(ahead, max(cap.ahead, playbackLookahead))
+            behind = min(behind, cap.behind)
+        }
         let f = clampedFocusLocked()
         var lower = max(0, f - behind)
         var upper = min(max(index.frameCount - 1, 0), f + ahead)
@@ -476,6 +488,7 @@ public final class CacheFiller {
     /// A worker's decoder and how it was made.
     private struct DecoderSlot {
         var decoder: VideoDecoder?
+        var forward = true          // the forward worker's (always reads ahead) or the backward one's
         var version = -1            // index version the decoder uses
         var hardware = true         // made with this `preferHardware`
         var failures = 0            // consecutive creation failures…
@@ -507,7 +520,9 @@ public final class CacheFiller {
             guard slot.failures < Self.maxCreationFailures else { return nil }
             condition.withLock { creationAttempts += 1 }
             do {
-                slot.decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache), index: currentIndex,
+                slot.decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache,
+                                                        readAhead: slot.forward || policy.sideReadAhead),
+                                                index: currentIndex,
                                                 preferHardware: hardware)
                 slot.hardware = hardware
                 slot.failures = 0
@@ -637,7 +652,7 @@ public final class CacheFiller {
     }
 
     private func backwardLoop() {
-        var slot = DecoderSlot()
+        var slot = DecoderSlot(forward: false)
         while true {
             condition.lock()
             guard running else { condition.unlock(); return }

@@ -90,10 +90,13 @@ public final class CropSampler: @unchecked Sendable {
     private let index: FrameIndex
     private let rotation: Int
     private let readCache: ReadCache?
+    private let policy: NetworkPolicy
     private let cancelled = CancellationFlag()
 
-    public init(url: URL, index: FrameIndex, rotationClockwise: Int, readCache: ReadCache? = nil) {
+    public init(url: URL, index: FrameIndex, rotationClockwise: Int, readCache: ReadCache? = nil,
+                policy: NetworkPolicy = .local) {
         self.url = url
+        self.policy = policy
         self.index = index
         rotation = rotationClockwise
         self.readCache = readCache
@@ -101,8 +104,10 @@ public final class CropSampler: @unchecked Sendable {
 
     /// Calls `completion` on the main queue with the crop (nil: no bars, or the file could not be sampled),
     /// unless cancelled first.
-    public func start(samples: Int = 10, completion: @escaping @Sendable (CGRect?) -> Void) {
-        DispatchQueue.global(qos: .utility).async { [self] in
+    public func start(samples: Int? = nil, completion: @escaping @Sendable (CGRect?) -> Void) {
+        let samples = samples ?? policy.barSamples
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + policy.barsDelay) { [self] in
+            guard !cancelled.isCancelled else { return }
             let crop = detect(samples: samples)
             DispatchQueue.main.async { [self] in
                 if !cancelled.isCancelled { completion(crop) }
@@ -114,7 +119,7 @@ public final class CropSampler: @unchecked Sendable {
 
     func detect(samples: Int) -> CGRect? {
         guard index.frameCount > 0,
-              let decoder = try? VideoDecoder(source: MediaSource(url: url, readCache: readCache), index: index) else { return nil }
+              let decoder = try? VideoDecoder(source: MediaSource(url: url, readCache: readCache, readAhead: policy.sideReadAhead), index: index) else { return nil }
         let context = CIContext(options: [.cacheIntermediates: false])
         var seen = Set<Int64>()
         var rects: [CGRect?] = []

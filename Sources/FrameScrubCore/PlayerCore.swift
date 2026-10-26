@@ -74,6 +74,8 @@ public final class PlayerCore {
     public private(set) var info: MediaSource?
     /// The open file's shared reads (spec §4).
     public private(set) var readCache: ReadCache?
+    /// How hard the open file may be read (`network-mode` and the file's volume), decided when it opens.
+    public private(set) var networkPolicy = NetworkPolicy.local
     public private(set) var index: FrameIndex?
     public private(set) var position = 0
     public private(set) var isPaused = true
@@ -220,11 +222,12 @@ public final class PlayerCore {
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
     /// resume point, Stash spec §2.3).
     public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
+        networkPolicy = NetworkPolicy.resolve(config.networkMode, url: url)
         let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url, config))
         let source = try MediaSource(url: url, readCache: readCache)
         StartupTrace.mark("probe done")
         readCache.probe = StreamProbe(source)
-        readCache.readAheadBytes = Int(source.bytesPerSecond * 3)
+        readCache.readAheadBytes = min(Int(source.bytesPerSecond * networkPolicy.readAheadSeconds), readCacheBudget(1) / 2)
         // Segments given while no file was open are for this one; those of the file open now go with it.
         let pendingSegments = index == nil && !segmentsSource.isEmpty
             ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
@@ -249,7 +252,8 @@ public final class PlayerCore {
         let filler = CacheFiller(url: url, index: approximate, cache: cache,
                                  estimatedFrameBytes: source.estimatedFrameBytes,
                                  playbackLookahead: max(8, Int(source.frameRate * 2)),
-                                 preferHardware: config.hwdec.prefersHardware, readCache: readCache)
+                                 preferHardware: config.hwdec.prefersHardware, readCache: readCache,
+                                 policy: networkPolicy, frameRate: source.frameRate)
         filler.onInsert = { [weak self] n in
             DispatchQueue.main.async { self?.frameInserted(n, session: current) }
         }
@@ -824,7 +828,7 @@ public final class PlayerCore {
             decoder: filler?.decoderStatus.map { "\($0.codec) (\($0.backend.rawValue))" } ?? "starting",
             frame: position, lastFrame: index.frameCount - 1, exactIndex: index.isExact, time: progressText,
             cache: "\(cache.usedBytes >> 20) / \(cache.budgetBytes >> 20) MiB, \(cache.count) frames",
-            readCache: readCache?.stats.text, seek: seekTimer.text, index: indexStatus.text,
+            readCache: readCache.map { networkPolicy.isNetwork ? $0.stats.text + ", network mode" : $0.stats.text }, seek: seekTimer.text, index: indexStatus.text,
             speed: speedText, volume: isMuted ? "muted" : "\(Int(volume))%", saved: savedCount, marks: marksText, abLoop: abLoop,
             sharpness: sharpnessText, change: changeText, lastDecodeError: filler?.lastError.map { "\($0)" },
             clips: clipQueue.flatMap { $0.isBusy ? "saving 1 · \($0.waitingCount) waiting" : nil })
@@ -1782,7 +1786,7 @@ public final class PlayerCore {
     }
 
     private func readCacheBudget(_ factor: Double) -> Int {
-        Int(Double(config.readCacheMiB << 20) * factor)
+        Int(Double(max(config.readCacheMiB, config.readCacheMiB > 0 ? networkPolicy.minReadCacheMiB : 0) << 20) * factor)
     }
 
     private func watchMemoryPressure() {

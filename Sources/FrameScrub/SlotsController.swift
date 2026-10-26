@@ -1,0 +1,836 @@
+import AppKit
+import FrameScrubCore
+
+/// The window's three slots (left, right, bottom; spec "slots"): what each holds, where it goes (`SlotLayout`), showing
+/// and hiding them (chords, menus, the edge and its tongue, auto-hide), and the plugin pages they hold — one page per slot, so
+/// the same plugin in two slots is two pages. The controller sets the slots' frames itself and tells the window where
+/// the video goes (`onLayout`); nothing shows a slot by itself (spec §3.7).
+@MainActor final class SlotsController {
+    /// The video's rect and the visible part of it, in container points, whenever either changes.
+    var onLayout: ((_ video: CGRect, _ visible: CGRect) -> Void)?
+    /// A new page was made for a slot: the window wires its callbacks.
+    var configurePage: ((PluginPanel) -> Void)?
+    /// A slot's setting changed (written to `framescrub.conf` by the window).
+    var onPersist: ((SlotEdge, SlotSetting) -> Void)?
+    /// A short message for the OSD.
+    var onMessage: ((String) -> Void)?
+    /// Which pages are shown changed, or a page's slot (mode, backdrop, focus): keys and state go to the shown pages.
+    var onPagesChanged: (() -> Void)?
+    /// A slot holding the keyboard hid: keys go back to the player.
+    var onFocusVideo: (() -> Void)?
+    /// A page left its slot for good (cleared, replaced, its plugin gone): what it declared is void.
+    var onPageDropped: ((PluginPanel) -> Void)?
+
+    let playlistView: PlaylistPanelView
+
+    @MainActor private final class Slot {
+        let edge: SlotEdge
+        let view: SlotView
+        let tongue: SlotTongueView
+        var setting: SlotSetting
+        var page: PluginPanel?
+        /// The plugin the page shows (its name in `plugins`) and the URL its entry had when the page loaded it.
+        var pageName: String?
+        var pageEntryURL: URL?
+        /// What the slot held before a link's page was put in: that is what is saved, the link's page is for this run.
+        var savedContent: SlotContent?
+        var reveal = EdgeReveal()
+        var clock: AutoHideClock
+        /// When the slot was last shown, for the layout's "newest demotes first".
+        var shownOrder = 0
+        var demoted = false
+
+        init(edge: SlotEdge, setting: SlotSetting) {
+            self.edge = edge
+            view = SlotView(edge: edge)
+            tongue = SlotTongueView(edge: edge)
+            self.setting = setting
+            clock = AutoHideClock(mode: setting.autoHide)
+        }
+    }
+
+    private let container: NSView
+    /// Slot views go above this one (the video, or a view covering it such as the start screen).
+    private let above: NSView
+    private var slots: [SlotEdge: Slot] = [:]
+    private var plugins: [PluginEntry]
+    /// A page a `framescrub://` link brought (`plugin=` in the link), shown as the plugin named `Plugin`.
+    private var linkPlugin: PluginEntry?
+    private var showCounter = 0
+    private var lastVideo: CGRect?
+    private var lastVisible: CGRect?
+    private var autoHideTimer: Timer?
+    private var monitor: Any?
+    private var globalMonitor: Any?
+    /// A slot's menu is open: auto-hide waits.
+    private var menuOpen = false
+    /// The OSD said the window is too small for these pinned slots; said again only when the set changes.
+    private var reportedDemotions: Set<SlotEdge> = []
+
+    private static let edgeMargin: CGFloat = 2
+    /// Corners belong to no edge: a pointer in the corner is not resting at either side.
+    private static let cornerZone: CGFloat = 24
+
+    /// Makes the slots; `start` fills them once the callbacks are set.
+    init(container: NSView, above: NSView, config: Config, playlistView: PlaylistPanelView) {
+        self.container = container
+        self.above = above
+        self.playlistView = playlistView
+        plugins = config.plugins
+        var playlistTaken = false
+        for edge in SlotEdge.allCases {
+            var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
+            if setting.content == .playlist {
+                if playlistTaken { setting.content = .empty }   // one playlist: the first slot that names it keeps it
+                playlistTaken = true
+            }
+            let slot = Slot(edge: edge, setting: setting)
+            slots[edge] = slot
+            slot.view.translatesAutoresizingMaskIntoConstraints = true
+            container.addSubview(slot.view, positioned: .above, relativeTo: above)
+            wire(slot)
+        }
+    }
+
+    /// Puts each slot's view in (making the pages), and shows the pinned slots that were shown; overlay slots start
+    /// hidden.
+    func start() {
+        for slot in orderedSlots { install(slot.setting.content, in: slot) }
+        for slot in orderedSlots {
+            container.addSubview(slot.tongue)   // above everything: the tongue must take its click
+            slot.tongue.onClick = { [weak self, weak slot] in
+                guard let self, let slot, !slot.view.isShown else { return }
+                hideTongue(slot)
+                show(slot, focus: false)
+            }
+        }
+        for slot in orderedSlots where slot.setting.shown {
+            if slot.setting.mode == .pinned && slot.setting.content != .empty {
+                showCounter += 1
+                slot.shownOrder = showCounter
+                slot.view.setShown(true, animated: false)
+                slot.page?.isShownInSlot = true
+            } else {
+                slot.setting.shown = false
+            }
+        }
+        applyLayout(revealing: nil, animated: false)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseDown,
+                                                              .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                                                              .otherMouseDown, .otherMouseUp]) { [weak self] event in
+            MainActor.assumeIsolated { self?.pointerEvent(event) }
+            return event
+        }
+        // While the app is in the background it gets no pointer events of its own; the player window may still be in sight.
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
+            MainActor.assumeIsolated { self?.backgroundPointerEvent() }
+        }
+    }
+
+    isolated deinit {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        autoHideTimer?.invalidate()
+    }
+
+    private var orderedSlots: [Slot] { SlotEdge.allCases.compactMap { slots[$0] } }
+
+    // MARK: What the window asks
+
+    /// Every page the slots hold, shown or not.
+    var pages: [PluginPanel] { orderedSlots.compactMap(\.page) }
+
+    /// The pages whose slot is on screen, oldest shown first.
+    var shownPages: [PluginPanel] {
+        orderedSlots.filter { $0.view.isShown }.sorted { $0.shownOrder < $1.shownOrder }.compactMap(\.page)
+    }
+
+    func page(withToken token: Int) -> PluginPanel? { pages.first { $0.token == token } }
+
+    /// Where `page` is shown, for its `panel` state.
+    func panelInfo(for page: PluginPanel) -> PanelInfo? {
+        guard let slot = orderedSlots.first(where: { $0.page === page }) else { return nil }
+        let mode = effectiveMode(slot)
+        return PanelInfo(slot: slot.edge, mode: mode, backdrop: mode == .pinned ? .dark : slot.setting.backdrop,
+                         shown: slot.view.isShown, focused: slot.view.holds(container.window?.firstResponder as? NSView))
+    }
+
+    /// The pointer is over a shown slot (not the video).
+    var isPointerOverShownSlot: Bool {
+        guard let window = container.window else { return false }
+        let point = container.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return orderedSlots.contains { $0.view.isShown && $0.view.frame.contains(point) }
+    }
+
+    /// Whether the playlist is in a shown slot.
+    var isPlaylistShown: Bool { orderedSlots.contains { $0.setting.content == .playlist && $0.view.isShown } }
+
+    // MARK: Showing and hiding
+
+    /// ⌃⌘← / ⌃⌘→ / ⌃⌘↓ and View › Slots: shows the slot with the keyboard (an empty one opens its "+" menu), or hides it.
+    func toggle(_ edge: SlotEdge) {
+        guard let slot = slots[edge] else { return }
+        if slot.view.isShown { hide(slot) } else { show(slot, focus: true) }
+    }
+
+    /// F8 / TAB (`toggle-playlist`): the slot holding the playlist; without one, the playlist goes into the first empty
+    /// slot (right, left, bottom).
+    func togglePlaylist() {
+        if let slot = orderedSlots.first(where: { $0.setting.content == .playlist }) {
+            if slot.view.isShown { hide(slot) } else { show(slot, focus: false) }
+            return
+        }
+        guard let slot = firstEmptySlot else {
+            onMessage?("Every slot is taken: choose Playlist in a slot's menu")
+            return
+        }
+        setContent(.playlist, of: slot)
+        show(slot, focus: false)
+    }
+
+    /// Shows the playlist's slot (placing the playlist as `togglePlaylist` does) and gives it the keyboard's filter.
+    func showPlaylistForFilter() {
+        if !isPlaylistShown { togglePlaylist() }
+        guard isPlaylistShown else { return }
+        playlistView.beginFilter()
+    }
+
+    /// ⌥⌘P: the first slot holding a plugin page; without one, the first plugin goes into the first empty slot.
+    func togglePlugin(focus: Bool = false) {
+        if let slot = orderedSlots.first(where: { $0.page != nil }) {
+            if slot.view.isShown && !focus { hide(slot) } else { show(slot, focus: focus) }
+            return
+        }
+        guard let first = allPlugins.first else {
+            onMessage?("No plugin page: add plugin=Name | URL to framescrub.conf, or open a link with plugin=")
+            return
+        }
+        guard let slot = firstEmptySlot else {
+            onMessage?("Every slot is taken: choose \(first.name) in a slot's menu")
+            return
+        }
+        setContent(.plugin(name: first.name), of: slot)
+        show(slot, focus: focus)
+    }
+
+    /// A `framescrub://` link's page: shown in the first slot holding a page (or one put in an empty slot).
+    @discardableResult
+    func showLinkPage(_ url: URL) -> Bool {
+        guard PluginPageSource.link.accepts(url) else { return false }
+        if let slot = orderedSlots.first(where: { $0.page != nil }), let page = slot.page {
+            page.load(url, from: .link)
+            show(slot, focus: false)
+            return true
+        }
+        linkPlugin = PluginEntry(name: SlotDefaults.linkPluginName, url: url)
+        guard let slot = firstEmptySlot ?? slots[.right] else { return false }
+        let before = slot.setting.content
+        setContent(.plugin(name: SlotDefaults.linkPluginName), of: slot)
+        slot.savedContent = before
+        persist(slot)
+        slot.page?.load(url, from: .link)
+        show(slot, focus: false)
+        return true
+    }
+
+    /// A click on the video: the overlay slots go. False when none was shown (the click is the video's then).
+    @discardableResult
+    func hideOverlays() -> Bool {
+        let shown = orderedSlots.filter { $0.view.isShown && effectiveMode($0) == .overlay }
+        for slot in shown { hide(slot) }
+        return !shown.isEmpty
+    }
+
+    /// The page asked to hide (`hide()` in the bridge).
+    func hide(page: PluginPanel) {
+        guard let slot = orderedSlots.first(where: { $0.page === page }), slot.view.isShown else { return }
+        hide(slot)
+    }
+
+    /// The page started something playing (`open`, `playlist`): its overlay slot goes when it hides after a choice.
+    func pageChosePlay(_ page: PluginPanel) {
+        guard let slot = orderedSlots.first(where: { $0.page === page }) else { return }
+        hideAfterChoice(slot)
+    }
+
+    /// The playlist opened a file: its overlay slot goes when it hides after a choice.
+    func playlistChosePlay() {
+        guard let slot = orderedSlots.first(where: { $0.setting.content == .playlist }) else { return }
+        hideAfterChoice(slot)
+    }
+
+    /// Esc in a page that left it unhandled, or in the playlist's filter: an overlay slot hides. True when it did.
+    func escape(in view: NSView) -> Bool {
+        guard let slot = orderedSlots.first(where: { $0.view.holds(view) }), slot.view.isShown,
+              effectiveMode(slot) == .overlay else { return false }
+        hide(slot)
+        return true
+    }
+
+    private func hideAfterChoice(_ slot: Slot) {
+        guard slot.view.isShown, effectiveMode(slot) == .overlay, slot.clock.hidesOnChoice else { return }
+        hide(slot)
+    }
+
+    private var firstEmptySlot: Slot? {
+        [SlotEdge.right, .left, .bottom].compactMap { slots[$0] }.first { $0.setting.content == .empty }
+    }
+
+    private func show(_ slot: Slot, focus: Bool) {
+        if !slot.view.isShown {
+            showCounter += 1
+            slot.shownOrder = showCounter
+            slot.setting.shown = true
+            slot.page?.isShownInSlot = true
+            hideTongue(slot)
+            slot.reveal.reset()
+            applyLayout(revealing: slot)
+            slot.clock.shown(pointerInside: isPointer(in: slot), now: Self.now)
+            persist(slot)
+            onPagesChanged?()
+            updateAutoHideTimer()
+        }
+        if slot.setting.content == .empty {
+            DispatchQueue.main.async { [weak self, weak slot] in
+                guard let self, let slot, slot.view.isShown else { return }
+                popUp(plusMenu(for: slot), from: nil, in: slot)
+            }
+        } else if focus {
+            if let page = slot.page { page.focus() } else if slot.setting.content == .playlist { playlistView.beginFilter() }
+        }
+    }
+
+    private func hide(_ slot: Slot) {
+        guard slot.view.isShown else { return }
+        let hadFocus = holdsFocus(slot)
+        slot.setting.shown = false
+        slot.view.setShown(false, animated: true) { [weak self] in self?.onPagesChanged?() }
+        slot.page?.isShownInSlot = false
+        applyLayout(revealing: nil)
+        persist(slot)
+        if hadFocus { onFocusVideo?() }
+        onPagesChanged?()
+        updateAutoHideTimer()
+    }
+
+    // MARK: Layout
+
+    /// The container's size changed.
+    func containerDidLayout() {
+        applyLayout(revealing: nil, animated: false)
+    }
+
+    /// Lays out the shown slots; `revealing` is the slot that has just been shown and slides in. A pinned slot changes
+    /// the video once, when its slide ends; an overlay slot never does.
+    private func applyLayout(revealing: Slot?, animated: Bool = true) {
+        guard container.bounds.width >= 1, container.bounds.height >= 1 else {   // not laid out yet
+            revealing?.view.setShown(true, animated: false)
+            return
+        }
+        let shown = orderedSlots.filter { $0.view.isShown || $0 === revealing }
+        var sizes: [SlotEdge: (mode: SlotMode, size: CGFloat)] = [:]
+        for slot in shown { sizes[slot.edge] = (slot.setting.mode, CGFloat(slot.setting.size)) }
+        let layout = SlotLayout.compute(.init(container: container.bounds, slots: sizes,
+                                              order: shown.sorted { $0.shownOrder < $1.shownOrder }.map(\.edge)))
+        var modesChanged = false
+        for slot in shown {
+            guard let rect = layout.slots[slot.edge] else { continue }
+            if slot.view.frame != rect { slot.view.frame = rect }
+            let mode = layout.effectiveMode[slot.edge] ?? slot.setting.mode
+            if slot.view.mode != mode { slot.view.mode = mode; modesChanged = true }
+            slot.view.backdrop = slot.setting.backdrop
+            slot.demoted = layout.demoted.contains(slot.edge)
+        }
+        let demoted = Set(layout.demoted)
+        if !demoted.isEmpty, !demoted.isSubset(of: reportedDemotions) {
+            onMessage?("Not enough room beside the video: the slot lies over it")
+        }
+        reportedDemotions = demoted
+        var visible = layout.video
+        for (edge, rect) in layout.slots where layout.effectiveMode[edge] == .overlay {
+            switch edge {
+            case .left: visible.size.width -= rect.maxX - visible.minX; visible.origin.x = rect.maxX
+            case .right: visible.size.width = rect.minX - visible.minX
+            case .bottom: visible.size.height -= rect.maxY - visible.minY; visible.origin.y = rect.maxY
+            }
+        }
+        let report = { [weak self] in
+            guard let self, layout.video != lastVideo || visible != lastVisible else { return }
+            lastVideo = layout.video
+            lastVisible = visible
+            onLayout?(layout.video, visible)
+        }
+        if let revealing, animated {
+            let pinned = layout.effectiveMode[revealing.edge] == .pinned
+            if !pinned { report() }   // the visible part shrinks at once; the video stays as it is
+            revealing.view.setShown(true, animated: true) { if pinned { report() } }
+        } else {
+            revealing?.view.setShown(true, animated: false)
+            report()
+        }
+        if modesChanged { onPagesChanged?() }
+    }
+
+    private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : slot.setting.mode }
+
+    // MARK: Contents
+
+    private var allPlugins: [PluginEntry] {
+        guard let linkPlugin, !plugins.contains(where: { $0.name == linkPlugin.name }) else { return plugins }
+        return plugins + [linkPlugin]
+    }
+
+    /// Settings changed: the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
+    func configChanged(_ config: Config) {
+        plugins = config.plugins
+        for slot in orderedSlots { install(slot.setting.content, in: slot) }
+    }
+
+    private func setContent(_ content: SlotContent, of slot: Slot) {
+        let hadFocus = holdsFocus(slot)
+        slot.savedContent = nil   // the user's choice is kept
+        slot.setting.content = content
+        install(content, in: slot)
+        persist(slot)
+        if hadFocus { onFocusVideo?() }   // the view that had the keyboard left the window
+        onPagesChanged?()
+    }
+
+    private func holdsFocus(_ slot: Slot) -> Bool {
+        slot.view.holds(container.window?.firstResponder as? NSView)
+    }
+
+    /// Puts the view for `content` into the slot: the playlist, a page (kept when it already shows that plugin), or
+    /// nothing (the "+", with a note when the plugin is not in the config).
+    private func install(_ content: SlotContent, in slot: Slot) {
+        slot.view.note = nil
+        switch content {
+        case .empty:
+            dropPage(of: slot)
+            slot.view.content = nil
+            slot.view.title = "Empty"
+        case .playlist:
+            dropPage(of: slot)
+            slot.view.content = playlistView
+            slot.view.title = "Playlist"
+        case let .plugin(name):
+            if slot.view.content === playlistView { slot.view.content = nil }
+            slot.view.title = name
+            guard let entry = allPlugins.first(where: { $0.name == name }) else {
+                dropPage(of: slot)
+                slot.view.content = nil
+                slot.view.note = "Plugin “\(name)” is not in framescrub.conf"
+                return
+            }
+            let page: PluginPanel
+            if let existing = slot.page, slot.pageName == name {
+                page = existing
+            } else {
+                dropPage(of: slot)
+                page = PluginPanel()
+                configurePage?(page)
+                slot.page = page
+                slot.pageName = name
+            }
+            page.isShownInSlot = slot.view.isShown
+            if page.url == nil || slot.pageEntryURL != entry.url {   // a link's page stays until the entry changes
+                slot.pageEntryURL = entry.url
+                if !page.load(entry.url, from: entry == linkPlugin ? .link : .settings) {
+                    slot.view.note = "Cannot show \(entry.url.absoluteString)"
+                }
+            }
+            slot.view.content = page
+        }
+    }
+
+    private func dropPage(of slot: Slot) {
+        guard let page = slot.page else { return }
+        if slot.view.content === page { slot.view.content = nil }
+        slot.page = nil
+        slot.pageName = nil
+        slot.pageEntryURL = nil
+        onPageDropped?(page)
+    }
+
+    /// Moves the slot's live view to `target`; the views trade places when `target` holds one.
+    private func move(_ slot: Slot, to target: Slot) {
+        let hadFocus = holdsFocus(slot) || holdsFocus(target)
+        let mine = (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent)
+        let other = (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent)
+        slot.view.content = nil
+        target.view.content = nil
+        (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent) = other
+        (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent) = mine
+        install(target.setting.content, in: target)
+        install(slot.setting.content, in: slot)
+        slot.page?.isShownInSlot = slot.view.isShown
+        persist(slot)
+        persist(target)
+        if slot.setting.content == .empty, slot.view.isShown { hide(slot) }
+        // Taking the views out of the window took the keyboard from them: the moved one gets it back.
+        if hadFocus { onFocusVideo?() }
+        show(target, focus: hadFocus)
+        onPagesChanged?()
+    }
+
+    // MARK: Menus
+
+    private func wire(_ slot: Slot) {
+        let view = slot.view
+        view.onPlus = { [weak self, weak slot] button in
+            guard let self, let slot else { return }
+            popUp(plusMenu(for: slot), from: button, in: slot)
+        }
+        view.onHeaderMenu = { [weak self, weak slot] button in
+            guard let self, let slot else { return }
+            popUp(headerMenu(for: slot), from: button, in: slot)
+        }
+        view.onTogglePin = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            togglePin(slot)
+        }
+        view.onCycleBackdrop = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            cycleBackdrop(slot)
+        }
+        view.onClose = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            hide(slot)
+        }
+        view.onResize = { [weak self, weak slot] size in
+            guard let self, let slot else { return }
+            let range = slot.edge.sizeRange
+            let clamped = min(max(Int(size.rounded()), range.lowerBound), range.upperBound)
+            guard clamped != slot.setting.size else { return }
+            slot.setting.size = clamped
+            applyLayout(revealing: nil, animated: false)
+        }
+        view.onResizeEnd = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            persist(slot)
+        }
+    }
+
+    /// The slot that menu commands (View › Slots) act on: the one with the keyboard, else the newest shown one.
+    private var currentSlot: Slot? {
+        let responder = container.window?.firstResponder as? NSView
+        return orderedSlots.first { $0.view.isShown && $0.view.holds(responder) }
+            ?? orderedSlots.filter(\.view.isShown).max { $0.shownOrder < $1.shownOrder }
+    }
+
+    /// View › Slots › Pin / Float.
+    func togglePinOfCurrent() { currentSlot.map(togglePin) }
+    /// View › Slots › Next Backdrop.
+    func cycleBackdropOfCurrent() { currentSlot.map(cycleBackdrop) }
+    /// View › Slots › Clear Slot.
+    func clearCurrent() {
+        guard let slot = currentSlot else { return }
+        setContent(.empty, of: slot)
+    }
+
+    private func togglePin(_ slot: Slot) {
+        slot.setting.mode = slot.setting.mode == .pinned ? .overlay : .pinned
+        persist(slot)
+        applyLayout(revealing: nil, animated: false)
+        updateAutoHideTimer()
+        onPagesChanged?()
+    }
+
+    private func cycleBackdrop(_ slot: Slot) {
+        if effectiveMode(slot) == .pinned {
+            onMessage?("A pinned slot is always dark")
+            return
+        }
+        slot.setting.backdrop = slot.setting.backdrop.next
+        slot.view.backdrop = slot.setting.backdrop
+        persist(slot)
+        onMessage?("Backdrop: \(Self.title(of: slot.setting.backdrop))")
+        onPagesChanged?()
+    }
+
+    private static func title(of backdrop: SlotBackdrop) -> String {
+        switch backdrop {
+        case .dark: "Dark"
+        case .glass: "Glass"
+        case .clear: "Clear glass"
+        }
+    }
+
+    private static func title(of edge: SlotEdge) -> String {
+        switch edge {
+        case .left: "Left"
+        case .right: "Right"
+        case .bottom: "Bottom"
+        }
+    }
+
+    /// The "+" of an empty slot: the playlist (unless another slot has it) and the plugins.
+    private func plusMenu(for slot: Slot) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        addContentItems(to: menu, for: slot)
+        return menu
+    }
+
+    private func addContentItems(to menu: NSMenu, for slot: Slot) {
+        let playlistElsewhere = orderedSlots.contains { $0 !== slot && $0.setting.content == .playlist }
+        let playlist = menu.addItem(withTitle: "Playlist", action: nil, keyEquivalent: "")
+        playlist.isEnabled = !playlistElsewhere
+        playlist.state = slot.setting.content == .playlist ? .on : .off
+        if playlistElsewhere { playlist.toolTip = "The playlist is in another slot" }
+        playlist.handler = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            choose(.playlist, for: slot)
+        }
+        menu.addItem(.separator())
+        if allPlugins.isEmpty {
+            let none = menu.addItem(withTitle: "No plugins: add plugin=Name | URL to framescrub.conf", action: nil,
+                                    keyEquivalent: "")
+            none.isEnabled = false
+        }
+        for entry in allPlugins {
+            let item = menu.addItem(withTitle: entry.name, action: nil, keyEquivalent: "")
+            item.state = slot.setting.content == .plugin(name: entry.name) ? .on : .off
+            item.handler = { [weak self, weak slot] in
+                guard let self, let slot else { return }
+                choose(.plugin(name: entry.name), for: slot)
+            }
+        }
+    }
+
+    private func choose(_ content: SlotContent, for slot: Slot) {
+        if content != slot.setting.content { setContent(content, of: slot) }
+        show(slot, focus: true)
+    }
+
+    /// ▾ in the header: what the slot shows, moving it, when it hides by itself, clearing it.
+    private func headerMenu(for slot: Slot) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        addContentItems(to: menu, for: slot)
+        if slot.setting.content != .empty {
+            menu.addItem(.separator())
+            for edge in SlotEdge.allCases where edge != slot.edge {
+                let item = menu.addItem(withTitle: "Move to \(Self.title(of: edge)) Slot", action: nil, keyEquivalent: "")
+                item.handler = { [weak self, weak slot] in
+                    guard let self, let slot, let target = slots[edge] else { return }
+                    move(slot, to: target)
+                }
+            }
+        }
+        menu.addItem(.separator())
+        let heading = menu.addItem(withTitle: "Hide by Itself", action: nil, keyEquivalent: "")
+        heading.isEnabled = false
+        let choices: [(SlotAutoHide, String)] = [(.afterChoice, "After Choosing Something to Play"),
+                                                 (.mouseLeaves, "When the Pointer Leaves"), (.manual, "Only When Asked")]
+        for (mode, title) in choices {
+            let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+            item.state = slot.setting.autoHide == mode ? .on : .off
+            item.indentationLevel = 1
+            item.isEnabled = slot.setting.mode == .overlay
+            item.handler = { [weak self, weak slot] in
+                guard let self, let slot else { return }
+                slot.setting.autoHide = mode
+                slot.clock = AutoHideClock(mode: mode)
+                slot.clock.pointerInside(isPointer(in: slot), now: Self.now)
+                persist(slot)
+                updateAutoHideTimer()
+            }
+        }
+        menu.addItem(.separator())
+        let revealHeading = menu.addItem(withTitle: "Show from the Edge", action: nil, keyEquivalent: "")
+        revealHeading.isEnabled = false
+        for (reveal, title) in [(SlotReveal.atOnce, "When the Pointer Touches It"), (.tongue, "With a Click on Its Tongue")] {
+            let item = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+            item.state = slot.setting.reveal == reveal ? .on : .off
+            item.indentationLevel = 1
+            item.isEnabled = slot.setting.mode == .overlay
+            item.handler = { [weak self, weak slot] in
+                guard let self, let slot else { return }
+                slot.setting.reveal = reveal
+                slot.reveal.reset()
+                hideTongue(slot)
+                persist(slot)
+            }
+        }
+        if slot.setting.content != .empty {
+            menu.addItem(.separator())
+            let clear = menu.addItem(withTitle: "Clear Slot", action: nil, keyEquivalent: "")
+            clear.handler = { [weak self, weak slot] in
+                guard let self, let slot else { return }
+                setContent(.empty, of: slot)
+            }
+        }
+        return menu
+    }
+
+    private func popUp(_ menu: NSMenu, from button: NSView?, in slot: Slot) {
+        menuOpen = true
+        defer { menuOpen = false }
+        if let button {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 2), in: button)
+        } else {
+            let view = slot.view
+            menu.popUp(positioning: nil, at: NSPoint(x: view.bounds.midX - 60, y: view.bounds.midY), in: view)
+        }
+    }
+
+    // MARK: The edge
+
+    private static var now: Double { ProcessInfo.processInfo.systemUptime }
+
+    /// A hidden overlay slot with something in it comes from its edge: at once when the pointer touches the edge, or
+    /// by a click on its tongue, which fades in as the pointer nears.
+    private func pointerEvent(_ event: NSEvent) {
+        guard event.window === container.window, container.window != nil else { return }
+        reveal(at: container.convert(event.locationInWindow, from: nil))
+    }
+
+    /// The pointer over the player's window while the app is in the background (a Mac in use elsewhere, the player beside it):
+    /// the edges answer as they do in front. Only when the window itself is what is under the pointer, not another window over it.
+    private func backgroundPointerEvent() {
+        guard !NSApp.isActive, let window = container.window, window.isVisible, window.occlusionState.contains(.visible) else { return }
+        let screenPoint = NSEvent.mouseLocation
+        guard window.frame.contains(screenPoint),
+              NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: 0) == window.windowNumber else { return }
+        reveal(at: container.convert(window.convertPoint(fromScreen: screenPoint), from: nil))
+    }
+
+    /// `point` in the container: edges and tongues of the hidden overlay slots. A window that is not the key one still
+    /// answers (another of the app's windows may be in front of the keyboard): only a sheet on it keeps the edges quiet.
+    private func reveal(at point: CGPoint) {
+        let buttonHeld = NSEvent.pressedMouseButtons != 0
+        let bounds = container.bounds
+        let quiet = container.window?.attachedSheet != nil
+        for slot in orderedSlots {
+            guard !quiet, !slot.view.isShown, slot.setting.content != .empty, slot.setting.mode == .overlay else {
+                slot.reveal.reset()
+                hideTongue(slot)
+                continue
+            }
+            switch slot.setting.reveal {
+            case .atOnce:
+                hideTongue(slot)
+                if slot.reveal.pointer(atEdge: Self.isAt(slot.edge, point, in: bounds), buttonHeld: buttonHeld) == .revealSlot {
+                    show(slot, focus: false)
+                }
+            case .tongue:
+                let overTongue = !slot.tongue.isHidden && slot.tongue.frame.contains(point)
+                switch EdgeTongue.reaction(buttonHeld: buttonHeld, overTongue: overTongue) {
+                case .follow: moveTongue(slot, toward: point, in: bounds)
+                case .hide: hideTongue(slot)
+                case .keep: break   // the press is on its way to the tongue's own mouseDown
+                }
+            }
+        }
+    }
+
+    private static func isAt(_ edge: SlotEdge, _ p: CGPoint, in bounds: CGRect) -> Bool {
+        guard bounds.contains(p) || bounds.insetBy(dx: -1, dy: -1).contains(p) else { return false }
+        switch edge {
+        case .left:
+            return p.x <= bounds.minX + edgeMargin && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
+        case .right:
+            return p.x >= bounds.maxX - edgeMargin && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
+        case .bottom:
+            // The middle third only: the rest of the bottom edge is the seek bar's.
+            return p.y <= bounds.minY + edgeMargin && abs(p.x - bounds.midX) < bounds.width / 6
+        }
+    }
+
+    /// The tongue at the pointer's place along the edge, as visible as the pointer is near.
+    private func moveTongue(_ slot: Slot, toward p: CGPoint, in b: CGRect) {
+        let distance: CGFloat = switch slot.edge {
+        case .left: p.x - b.minX
+        case .right: b.maxX - p.x
+        case .bottom: p.y - b.minY
+        }
+        let opacity = b.contains(p) ? EdgeTongue.opacity(distance: distance) : 0
+        guard opacity > 0 else { hideTongue(slot); return }
+        let t = SlotTongueView.hitThickness, l = EdgeTongue.length
+        let tongue = slot.tongue
+        switch slot.edge {
+        case .left:
+            tongue.frame = CGRect(x: b.minX, y: EdgeTongue.center(at: p.y, span: b.minY...b.maxY) - l / 2, width: t, height: l)
+        case .right:
+            tongue.frame = CGRect(x: b.maxX - t, y: EdgeTongue.center(at: p.y, span: b.minY...b.maxY) - l / 2, width: t,
+                                  height: l)
+        case .bottom:
+            tongue.frame = CGRect(x: EdgeTongue.center(at: p.x, span: b.minX...b.maxX) - l / 2, y: b.minY, width: l, height: t)
+        }
+        tongue.alphaValue = opacity
+        tongue.isHidden = false
+    }
+
+    private func hideTongue(_ slot: Slot) { slot.tongue.isHidden = true }
+
+    // MARK: Auto-hide
+
+    /// The pointer is in the slot, or gone out of the window across the slot's edge and not far.
+    private func isPointer(in slot: Slot) -> Bool {
+        guard let window = container.window else { return false }
+        let point = container.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return SlotHover.counts(point, slot: slot.view.frame, edge: slot.edge, window: container.bounds)
+    }
+
+    /// A timer runs only while an overlay slot that hides when the pointer leaves is shown.
+    private func updateAutoHideTimer() {
+        let needed = orderedSlots.contains {
+            $0.view.isShown && effectiveMode($0) == .overlay && $0.setting.autoHide == .mouseLeaves
+        }
+        if needed && autoHideTimer == nil {
+            autoHideTimer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.autoHideTick() }
+            }
+        } else if !needed {
+            autoHideTimer?.invalidate()
+            autoHideTimer = nil
+        }
+    }
+
+    private func autoHideTick() {
+        let now = Self.now
+        for slot in orderedSlots where slot.view.isShown && effectiveMode(slot) == .overlay {
+            slot.clock.pointerInside(isPointer(in: slot), now: now)
+            slot.clock.setBusy(menuOpen || slot.view.isResizing || isTyping(in: slot))
+            if slot.clock.shouldHide(now: now) { hide(slot) }
+        }
+    }
+
+    /// Typing goes on in the slot: its page has a text field with the keyboard, or the playlist's filter has it.
+    private func isTyping(in slot: Slot) -> Bool {
+        guard holdsFocus(slot) else { return false }
+        if let page = slot.page { return page.isTyping }
+        return slot.setting.content == .playlist && playlistView.isEditingFilter
+    }
+
+    // MARK: Saving
+
+    private func persist(_ slot: Slot) {
+        var setting = slot.setting
+        if let saved = slot.savedContent {
+            setting.content = saved
+            if saved == .empty { setting.shown = false }
+        }
+        onPersist?(slot.edge, setting)
+    }
+}
+
+private extension NSMenuItem {
+    /// A closure run when the item is chosen.
+    var handler: (() -> Void)? {
+        get { (representedObject as? MenuHandler)?.run }
+        set {
+            let target = newValue.map(MenuHandler.init)
+            representedObject = target
+            self.target = target
+            action = target == nil ? nil : #selector(MenuHandler.fire)
+        }
+    }
+}
+
+private final class MenuHandler: NSObject {
+    let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
+}

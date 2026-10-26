@@ -69,20 +69,15 @@ import Testing
 
     @Test func parsesPluginKeys() {
         let (c, warnings) = Config.parse("""
-        plugin-url=http://host:8000/page/
-        plugin-width=560
         plugin-open-allowed=http://host:8000,file://
         """)
         #expect(warnings.isEmpty)
-        #expect(c.pluginURL == "http://host:8000/page/")
-        #expect(c.pluginWidth == 560)
         #expect(c.pluginOpenAllowed == "http://host:8000,file://")
-        #expect(c.text(forKey: "plugin-width") == "560")
-        let (bad, badWarnings) = Config.parse("plugin-width=100\nplugin-width=2000\nplugin-width=wide")
-        #expect(badWarnings.count == 3)
-        #expect(bad.pluginWidth == 400)
-        #expect(Config().pluginURL.isEmpty && Config().pluginOpenAllowed.isEmpty)
-        #expect(Config.pluginWidthRange == 240...1200)
+        #expect(c.text(forKey: "plugin-open-allowed") == "http://host:8000,file://")
+        #expect(Config().pluginOpenAllowed.isEmpty)
+        // The single-page keys of the first prototype are gone: unknown now.
+        #expect(Config.parse("plugin-url=http://h/p\nplugin-width=560").1.count == 2)
+        #expect(!Config.keys.contains("plugin-url") && !Config.keys.contains("plugin-width"))
     }
 
     @Test func stashOffByDefault() {
@@ -690,6 +685,17 @@ import Testing
         #expect(ExportSettings(config: config).color.isIdentity)
     }
 
+    @Test func parsesNetworkMode() {
+        #expect(Config().networkMode == .auto)
+        let (c, warnings) = Config.parse("network-mode=yes")
+        #expect(warnings.isEmpty)
+        #expect(c.networkMode == .yes)
+        #expect(c.text(forKey: "network-mode") == "yes")
+        let (bad, badWarnings) = Config.parse("network-mode=smb")
+        #expect(bad.networkMode == .auto)
+        #expect(badWarnings.count == 1)
+    }
+
     @Test func parsesHardwareDecoding() {
         #expect(Config().hwdec == .auto)
         let (c, warnings) = Config.parse("hwdec=no")
@@ -705,5 +711,62 @@ import Testing
         #expect(HardwareDecoding.auto.prefersHardware)
         #expect(HardwareDecoding.yes.prefersHardware)
         #expect(!HardwareDecoding.no.prefersHardware)
+    }
+
+    @Test func pluginLinesAccumulate() {
+        let (c, warnings) = Config.parse("plugin=Notes | http://h/notes\nplugin=Chapters | file:///tmp/ch.html")
+        #expect(warnings.isEmpty)
+        #expect(c.plugins.map(\.name) == ["Notes", "Chapters"])
+        #expect(c.plugins.last?.url.absoluteString == "file:///tmp/ch.html")
+    }
+
+    @Test func duplicatePluginNamesKeepFirst() {
+        let (c, _) = Config.parse("plugin=Notes | http://h/one\nplugin=Notes | http://h/two\nvolume=50")
+        #expect(c.plugins.count == 1)
+        #expect(c.plugins.first?.url.absoluteString == "http://h/one")
+        #expect(c.volume == 50)
+    }
+
+    @Test func badPluginLineWarns() {
+        let (c, warnings) = Config.parse("plugin=Notes\nvolume=50")
+        #expect(c.plugins.isEmpty)
+        #expect(warnings.count == 1)
+        #expect(c.volume == 50)
+    }
+
+    @Test func slotNamingMissingPluginStillParses() {
+        let (c, warnings) = Config.parse("slot-left=plugin:Gone, overlay, glass, after-choice, 500, hidden, at-once\nvolume=50")
+        #expect(warnings.isEmpty)
+        #expect(c.slots[.left]?.content == .plugin(name: "Gone"))
+        #expect(c.volume == 50)
+    }
+
+    @Test func slotSizeIsClampedPerEdge() {
+        let (c, _) = Config.parse("slot-left=empty, pinned, dark, manual, 5000, hidden, at-once\nslot-bottom=empty, pinned, dark, manual, 5000, hidden, at-once")
+        #expect(c.slots[.left]?.size == 1200)
+        #expect(c.slots[.bottom]?.size == 900)
+    }
+
+    @Test func slotKeysWriteBack() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("slots-\(UUID().uuidString).conf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "plugin=Notes | http://h/notes\n".write(to: url, atomically: true, encoding: .utf8)
+        var c = Config()
+        c.slots[.right] = SlotSetting(content: .plugin(name: "Notes"), mode: .pinned, backdrop: .clear,
+                                      autoHide: .manual, size: 520, shown: true)
+        try c.write(keys: ["slot-right"], to: url)
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let (back, warnings) = Config.parse(text)
+        #expect(warnings.isEmpty)
+        #expect(back.slots[.right] == c.slots[.right])
+        #expect(back.plugins.map(\.name) == ["Notes"])
+    }
+
+    @Test func missingSlotKeysKeepTheDefaults() {
+        #expect(Config.parse("volume=50").0.slots == SlotDefaults.standard)
+        let (c, _) = Config.parse("slot-right=playlist, overlay, dark, manual, 300, hidden, at-once")
+        #expect(c.slots[.right]?.content == .playlist && c.slots[.right]?.size == 300)
+        #expect(c.slots[.bottom] == .default(for: .bottom))
+        #expect(c.slots[.left] == .default(for: .left))
     }
 }

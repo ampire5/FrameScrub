@@ -35,3 +35,26 @@ final class PreferencesModel: ObservableObject {
         return Binding(get: { inner.wrappedValue }, set: { inner.wrappedValue = ($0 * factor).rounded() / factor })
     }
 }
+
+/// What one settings tab observes: the model's changes while the tab is showing. A tab that is hidden keeps its view built
+/// (so switching is instant) but does not redraw for every slider tick; it catches up once when it is shown again.
+final class PreferencesTabFeed: ObservableObject {
+    let model: PreferencesModel
+    private var subscription: AnyCancellable?
+    private var stale = false
+    var isShowing = false {
+        didSet {
+            guard isShowing, !oldValue, stale else { return }
+            stale = false
+            objectWillChange.send()
+        }
+    }
+
+    init(model: PreferencesModel) {
+        self.model = model
+        subscription = model.objectWillChange.sink { [weak self] in
+            guard let self else { return }
+            if isShowing { objectWillChange.send() } else { stale = true }
+        }
+    }
+}
