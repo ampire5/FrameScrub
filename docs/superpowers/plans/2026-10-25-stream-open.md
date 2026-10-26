@@ -46,6 +46,6 @@ Spec: `docs/superpowers/specs/2026-10-25-stream-open-design.md`. Branch `experim
 ## 5. Check and hand over
 
 - `swift test`; build and install (`scripts/` as usual).
-- Bench with pbxd: the slot bench page (▶ → playing) before/after; main thread blocked during open (sample the
+- Bench with the plugin service: the slot bench page (▶ → playing) before/after; main thread blocked during open (sample the
   process while opening). Numbers into `docs/bench.md`'s network section or the spec.
 - `docs/reference.md`: streams open in the background; ⌘W while opening.

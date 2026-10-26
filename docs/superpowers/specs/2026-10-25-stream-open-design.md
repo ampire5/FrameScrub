@@ -5,7 +5,7 @@ Date: 2026-10-25. Status: implemented.
 ## Problem
 
 Opening an `http(s)` stream (a plugin page's or Stash's) blocks the main thread for 2.5–4 s on a slow server. Measured
-with pbxd's trailers (PornBox CDN, ~0.8 MB/s per connection, 0.35–0.5 s to the first byte of every request):
+with a plugin page's trailers (a video CDN behind a local plugin service, ~0.8 MB/s per connection, 0.35–0.5 s to the first byte of every request):
 
 - `HTTPByteSource` asks for `bytes=0-0` (the size): ~0.4 s, plus whatever the server needs to find the file;
 - the demuxer's first read takes `ReadCache` block 0, a 2 MiB ranged GET that is waited for whole: ~3 s;
@@ -69,7 +69,7 @@ things, each found by `sample`:
 
 ## Out of scope
 
-No change to read-ahead depth, parallel requests or pbxd.
+No change to read-ahead depth, parallel requests or the plugin service.
 
 ## Tests
 
@@ -78,12 +78,12 @@ No change to read-ahead depth, parallel requests or pbxd.
 - `ReadCacheTests`: with a source that delivers a block in steps, a read at the block's start returns before the
   block is complete; a read beyond the delivered bytes waits; a failure mid-block fails the waiting reader.
 - `PlayerCore`: `prepare` then `open(prepared)` opens like `open(url)`.
-- Bench: `docs/bench.md`-style numbers for ▶ → playing with pbxd before and after, and the main thread's longest
+- Bench: `docs/bench.md`-style numbers for ▶ → playing through the plugin service before and after, and the main thread's longest
   block during an open.
 
 ## Measured
 
-2026-10-25, M4 MacBook Pro, pbxd trailers (1080p, PornBox CDN), each trailer opened once (pbxd asks PornBox for its
+2026-10-25, M4 MacBook Pro, plugin trailers (1080p, a video CDN), each trailer opened once (the plugin service asks its site for its
 address on the first request), the two ways alternating. `HTTPByteSource` + `ReadCache` + the first `MediaSource`,
 i.e. `PlayerCore.preparation`, on a test thread:
 
@@ -94,7 +94,7 @@ i.e. `PlayerCore.preparation`, on a test thread:
 
 Before, all of the open ran on the main thread; after, the main thread does only `open(prepared)` and the window.
 
-In the app (a bench page in a slot: `request("open", {url})` of pbxd trailers never opened before, then the first
+In the app (a bench page in a slot: `request("open", {url})` of plugin trailers never opened before, then the first
 `state` playing after the stream's `fileopened`; meanwhile `request("info")` every 50 ms, its slowest reply is how long
 the main thread was blocked). Same evening, CDN ~3.2 MB/s, five different trailers each:
 
