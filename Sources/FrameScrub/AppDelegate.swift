@@ -1,6 +1,7 @@
 import AppKit
 import FrameScrubCore
 import FrameScrubSettings
+import HomeScreenModel
 import SwiftUI
 
 /// Carries a `Command` in a menu item's `representedObject`.
@@ -64,7 +65,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let folderSorts = FolderSorts()
         self.folderSorts = folderSorts
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
-                                                folderColors: folderColors, folderSorts: folderSorts)
+                                                folderColors: folderColors, folderSorts: folderSorts,
+                                                unreadable: UnreadableFiles())
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
         preferences.addObserver { [weak self] in
             self?.gestureBindings.layout = $0.keyLayout

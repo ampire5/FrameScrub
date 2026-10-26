@@ -174,4 +174,13 @@ import Testing
         #expect(PlaylistSort.date.defaultSort == BrowserSort(key: .date, ascending: false))
         #expect(PlaylistSort.size.defaultSort == BrowserSort(key: .size, ascending: false))
     }
+
+    @Test func neighbourStepsPastUnreadable() throws {
+        let dir = try folder(["a.mp4", "b.mp4", "c.mp4", "d.mp4"])
+        let playlist = Playlist(current: dir.appendingPathComponent("b.mp4"))
+        let broken: (URL) -> Bool = { ["a.mp4", "c.mp4"].contains($0.lastPathComponent) }
+        #expect(playlist.neighbour(1, skipping: broken)?.lastPathComponent == "d.mp4")
+        #expect(playlist.neighbour(-1, skipping: broken) == nil)
+        #expect(playlist.neighbour(-1, skipping: { _ in false })?.lastPathComponent == "a.mp4")
+    }
 }

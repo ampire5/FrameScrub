@@ -49,6 +49,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var folderReturn: (folder: URL, file: URL)?
     /// Each folder's order, shared with Home's grid.
     private let folderSorts: FolderSorts
+    /// The videos the decoders could not read in this run: Home draws them faint, the folder's steps go past them.
+    private let unreadable: UnreadableFiles
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
     /// Why a file did not open, in its place.
@@ -226,8 +228,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Where the effective colour came from at the last recompute (the stats mark it).
     private var colorOrigin = ColorOrigin.default
 
-    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors, folderSorts: FolderSorts) {
+    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors, folderSorts: FolderSorts,
+         unreadable: UnreadableFiles) {
         self.folderSorts = folderSorts
+        self.unreadable = unreadable
         self.preferences = preferences
         let resumeStore = ResumeStore()   // one store: the core keeps the colour the edits write when it saves the position
         core = PlayerCore(config: config, resumeStore: resumeStore)
@@ -326,8 +330,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// so a failed open or the user's next file never inherits it. Every file is read in the background (a file on a
     /// share can take seconds, and macOS may first ask whether the app may read the network volume); the previous file
     /// stops at once and `then` hears how the open ended.
+    /// `stepped`: the direction of the step through the folder that asked for it (‹ ›, autoadvance); a file the decoders
+    /// cannot read is then gone past, as a known one is, instead of showing why it did not open.
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
-                          landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+                          landing: LinkTarget? = nil, stepped: Int? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         StartupTrace.beginOpen(url.lastPathComponent)
         abandonOpening()
         folderWait.cancel()   // a step or delete asked for the file before this one
@@ -394,10 +400,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             endOpening()
             switch result {
             case let .success(prepared):
+                unreadable.clear(url)
                 finishOpen(url, prepared, facts: facts ?? url, fallbackPosition: fallbackPosition, landing: landing)
                 done?(.opened)
             case let .failure(error):
-                showFailure(OpenFailure(error), url: url, facts: facts)
+                let failure = OpenFailure(error)
+                if failure.marksUnreadable {
+                    let entry = listedEntry(url)
+                    unreadable.mark(url, date: entry?.date, size: entry?.size)
+                    if let stepped, let next = playlist?.neighbour(stepped, skipping: isUnreadable) {
+                        showMessage("\(url.lastPathComponent): skipped", duration: 3)
+                        openFile(next, stepped: stepped, then: done)
+                        return
+                    }
+                }
+                showFailure(failure, url: url, facts: facts)
                 done?(.failed)
             }
         }
@@ -868,6 +885,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
         let view = HomeView(source: source)
         source.view = view.browser
+        view.browser.unreadable = unreadable
         source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
             guard let self else { return }
             if case .folder(let folder) = location {
@@ -2517,10 +2535,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// < and > in the folder: the file before or after; at an end the window says so.
     private func stepFolder(_ direction: Int) {
-        if let target = direction > 0 ? playlist?.next : playlist?.previous {
+        if let target = playlist?.neighbour(direction, skipping: isUnreadable) {
             _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
             hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
-            openFile(target) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
+            openFile(target, stepped: direction) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
         } else {
             showMessage(direction > 0 ? "Last file" : "First file")
             if playlistEndBump.stepped(moved: false, direction: direction, fresh: core.inputIsFresh) { haptics.play(.end) }
@@ -2625,6 +2643,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The file the playlist is built around (`FolderWait.anchor`).
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
+
+    /// `url` as the open folder's listing has it (its date and size), nil before the folder is read.
+    private func listedEntry(_ url: URL) -> BrowserEntry? {
+        let me = url.standardizedFileURL
+        return folderListing?.entries.first { $0.url.standardizedFileURL == me }
+    }
+
+    /// Known to be unreadable, and not changed since.
+    private func isUnreadable(_ url: URL) -> Bool {
+        let entry = listedEntry(url)
+        return unreadable.contains(url, date: entry?.date, size: entry?.size)
+    }
 
     /// `folder`'s order, the one Home's grid shows it in: its own (`FolderSorts`), else `playlist-sort`'s.
     private func folderSort(_ folder: URL) -> BrowserSort {
@@ -3494,13 +3524,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
         whenFolderRead { [weak self] in
-            guard let self, let next = playlist?.next else { return }
-            openFile(next) { [weak self] outcome in
-                switch outcome {
-                case .opened: self?.core.play()
-                case .failed: self?.playerDidReachEnd(player)   // the playlist now follows the broken file: move past it
-                case .superseded: break
-                }
+            guard let self, let next = playlist?.neighbour(1, skipping: isUnreadable) else { return }
+            openFile(next, stepped: 1) { [weak self] outcome in   // a broken file is gone past by the open itself
+                if outcome == .opened { self?.core.play() }
             }
         }
     }

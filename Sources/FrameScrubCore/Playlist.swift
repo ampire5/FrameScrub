@@ -70,6 +70,15 @@ public struct Playlist: Equatable, Sendable {
     }
 
     public var current: URL { files[currentIndex] }
+
+    /// The next file (`direction` > 0) or the previous one that `skipping` does not refuse (a file known to be
+    /// unreadable); nil past the end.
+    public func neighbour(_ direction: Int, skipping: (URL) -> Bool) -> URL? {
+        let step = direction < 0 ? -1 : 1
+        var i = currentIndex + step
+        while files.indices.contains(i), skipping(files[i]) { i += step }
+        return files.indices.contains(i) ? files[i] : nil
+    }
     public var previous: URL? { currentIndex > 0 ? files[currentIndex - 1] : nil }
     public var next: URL? { currentIndex + 1 < files.count ? files[currentIndex + 1] : nil }
     public var isFiltered: Bool { files.count != totalCount }
