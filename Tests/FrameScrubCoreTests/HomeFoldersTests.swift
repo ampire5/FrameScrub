@@ -69,11 +69,6 @@ import Testing
         #expect(out[2].subtitle == nil)
     }
 
-    @Test func homeSortIsThePlaylistOrder() {
-        #expect(HomeFolders.playlistOrder(BrowserSort(key: .date, ascending: false)) == (.date, false))
-        #expect(HomeFolders.playlistOrder(.standard) == (.name, true))
-    }
-
     @Test func folderFactsComeFromItsListing() {
         let d1 = Date(timeIntervalSince1970: 1_000), d2 = Date(timeIntervalSince1970: 2_000)
         let a = BrowserEntry(url: URL(filePath: "/v/a.mp4"), name: "a.mp4", kind: .file, date: d2, size: 100)

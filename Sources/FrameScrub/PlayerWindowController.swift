@@ -45,7 +45,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var hasShownHome = false
     /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
     /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
-    private var folderReturn: (folder: URL, file: URL, order: (sort: PlaylistSort, ascending: Bool))?
+    private var folderReturn: (folder: URL, file: URL, order: BrowserSort)?
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
     /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
@@ -293,7 +293,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
     /// `homeFolder`: the folder it was opened from in Home and Home's order of it (closing goes back there).
-    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, (sort: PlaylistSort, ascending: Bool))? = nil,
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, BrowserSort)? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
@@ -868,7 +868,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
             guard let self else { return }
             if case .folder(let folder) = location {
-                self.open(url, homeFolder: (folder, HomeFolders.playlistOrder(sort)))   // the playlist in the grid's order
+                self.open(url, homeFolder: (folder, sort))   // the playlist in the grid's order
             } else {
                 self.open(url)
             }
@@ -2472,8 +2472,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
         // A folder opened from Home goes in Home's order; any other in `playlist-sort`'s.
         let order = homeOrder(around: url)
-        playlist = Playlist(current: url, sort: order?.sort ?? core.config.playlistSort, ascending: order?.ascending,
-                            filter: playlistFilter, listing: listing)
+        playlist = Playlist(current: url, sort: order ?? core.config.playlistSort.defaultSort, filter: playlistFilter,
+                            listing: listing)
         updatePlaylistPanel()
     }
 
@@ -2488,7 +2488,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         listRowIndices = []
-        playlistPanel.showSort(homeOrder(around: playlistAnchor)?.sort ?? core.config.playlistSort)
+        playlistPanel.showSort(homeOrder(around: playlistAnchor).flatMap { PlaylistSort(rawValue: $0.key.rawValue) } ?? core.config.playlistSort)
         guard let playlist else { return }
         playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
     }
@@ -2614,14 +2614,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
     /// Home's order of the folder `file` is in, while that folder is the one opened from Home.
-    private func homeOrder(around file: URL?) -> (sort: PlaylistSort, ascending: Bool)? {
+    private func homeOrder(around file: URL?) -> BrowserSort? {
         guard let r = folderReturn, let file, folder(of: file) == r.folder.standardizedFileURL else { return nil }
         return r.order
     }
 
     private func setPlaylistSort(_ sort: PlaylistSort) {
         if let anchor = playlistAnchor, homeOrder(around: anchor) != nil {   // the user's choice here replaces the order Home gave
-            folderReturn?.order = (sort, sort == .name)
+            folderReturn?.order = sort.defaultSort
             rebuildPlaylist(around: anchor)
         }
         guard sort != core.config.playlistSort else { return }
