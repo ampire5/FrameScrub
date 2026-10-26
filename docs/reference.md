@@ -309,7 +309,7 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   a plugin page (`plugin=Name | URL`, repeatable; the `plugin=` page of a
   `framescrub://open` link is listed as `Plugin`) or nothing, whose **+** menu fills it. A slot is pinned (takes room from the video) or lies
   over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when
-  asked, and slides in when the pointer touches its edge (or on a click on its tongue). Each is kept in `slot-left` / `slot-right` / `slot-bottom`.
+  asked, and slides in when the pointer comes near its edge (`slot-reveal-distance`, 12 pt by default; the bottom slot at the very edge) (or on a click on its tongue). Each is kept in `slot-left` / `slot-right` / `slot-bottom`.
   A page drives the player through `window.framescrub` (bridge version 2, documented at the top of
   `Sources/FrameScrub/PluginPanel.swift`), and may hand it a playlist. ⌥⌘P shows the first slot holding a page; **Focus
   Plugin Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local
@@ -432,6 +432,7 @@ plugin-open-allowed=            # origins (http://host:port, comma-separated) wh
 slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: view (empty, playlist, plugin:<name>), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
 slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
+slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video

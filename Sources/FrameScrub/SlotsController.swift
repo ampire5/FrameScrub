@@ -66,6 +66,8 @@ import FrameScrubCore
     private var menuOpen = false
     /// The OSD said the window is too small for these pinned slots; said again only when the set changes.
     private var reportedDemotions: Set<SlotEdge> = []
+    /// `slot-reveal-distance`: how near a side edge the pointer brings a hidden slot.
+    private var revealBand = CGFloat(EdgeReveal.sideBand)
 
     /// Makes the slots; `start` fills them once the callbacks are set.
     init(container: NSView, above: NSView, config: Config, playlistView: PlaylistPanelView) {
@@ -73,6 +75,7 @@ import FrameScrubCore
         self.above = above
         self.playlistView = playlistView
         plugins = config.plugins
+        revealBand = CGFloat(config.slotRevealDistance)
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
@@ -376,9 +379,10 @@ import FrameScrubCore
         return plugins + [linkPlugin]
     }
 
-    /// Settings changed: the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
+    /// Settings changed: the reveal distance, the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
     func configChanged(_ config: Config) {
         plugins = config.plugins
+        revealBand = CGFloat(config.slotRevealDistance)
         for slot in orderedSlots { install(slot.setting.content, in: slot) }
     }
 
@@ -707,7 +711,7 @@ import FrameScrubCore
             switch slot.setting.reveal {
             case .atOnce:
                 hideTongue(slot)
-                if slot.reveal.pointer(atEdge: EdgeReveal.isAt(slot.edge, point, in: bounds), buttonHeld: buttonHeld) == .revealSlot {
+                if slot.reveal.pointer(atEdge: EdgeReveal.isAt(slot.edge, point, in: bounds, band: revealBand), buttonHeld: buttonHeld) == .revealSlot {
                     show(slot, focus: false)
                 }
             case .tongue:

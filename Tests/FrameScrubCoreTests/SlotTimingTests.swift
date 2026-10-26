@@ -169,6 +169,13 @@ import Testing
         #expect(EdgeReveal.isAt(.right, CGPoint(x: 1200.5, y: 400), in: bounds))   // the last pixel, rounded out
     }
 
+    @Test func theSideBandIsTheSettings() {
+        #expect(EdgeReveal.isAt(.right, CGPoint(x: 1200 - 30, y: 400), in: bounds, band: 40))
+        #expect(!EdgeReveal.isAt(.right, CGPoint(x: 1200 - 10, y: 400), in: bounds, band: 2))
+        #expect(EdgeReveal.isAt(.left, CGPoint(x: 1, y: 400), in: bounds, band: 2))
+        #expect(!EdgeReveal.isAt(.bottom, CGPoint(x: 600, y: 10), in: bounds, band: 40))   // the bottom stays a line
+    }
+
     @Test func cornersAndTheSeekBarStayOut() {
         #expect(!EdgeReveal.isAt(.right, CGPoint(x: 1199, y: 10), in: bounds))   // a corner: no edge's
         #expect(EdgeReveal.isAt(.bottom, CGPoint(x: 600, y: 1), in: bounds))
