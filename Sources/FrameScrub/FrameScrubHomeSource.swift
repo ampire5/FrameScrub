@@ -432,18 +432,18 @@ import HomeScreenModel
     /// The cards `ids` (in view first) get their pictures; then the files of `rest` (a folder's other videos) are
     /// made ahead, after those, without being read.
     func want(_ ids: [String], rest: [URL] = []) {
-        let urls = ids.filter { $0.hasPrefix(prefix) }
-            .map { URL(filePath: String($0.dropFirst(prefix.count)), directoryHint: .notDirectory) }
+        let store = store, idPrefix = prefix
+        let urls = ids.filter { $0.hasPrefix(idPrefix) }
+            .map { URL(filePath: String($0.dropFirst(idPrefix.count)), directoryHint: .notDirectory) }
             .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
         reading?.cancel()
-        let store = store, prefix = prefix
         reading = Task { @MainActor [weak self] in
             var missing: [URL] = []
             for url in urls {
                 let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
                 guard let self, !Task.isCancelled else { return }
                 if let image {
-                    self.onPicture?(prefix + url.path, image)
+                    self.onPicture?(idPrefix + url.path, image)
                     self.onHave?(url)
                 } else {
                     missing.append(url)
