@@ -53,6 +53,9 @@ import WebKit
 ///                                     (at autoadvance the item after it is tried once)
 ///     framescrub.enqueue(items)       add items at the end of the list; with the folder as the playlist, a list of the
 ///                                     file on screen and the items begins. Past 2000 in all it is refused whole
+///                                     An open({path|url}) and {path|url} items may carry info: {title?, studio?,
+///                                     performers?, date?, code?, url?} (SceneInfo): the window and OSD read it as a
+///                                     Stash scene's details; a stream's frames and clips are named after it
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
 /// Requests with an answer (they need a file open, else they reject):
