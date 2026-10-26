@@ -43,9 +43,59 @@ The ROADMAP asks for "a Photos-style start screen with a sidebar, Recent and Sta
 
 - Several windows or tabs: FrameScrub stays single-window (`supportsTabs = false`). `HomeClick` modifiers open
   "here".
-- Folder covers (mosaics of the videos inside), the thumbs-ahead walk, the progress pill, Sessions, card facts.
-  These are Loupe's heavy parts; they come later if wanted.
+- Sessions. The walk of a whole subtree ahead comes later; only "visible cards, then the rest of the folder" is in
+  (see Posters).
+- The filmstrips (playlist strip F1, timeline F2–F4): their own specs. Home only shares the poster store with them.
 - Migrations: `home-layout` is dropped like the older slot keys were (no migration, as for slots).
+
+## The mockups this follows
+
+Three earlier canvases already decided most of what Home and its neighbours look like. This spec takes them as given.
+
+- **"Карточки папок"** (https://claude.ai/artifact/Hgk6ZE7Ge8mbbWZjH4pmMb), made for Loupe's Home and already in
+  HomeScreenKit 0.5.0 as `CardStyle` `posters` | `cards` | `list`:
+  - **E "Плакат"** is the default: a 232 pt cover, a two-line strip under it, progress as a line on the seam.
+  - **B "Карточка"** is the dense view: 300 × 92 pt, cover on the left, four lines of facts.
+  - **C "Список"** is for folders with hundreds of subfolders: 44 pt rows, sortable columns.
+  - The choice is kept per folder like the sort (`folder-cards`), and a narrow column falls back to A.
+  - Only what the listing already gives goes on a card, never anything that needs to read the files of a folder
+    that was not opened.
+  - For FrameScrub the facts are:
+    - videos inside and subfolders;
+    - size;
+    - the date span from mtimes;
+    - "watched": the share of its videos with a resume position, from `ResumeStore`;
+    - a cover made of the posters already in `PosterStore`.
+
+  This needs `sendsCardFacts = true` and FrameScrub's own `FolderCardFacts`.
+- **"Упреждающие эскизы и прогресс"** (the same canvas, second board):
+  - posters are made for the visible cards first, then for the rest of the open folder, and for the whole subtree
+    only on command (folder menu › Prepare Posters of Subfolders);
+  - work pauses while the user is in the player;
+  - progress is the kit's glass pill in Home's toolbar (ring, pause, "Posters 120 / 480"), and waiting cards
+    shimmer;
+  - settings: ahead = visible / folder / off; threads = a capped share of the cores, measured.
+- **"Лента во FrameScrub"** (https://claude.ai/artifact/JYwNWXa6Se2iRYvK5xYkDm) and **"Лента: что вы увидите"**
+  (https://claude.ai/artifact/986FycsEdLbzkaP17nNCTT):
+  - the playlist becomes a vertical strip in the right slot (F1): whole 16:9 frames, a position track on each
+    poster as in File View, the current item's card;
+  - the seek bar becomes a timeline under a fixed playhead (F2–F4: flat, lens, whole file);
+  - SQLite comes later as F5;
+  - both strips use HomeScreenKit's `Filmstrip` and the "over / beside / hidden" modes with the glass capsule.
+
+  That plan said "the start screen stays `HomeScreenView`". This spec supersedes that line. Home and the strips do
+  not depend on each other, but they share:
+  - **posters:** one `PosterStore` serves Home's cards, the playlist strip's cells and the current item's card. Each
+    entry stores the poster, the duration and (later) the bitrate graph the F1 card shows. So the store is designed
+    here for all three, not for Home alone.
+  - **the position track:** a dark track along the poster's bottom edge with the accent share. It is the same mark
+    on Home's cards (`progress`), in Recent and in the strip.
+  - **chrome:** HomeChrome's tokens (`Chrome.Radius`, `Chrome.Space`, glass) and the light theme. Home follows the
+    system appearance; everything over the video stays dark (chrome-tokens spec in HomeScreenKit).
+  - **the right slot:** with F1 the slot's playlist panel becomes the strip. Home stays the place to choose, and the
+    strip is the playlist while watching (open question 3 is settled this way).
+- **Kit gaps the strips will need** (not Home): `FilmstripAxis` has only `.horizontal` at 0.5.0. The vertical axis
+  comes with Loupe's neighbouring-folders strip (L4) or with F1, whichever is first.
 
 ## Design
 
@@ -130,7 +180,8 @@ is several ranged reads per file, and it competes with the video being played.
 | `home-sidebar` | `true` | |
 | `home-card-size` | 220 | replaces `start-card-size` |
 | `recent-count` | 50 | |
-| `home-posters` | `true` | off: symbols only, no decoding (for a slow NAS) |
+| `home-posters` | `folder` | `visible` / `folder` / `off` (as "Готовить заранее"); off: symbols only, for a slow NAS |
+| `folder-cards` | `posters` | per folder like the sort: `posters` (E) / `cards` (B) / `list` (C) |
 
 - `home-layout`, `start-tab` and `start-card-size` go, with no migration.
 - Settings › General gets a Home group with these keys. The Home layout pop-up goes.
@@ -160,7 +211,10 @@ the M4 Max and the Intel Mac before the build is handed over.
    - Returning to the video's folder with the video selected.
    - Rename and trash.
    - At this step cards show symbols and durations from the listing only.
-4. **Posters.** `PosterStore` + `PosterQueue`, the bench, the constants measured, `home-posters`.
+4. **Posters and folder cards.**
+   - `PosterStore` + `PosterQueue`, the bench, the constants measured, `home-posters`.
+   - The progress pill and the shimmering wait.
+   - `FolderCardFacts` for E / B / C, and "Prepare Posters of Subfolders" in the folder menu.
 5. **Playlist source.** A page's `ListPlaylist` in the sidebar while it exists.
 
 Each step is its own branch and PR. Kit changes go on a kit branch of the same name and are released as a tag before
@@ -181,5 +235,7 @@ FrameScrub takes them (`docs/kits.md`).
 
 1. Showing Home over an open video: pause and keep the file open (proposed), or close the file as ⌘W does?
 2. Recent: a list with date groups (as Loupe) or keep today's large poster grid as Recent's card style?
-3. Should Home replace the left slot's playlist panel when the playlist is a folder, since Home's folder view is the
-   same list? Proposed: no, the slot stays the in-video playlist and Home is for choosing.
+3. ~~Should Home replace the slot's playlist panel?~~ Settled by the strip mockups: no. The slot gets the playlist
+   strip (F1) and Home is for choosing.
+4. Which comes first after step 2: Home's folders (step 3) or the playlist strip F1? They share only `PosterStore`.
+   Proposed: Home's folders and posters first, because F1 then finds posters already made.
