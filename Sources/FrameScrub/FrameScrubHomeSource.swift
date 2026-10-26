@@ -58,6 +58,7 @@ import HomeScreenModel
             }
         }
         folderPictures.onMade = { [weak self] url in self?.coverPosterMade(url) }
+        folderPictures.onHave = { [weak self] url in self?.posterIn(url) }
         for queue in [recentPictures, folderPictures] {
             queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
             queue.onDuration = { [weak self] url, duration in self?.lengthFound(url, duration) }
@@ -160,8 +161,56 @@ import HomeScreenModel
         if view?.location == .source(HomeRecent.source) {
             recentPictures.want(ids)
         } else {
-            folderPictures.want(ids.filter { !$0.contains(":") || $0.hasPrefix("/") })
-            if case .folder(let folder)? = view?.location { wantFolderCards(ids, in: folder) }
+            guard case .folder(let folder)? = view?.location else { return }
+            let videos = (listings[folder] ?? []).filter(\.isFile).map(\.url)
+            let inView = ids.filter { $0.hasPrefix("/") }.map { URL(filePath: $0, directoryHint: .notDirectory) }
+                .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
+            if progressFolder != folder {
+                progressFolder = folder
+                havePosters = []
+            }
+            folderVideos = videos
+            inViewVideos = inView
+            folderPictures.want(ids.filter { $0.hasPrefix("/") }, rest: videos)
+            wantFolderCards(ids, in: folder)
+            showProgress()
+        }
+    }
+
+    // MARK: Progress (the toolbar's pill: "Posters 120 / 480")
+
+    private var progressFolder: URL?
+    private var folderVideos: [URL] = []
+    private var inViewVideos: [URL] = []
+    private var havePosters: Set<String> = []
+
+    private func posterIn(_ url: URL) {
+        guard havePosters.insert(url.path).inserted else { return }
+        showProgress()
+    }
+
+    /// The folder's posters: those in view first, then the rest; the pill lights only after a second of work.
+    private func showProgress(paused: Bool = false) {
+        guard let view, !folderVideos.isEmpty else { return }
+        let done = folderVideos.filter { havePosters.contains($0.path) }.count
+        let inViewDone = inViewVideos.filter { havePosters.contains($0.path) }.count
+        let total = folderVideos.count
+        let state = ThumbsProgressState(
+            fraction: Double(done) / Double(total),
+            text: paused ? "Paused · \(done) / \(total)" : "Posters \(done) / \(total)", paused: paused,
+            rows: [.init(title: "In view", done: inViewDone, total: inViewVideos.count),
+                   .init(title: "Rest of folder", done: done - inViewDone, total: total - inViewVideos.count)],
+            pauseNote: paused ? "Paused" : nil, pausedByUser: paused, working: done < total)
+        view.setProgress(state, delay: .seconds(1))
+    }
+
+    /// The pill's Pause / Resume: the folder's posters stop, or are asked for again.
+    func pauseThumbs(_ on: Bool, in location: BrowserLocation) {
+        if on {
+            folderPictures.stop()
+            showProgress(paused: true)
+        } else {
+            view?.reload()
         }
     }
 
@@ -362,6 +411,8 @@ import HomeScreenModel
     var onDuration: ((URL, Double) -> Void)?
     /// A picture was made (after `onPicture`), whoever asked for it.
     var onMade: ((URL) -> Void)?
+    /// A file has its picture: found kept, or just made.
+    var onHave: ((URL) -> Void)?
 
     let store: ThumbnailStore
     private let thumbnailer: RecentThumbnailer
@@ -378,7 +429,9 @@ import HomeScreenModel
         self.atPosition = atPosition
     }
 
-    func want(_ ids: [String]) {
+    /// The cards `ids` (in view first) get their pictures; then the files of `rest` (a folder's other videos) are
+    /// made ahead, after those, without being read.
+    func want(_ ids: [String], rest: [URL] = []) {
         let urls = ids.filter { $0.hasPrefix(prefix) }
             .map { URL(filePath: String($0.dropFirst(prefix.count)), directoryHint: .notDirectory) }
             .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
@@ -389,12 +442,24 @@ import HomeScreenModel
             for url in urls {
                 let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
                 guard let self, !Task.isCancelled else { return }
-                if let image { self.onPicture?(prefix + url.path, image) } else { missing.append(url) }
+                if let image {
+                    self.onPicture?(prefix + url.path, image)
+                    self.onHave?(url)
+                } else {
+                    missing.append(url)
+                }
             }
+            let asked = Set(urls)
+            let ahead = rest.filter { !asked.contains($0) }
+            let kept = await Task.detached(priority: .background) { Set(ahead.filter { store.has($0) }) }.value
             guard let self, !Task.isCancelled else { return }
-            let new = missing.filter { !self.pending.contains($0) }
+            for url in kept { self.onHave?(url) }
+            missing += ahead.filter { !kept.contains($0) }
+            let waiting = Set(self.pending)   // a folder can hold thousands: sets, not array scans
+            let new = missing.filter { !waiting.contains($0) }
             guard !new.isEmpty else { return }
-            self.pending = new + self.pending.filter { !new.contains($0) }   // what is in view first
+            let first = Set(new)
+            self.pending = new + self.pending.filter { !first.contains($0) }   // what is in view first
             self.startPending()
         }
     }
@@ -404,7 +469,7 @@ import HomeScreenModel
         let jobs = pending.map {
             RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil })
         }
-        thumbnailer.start(jobs) { [weak self] url, duration in
+        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers) { [weak self] url, duration in
             MainActor.assumeIsolated { self?.made(url, duration: duration) }
         }
     }
@@ -430,6 +495,7 @@ import HomeScreenModel
         Task { @MainActor [weak self] in
             let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
             if let image { self?.onPicture?(id, image) }
+            self?.onHave?(url)
             self?.onMade?(url)
         }
     }

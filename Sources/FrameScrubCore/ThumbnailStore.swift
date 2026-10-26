@@ -7,13 +7,18 @@ import UniformTypeIdentifiers
 /// A JPEG of the last picture seen in each file (longest side at most `maxSide` pixels), for the start screen. Keyed
 /// like `ResumeStore` (path and size), so a different file saved under the same name has none; only the `limit`
 /// newest are kept. Pictures saved smaller by an older version stay as they are until the file is left again.
-public final class ThumbnailStore: @unchecked Sendable {   // only constants: each call reads or writes its own file
+public final class ThumbnailStore: @unchecked Sendable {   // each call reads or writes its own file; the count is locked
     public static let defaultDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/FrameScrub/thumbnails")
 
     public let directory: URL
     public let limit: Int
     public let maxSide: CGFloat
+    /// Saves since the directory was last pruned: it is listed every few saves, not on each (a folder's posters come
+    /// by the hundred, and each listing reads every file's date).
+    private var savesSincePrune = 0
+    private let lock = NSLock()
+    static let pruneEvery = 50
 
     public init(directory: URL = ThumbnailStore.defaultDirectory, limit: Int = 200, maxSide: CGFloat = 1280) {
         self.directory = directory
@@ -49,7 +54,19 @@ public final class ThumbnailStore: @unchecked Sendable {   // only constants: ea
             try? FileManager.default.removeItem(at: partial)
             return
         }
-        prune()
+        // Every tenth of `limit` saves, at most `pruneEvery`: the directory stays within a tenth over its limit.
+        let due = lock.withLock {
+            savesSincePrune += 1
+            guard savesSincePrune >= min(Self.pruneEvery, max(1, limit / 10)) else { return false }
+            savesSincePrune = 0
+            return true
+        }
+        if due { prune() }
+    }
+
+    /// Whether a picture is kept for `video`, without reading it.
+    public func has(_ video: URL) -> Bool {
+        fileURL(for: video).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
     }
 
     public func image(for video: URL) -> CGImage? {

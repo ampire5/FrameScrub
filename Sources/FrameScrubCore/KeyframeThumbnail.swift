@@ -60,28 +60,51 @@ public final class RecentThumbnailer: @unchecked Sendable {
         self.callbackQueue = callbackQueue
     }
 
-    public func start(_ jobs: [Job], completion: @escaping @Sendable (URL, Double) -> Void) {
+    /// Files on this Mac's own disks are made `localWorkers` at a time; on a share (or a volume that does not say), one
+    /// at a time, as its reads are the slow part.
+    public func start(_ jobs: [Job], localWorkers: Int = 1, completion: @escaping @Sendable (URL, Double) -> Void) {
         let flag = CancellationFlag()
         lock.withLock {
             current?.cancel()
             current = flag
         }
         queue.async { [self] in
-            for job in jobs {
-                if flag.isCancelled { return }
-                // A pool per file: the picture holds the decoded frame (an IOSurface of VTDecoderXPCService).
-                let duration: Double? = autoreleasepool {
-                    guard let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
-                        return KeyframeThumbnail.duration(url: job.url)   // no picture (no decoder), but the length is known
+            let local = jobs.first.flatMap { try? $0.url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal } ?? false
+            let workers = max(1, min(local ? localWorkers : 1, jobs.count))
+            let next = NSLock()
+            var index = 0
+            DispatchQueue.concurrentPerform(iterations: workers) { _ in
+                while !flag.isCancelled {
+                    let i: Int? = next.withLock {
+                        defer { index += 1 }
+                        return index < jobs.count ? index : nil
                     }
-                    store.save(result.picture, for: job.url, context: context)
-                    return result.duration
+                    guard let i else { return }
+                    let job = jobs[i]
+                    // A pool per file: the picture holds the decoded frame (an IOSurface of VTDecoderXPCService).
+                    let duration: Double? = autoreleasepool {
+                        guard let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
+                            return KeyframeThumbnail.duration(url: job.url)   // no picture (no decoder), but the length is known
+                        }
+                        store.save(result.picture, for: job.url, context: context)
+                        return result.duration
+                    }
+                    guard let duration else { continue }
+                    callbackQueue.async { if !flag.isCancelled { completion(job.url, duration) } }
                 }
-                guard let duration else { continue }
-                callbackQueue.async { if !flag.isCancelled { completion(job.url, duration) } }
             }
         }
     }
+
+    /// Posters made at a time on this Mac's own disks: a quarter of the physical cores, 1…4. Measured on an M4 Max
+    /// (14 cores; 24 posters of 1080p H.264 and 4K HEVC, docs/bench/2026-10-26-posters.md): 1 worker 57/s, 2 74/s,
+    /// 3 108/s, 4 138/s, 6 103/s; so 3 there. Shares stay at one.
+    public static let localWorkers: Int = {
+        var cores: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        sysctlbyname("hw.physicalcpu", &cores, &size, nil, 0)
+        return min(4, max(1, Int(cores) / 4))
+    }()
 
     public func cancel() {
         lock.withLock {
