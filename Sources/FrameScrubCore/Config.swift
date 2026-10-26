@@ -156,7 +156,8 @@ public struct Config: Equatable, Sendable {
     /// `home-sidebar`: whether Home shows its sidebar (⌃⌘S).
     public var homeSidebar = true
     public var singleInstance = false
-    /// `home-tab`: where Home opens, the user's last choice of Recent or the Stash library.
+    /// `home-tab`: where Home opens at launch, Recent unless set (the user's moves are not saved: the owner wants every
+    /// launch on Recent, 2026-10-27).
     public var homeTab = HomeTab.recent
     /// `stash-url`: the Stash server whose WebUI Home shows; empty = no Stash integration.
     public var stashURL = ""

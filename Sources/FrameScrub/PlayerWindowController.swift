@@ -50,8 +50,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let folderSorts: FolderSorts
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
-    /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
-    private var movingForApp = false
     /// Why a file did not open, in its place.
     private let failureView = OpenFailureView()
     /// The Stash WebUI (Stash spec §2.1), Home's Stash page, created the first time it is shown.
@@ -799,13 +797,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } else {
             location = view.browser.lastBrowsed
         }
-        movingForApp = true
         if view.browser.location == location, hasShownHome, selecting == nil {
             view.browser.reload()
         } else {
             view.browser.show(location, selecting: selecting)
         }
-        movingForApp = false
         hasShownHome = true
         updatePrecisionWheel()
         if core.url == nil {
@@ -895,14 +891,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         browser.onWindowText = { [weak self] title, _ in
             guard let self, self.showsHome else { return }
             self.window?.title = title
-        }
-        browser.onLocation = { [weak self] location in
-            guard let self, !self.movingForApp else { return }
-            let tab = HomeRecent.tab(of: location)
-            guard tab != self.core.config.homeTab else { return }
-            do { try self.preferences.update(["home-tab"]) { $0.homeTab = tab } } catch {
-                self.showMessage("Cannot save settings: \(error)", duration: 4)
-            }
         }
         browser.onResize = { [weak self] in self?.resizeHomeCards($0) }
         view.onSidebarToggle = { [weak self] in self?.toggleHomeSidebar() }
@@ -3559,7 +3547,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidEnterFullScreen(_ notification: Notification) { updatePrecisionWheel() }
-    func windowDidExitFullScreen(_ notification: Notification) { updatePrecisionWheel() }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        // Home shown, full screen, back to the video, out of full screen: the video's window has its title bar again,
+        // and its content (the back button, the OSD, the slots' tops) must start below it, not under it.
+        if !showsHome { window?.styleMask.remove(.fullSizeContentView) }
+        updatePrecisionWheel()
+    }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while

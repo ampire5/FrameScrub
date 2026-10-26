@@ -443,7 +443,7 @@ home-card-size=220              # 60…480 points, width of Home's cards (⌘= /
 recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
-home-tab=recent                 # where Home opens: recent | folders | stash (the last one chosen)
+home-tab=recent                 # where Home opens at launch: recent | folders | stash
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
