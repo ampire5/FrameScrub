@@ -73,4 +73,16 @@ import Testing
         #expect(HomeFolders.playlistOrder(BrowserSort(key: .date, ascending: false)) == (.date, false))
         #expect(HomeFolders.playlistOrder(.standard) == (.name, true))
     }
+
+    @Test func folderFactsComeFromItsListing() {
+        let d1 = Date(timeIntervalSince1970: 1_000), d2 = Date(timeIntervalSince1970: 2_000)
+        let a = BrowserEntry(url: URL(filePath: "/v/a.mp4"), name: "a.mp4", kind: .file, date: d2, size: 100)
+        let b = BrowserEntry(url: URL(filePath: "/v/b.mp4"), name: "b.mp4", kind: .file, date: d1, size: 50)
+        let sub = BrowserEntry(url: URL(filePath: "/v/Sub"), name: "Sub", kind: .folder)
+        let s = HomeFolders.summary(of: [b, sub, a], resume: { $0 == a.url ? ResumeEntry(position: 5) : nil })
+        #expect(s.photos == 2 && s.folders == 1 && s.bytes == 150)
+        #expect(s.first == d1 && s.last == d2 && s.viewed == 0.5)
+        #expect(HomeFolders.summary(of: [sub], resume: { _ in nil }).viewed == nil)
+        #expect(HomeFolders.coverVideos([b, sub, a]).map(\.lastPathComponent) == ["a.mp4", "b.mp4"])
+    }
 }

@@ -68,4 +68,22 @@ public enum HomeFolders {
         case .size: (.size, sort.ascending)
         }
     }
+
+    /// A folder card's facts from the folder's own listing (read off the main thread): its videos and subfolders, the
+    /// videos' size and the span of their dates, and the share of them with a position kept (`viewed`). Nothing is
+    /// read from the subfolders.
+    public static func summary(of entries: [BrowserEntry], resume: (URL) -> ResumeEntry?) -> CardSummary {
+        let videos = entries.filter(\.isFile)
+        let dates = videos.compactMap(\.date)
+        let started = videos.filter { (resume($0.url)?.position ?? 0) > 0 }.count
+        return CardSummary(photos: videos.count, folders: entries.count - videos.count,
+                           bytes: videos.reduce(0) { $0 + ($1.size ?? 0) }, first: dates.min(), last: dates.max(),
+                           viewed: videos.isEmpty ? nil : Double(started) / Double(videos.count))
+    }
+
+    /// The videos a folder's cover is made of: the first four by name.
+    public static func coverVideos(_ entries: [BrowserEntry]) -> [URL] {
+        Array(entries.filter(\.isFile).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            .prefix(4).map(\.url))
+    }
 }

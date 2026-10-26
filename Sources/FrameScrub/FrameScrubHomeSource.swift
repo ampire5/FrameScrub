@@ -27,6 +27,11 @@ import HomeScreenModel
     private var sorts: [BrowserLocation: BrowserSort] = [:]
     /// Each folder's last listing as read, for the way back and for re-listing with new lengths without a read.
     private var listings: [URL: [BrowserEntry]] = [:]
+    /// Folder cards' facts and the videos their covers are made of, by folder, for this run; the run filling them.
+    private var folderFacts: [URL: (summary: CardSummary, cover: [URL])] = [:]
+    private var factsTask: Task<Void, Never>?
+    /// A video whose poster is being made for a folder's cover, and that folder card's id.
+    private var coverFor: [String: (id: String, folder: URL)] = [:]
     /// Set while a folder is listed again only for its cards' lengths: the kept listing, no read.
     private var relistOnly = false
     private var relist: DispatchWorkItem?
@@ -52,6 +57,7 @@ import HomeScreenModel
                 self.view?.reload()
             }
         }
+        folderPictures.onMade = { [weak self] url in self?.coverPosterMade(url) }
         for queue in [recentPictures, folderPictures] {
             queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
             queue.onDuration = { [weak self] url, duration in self?.lengthFound(url, duration) }
@@ -155,6 +161,7 @@ import HomeScreenModel
             recentPictures.want(ids)
         } else {
             folderPictures.want(ids.filter { !$0.contains(":") || $0.hasPrefix("/") })
+            if case .folder(let folder)? = view?.location { wantFolderCards(ids, in: folder) }
         }
     }
 
@@ -162,6 +169,68 @@ import HomeScreenModel
     func stopImages() {
         recentPictures.stop()
         folderPictures.stop()
+        factsTask?.cancel()
+        factsTask = nil
+        coverFor = [:]
+    }
+
+    /// The folder cards among `ids`, in that order (those in view first): each folder's own listing read off the main
+    /// thread one at a time, its facts on the card, then its cover from posters already made; a folder whose videos
+    /// have none yet shows its symbol, and its first video's poster is queued (the cover follows when it is in).
+    private func wantFolderCards(_ ids: [String], in folder: URL) {
+        guard let entries = listings[folder] else { return }
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder }
+        factsTask?.cancel()
+        factsTask = Task { @MainActor [weak self] in
+            for entry in folders {
+                guard let self, !Task.isCancelled else { return }
+                if self.folderFacts[entry.url] == nil {
+                    let url = entry.url
+                    let read = await Task.detached(priority: .utility) { try? HomeFolders.entries(in: url) }.value
+                    guard !Task.isCancelled else { return }
+                    guard let read else {
+                        self.view?.setSummary(CardSummary(problem: .broken), for: entry.id)
+                        continue
+                    }
+                    let resume = ResumeStore()
+                    self.folderFacts[url] = (HomeFolders.summary(of: read, resume: { resume.entry(for: $0) }),
+                                             HomeFolders.coverVideos(read))
+                }
+                guard let facts = self.folderFacts[entry.url] else { continue }
+                self.view?.setSummary(facts.summary, for: entry.id)
+                await self.makeCover(entry.id, folder: entry.url, from: facts.cover)
+            }
+        }
+    }
+
+    /// The cover from the posters there are (two by two, as Loupe's folders); none yet: the symbol, and the first
+    /// video's poster queued.
+    private func makeCover(_ id: String, folder: URL, from videos: [URL]) async {
+        guard let view else { return }
+        let store = folderPictures.store
+        let pictures = await Task.detached(priority: .utility) { videos.compactMap { store.image(for: $0) } }.value
+        guard !Task.isCancelled else { return }
+        guard !pictures.isEmpty else {
+            view.stopWaiting(for: [id])
+            if let first = videos.first, coverFor[first.path] == nil {
+                coverFor[first.path] = (id, folder)
+                folderPictures.enqueue(first)
+            }
+            return
+        }
+        let width = view.coverWidth, scale = view.window?.backingScaleFactor ?? 2
+        let mosaic = await Task.detached(priority: .utility) {
+            HomeMosaic.make(pictures, size: CGSize(width: width, height: width), layout: pictures.count > 1 ? .grid : .single,
+                            scale: scale)
+        }.value
+        guard !Task.isCancelled else { return }
+        if let mosaic { view.setImage(mosaic, for: id) } else { view.stopWaiting(for: [id]) }
+    }
+
+    private func coverPosterMade(_ url: URL) {
+        guard let card = coverFor.removeValue(forKey: url.path), let facts = folderFacts[card.folder] else { return }
+        Task { @MainActor [weak self] in await self?.makeCover(card.id, folder: card.folder, from: facts.cover) }
     }
 
     /// A length is new: the cards that show it are listed again from what is kept (no read), once for a burst.
@@ -253,6 +322,9 @@ import HomeScreenModel
 
     func pageFilterChosen(_ index: Int, in source: String) {}
 
+    /// Folder cards get their facts and covers from here: they wait, shimmering, until they come.
+    var sendsCardFacts: Bool { true }
+
     func moved(from old: BrowserLocation?, to new: BrowserLocation) {
         if old != new { stopImages() }
     }
@@ -288,8 +360,10 @@ import HomeScreenModel
 @MainActor private final class PictureQueue {
     var onPicture: ((String, CGImage) -> Void)?
     var onDuration: ((URL, Double) -> Void)?
+    /// A picture was made (after `onPicture`), whoever asked for it.
+    var onMade: ((URL) -> Void)?
 
-    private let store: ThumbnailStore
+    let store: ThumbnailStore
     private let thumbnailer: RecentThumbnailer
     private let prefix: String
     /// Recent's keyframe is where the file was left; a folder's, a tenth in.
@@ -320,15 +394,26 @@ import HomeScreenModel
             guard let self, !Task.isCancelled else { return }
             let new = missing.filter { !self.pending.contains($0) }
             guard !new.isEmpty else { return }
-            self.pending += new
-            let resume = self.atPosition ? ResumeStore() : nil
-            let jobs = self.pending.map {
-                RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil })
-            }
-            self.thumbnailer.start(jobs) { [weak self] url, duration in
-                MainActor.assumeIsolated { self?.made(url, duration: duration) }
-            }
+            self.pending = new + self.pending.filter { !new.contains($0) }   // what is in view first
+            self.startPending()
         }
+    }
+
+    private func startPending() {
+        let resume = atPosition ? ResumeStore() : nil
+        let jobs = pending.map {
+            RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil })
+        }
+        thumbnailer.start(jobs) { [weak self] url, duration in
+            MainActor.assumeIsolated { self?.made(url, duration: duration) }
+        }
+    }
+
+    /// One more file to make, after those waiting, without dropping the asks in progress.
+    func enqueue(_ url: URL) {
+        guard !pending.contains(url) else { return }
+        pending.append(url)
+        startPending()
     }
 
     func stop() {
@@ -345,6 +430,7 @@ import HomeScreenModel
         Task { @MainActor [weak self] in
             let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
             if let image { self?.onPicture?(id, image) }
+            self?.onMade?(url)
         }
     }
 }
