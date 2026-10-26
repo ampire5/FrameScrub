@@ -104,7 +104,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var heldSegmentEvent: PluginEvent?
     private var pushPacing = PluginPushPacing()
     /// The open file's name and folder at once, its size and date once read off the main thread.
-    private var fileFacts: FileFacts?
+    private var fileFacts: StatsFile?
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
     private var statsTimer: Timer?
     private let hud = FeedbackHUD()
@@ -3411,7 +3411,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// (its size and date follow the first picture, `readFileFacts`).
     private func statsFileChanged() {
         fileFacts = core.url.map {
-            FileFacts(name: $0.lastPathComponent, folder: $0.deletingLastPathComponent().path, size: nil, modified: nil)
+            StatsFile(name: $0.lastPathComponent, folder: $0.deletingLastPathComponent().path, size: nil, modified: nil)
         }
         statsPanel.isAvailable = core.url != nil
         refreshStats()
@@ -3420,7 +3420,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file's size and date, read off the main thread (a NAS can take a while); kept if the file is still open.
     private func readFileFacts(of url: URL) {
         Task { [weak self] in
-            let facts = await Task.detached(priority: .utility) { FileFacts.read(url) }.value
+            let facts = await Task.detached(priority: .utility) { StatsFile.read(url) }.value
             guard let self, core.url == url else { return }
             fileFacts = facts
             refreshStats()

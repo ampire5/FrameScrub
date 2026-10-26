@@ -9,16 +9,18 @@ public enum HomeRecent {
     /// The recent videos as cards, in the order given: where each was left and its length (the store's, else one
     /// the thumbnailer found, by path), the progress bar, the day it was last left (Recent's date groups), dimmed when
     /// its share does not answer. Recent's cards are never renamed or trashed.
-    public static func entries(_ urls: [URL], resume: (URL) -> ResumeEntry?, durations: [String: Double],
+    public static func entries(_ urls: [URL], resume: (URL) -> ResumeEntry?, facts: [String: FileFacts],
                                dimmed: Set<String>) -> [BrowserEntry] {
         urls.map { url in
             let entry = resume(url)
-            let duration = entry?.duration ?? durations[url.path]
+            let known = facts[url.path]
+            let duration = entry?.duration ?? known?.duration
             return BrowserEntry(url: url, name: url.lastPathComponent, kind: .file, date: entry?.updated,
                                 isDimmed: dimmed.contains(url.path), canRename: false, canTrash: false,
                                 key: "recent:" + url.path,
                                 subtitle: RecentFiles.timeText(position: entry?.position, duration: duration),
-                                progress: RecentFiles.progress(position: entry?.position, duration: duration))
+                                progress: RecentFiles.progress(position: entry?.position, duration: duration),
+                                facts: known)
         }
     }
 
