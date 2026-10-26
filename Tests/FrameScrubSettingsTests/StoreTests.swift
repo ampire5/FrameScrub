@@ -138,6 +138,62 @@ import Testing
         #expect(store.value(forKey: "volume") == "100")
         #expect(try String(contentsOf: url, encoding: .utf8) == "volume=100\nseek-mode=keyframe\n")
     }
+
+    // MARK: Colour levels
+
+    private func colourStore(_ snapshot: ColorLayerSnapshot?) throws -> (FrameScrubSettingsStore, () -> [(String, ColorLayerHit.Level)]) {
+        var cleared: [(String, ColorLayerHit.Level)] = []
+        let store = FrameScrubSettingsStore(preferences: PreferencesStore(config: Config(), url: try conf()),
+                                            defaults: defaults(), colorLayers: { snapshot },
+                                            clearColor: { cleared.append(($0, $1)) })
+        return (store, { cleared })
+    }
+
+    @Test func colourLevelsAreLabelled() throws {
+        let shoot = URL(fileURLWithPath: "/shoots/one", isDirectory: true)
+        let shoots = URL(fileURLWithPath: "/shoots", isDirectory: true)
+        let snapshot = ColorLayerSnapshot(file: ["vibrance-on": "yes"], chain: [
+            ColorLayerSnapshot.Folder(url: shoot, values: ["vibrance": "0.3"]),
+            ColorLayerSnapshot.Folder(url: shoots, values: ["auto-color": "yes"]),
+        ])
+        let (store, _) = try colourStore(snapshot)
+        #expect(store.override(forKey: "vibrance-on")?.label == "This file")
+        #expect(store.override(forKey: "vibrance-on")?.symbol == "doc")
+        #expect(store.override(forKey: "vibrance") == SettingsOverride(
+            value: "0.3", label: "This folder", symbol: "folder",
+            help: "The folder of the video on screen has its own value; the setting above applies elsewhere"))
+        #expect(store.override(forKey: "auto-color")?.label == "Folder shoots")
+        #expect(store.override(forKey: "auto-color-strength") == nil)
+        #expect(store.override(forKey: "volume") == nil)
+    }
+
+    @Test func useDefaultClearsTheLevelShown() throws {
+        let shoot = URL(fileURLWithPath: "/shoots/one", isDirectory: true)
+        let (store, cleared) = try colourStore(ColorLayerSnapshot(file: nil, chain: [
+            ColorLayerSnapshot.Folder(url: shoot, values: ["vibrance": "0.3"])]))
+        var announced: [[String]] = []
+        let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
+            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        store.clearFolderOverride(forKey: "vibrance")
+        #expect(cleared().count == 1)
+        #expect(cleared().first?.0 == "vibrance")
+        #expect(cleared().first?.1 == .folder(shoot))
+        #expect(announced == [["vibrance"]])
+    }
+
+    @Test func noVideoNoNote() throws {
+        let (store, cleared) = try colourStore(nil)
+        var posted = 0
+        let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store,
+                                                           queue: nil) { _ in posted += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+        #expect(store.override(forKey: "vibrance") == nil)
+        store.clearFolderOverride(forKey: "vibrance")
+        #expect(cleared().isEmpty)
+        #expect(posted == 0)
+    }
 }
 
 func makeTemporaryDirectory() -> URL {

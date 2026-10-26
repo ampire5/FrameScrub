@@ -17,12 +17,20 @@ public final class FrameScrubSettingsStore: SettingsStore {
 
     private let preferences: PreferencesStore
     private let defaults: UserDefaults
+    private let colorLayers: () -> ColorLayerSnapshot?
+    private let clearColor: (String, ColorLayerHit.Level) -> Void
     /// The config as last announced, to tell which keys a change touched.
     private var announced: Config
 
-    public init(preferences: PreferencesStore, defaults: UserDefaults = .standard) {
+    /// `colorLayers` is the open video's file and folder values (nil: no video); `clearColor` drops one key of one
+    /// level (the player redraws).
+    public init(preferences: PreferencesStore, defaults: UserDefaults = .standard,
+                colorLayers: @escaping () -> ColorLayerSnapshot? = { nil },
+                clearColor: @escaping (String, ColorLayerHit.Level) -> Void = { _, _ in }) {
         self.preferences = preferences
         self.defaults = defaults
+        self.colorLayers = colorLayers
+        self.clearColor = clearColor
         announced = preferences.config
         preferences.addObserver { [weak self] config in
             if Thread.isMainThread {
@@ -84,6 +92,34 @@ public final class FrameScrubSettingsStore: SettingsStore {
             return
         }
         try preferences.update([key]) { _ = $0.set(key, value) }
+    }
+
+    /// The level that draws the colour key for the open video: «This file», «This folder» or «Folder <name>».
+    public func override(forKey key: String) -> SettingsOverride? {
+        guard let hit = colorHit(key) else { return nil }
+        switch hit.level {
+        case .file:
+            return SettingsOverride(value: hit.value, label: "This file", symbol: "doc",
+                                    help: "The video on screen has its own value; the setting above applies elsewhere")
+        case .folder where hit.isNearestFolder:
+            return SettingsOverride(value: hit.value, label: "This folder", symbol: "folder",
+                                    help: "The folder of the video on screen has its own value; the setting above applies elsewhere")
+        case .folder(let url):
+            return SettingsOverride(value: hit.value, label: "Folder \(url.lastPathComponent)", symbol: "folder",
+                                    help: "A folder above the video on screen has its own value; the setting above applies elsewhere")
+        }
+    }
+
+    /// «Use Default»: the level shown drops its value; framescrub.conf is not written.
+    public func clearFolderOverride(forKey key: String) {
+        guard let hit = colorHit(key) else { return }
+        clearColor(key, hit.level)
+        announce([key])
+    }
+
+    private func colorHit(_ key: String) -> ColorLayerHit? {
+        guard ColorLayers.keys.contains(key), let snapshot = colorLayers() else { return nil }
+        return ColorLayers.nearest(key, in: snapshot, global: preferences.config)
     }
 
     /// Reset to Default: one write for the whole page. A key already in the file keeps its line, with the default
