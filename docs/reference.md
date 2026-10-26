@@ -187,7 +187,10 @@ FrameScrub is in front that button then no longer toggles the SmartShift ratchet
 | `MX_PANEL+WHEEL_UP` | wheel turned while the button is held (`MX_GESTURE+`, `MBTN_BACK+`, `MBTN_FORWARD+`, `MBTN_MID+` too) |
 
 A wheel turn with a button held cancels its tap and long press; moving the pointer 8 pt or more with a button down
-makes it a drag, not a press (so Mac Mouse Fix drags and a trembling hand do nothing). The defaults:
+makes it a drag, not a press (so Mac Mouse Fix drags and a trembling hand do nothing). The movement counts wherever the
+pointer is, over a slot or another app's window, and when another app freezes it (Mac Mouse Fix's "lock pointer during
+drag"). Back and forward are clicks: their tap acts on the release even when nothing else is bound to them, so a drag
+with one (Mac Mouse Fix switching the Space) never runs its binding. The defaults:
 
 ```
 MX_PANEL                    toggle-auto-color
