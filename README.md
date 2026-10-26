@@ -157,7 +157,7 @@ A plugin is a web page that sits in a slot beside the video and drives the playe
 - **List them** in `framescrub.conf`, one line each: `plugin=Notes | http://localhost:8000/notes/`, name before the ` | `, then an `http(s)` or `file:` URL. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too, listed as `Plugin`.
 - **Slots.** The window has three: left, right and bottom. Each holds the playlist, one plugin page, or nothing. `⌃⌘←`, `⌃⌘→` and `⌃⌘↓` (View › Slots) show a slot with the keyboard or hide it; an empty one opens its **+** menu, which offers the playlist and the listed plugins. The header's title menu changes what the slot shows, moves it to another slot (two slots trade places), and clears it. The same plugin in two slots is two pages.
 - **Pinned or over the video.** 📌 pins a slot: it takes its room from the video. Otherwise it lies over the video, which keeps its size, as a card on a backdrop that ◐ cycles through glass (the video blurred and darkened), clear and dark; a pinned slot is always dark. Drag a slot's inner edge to size it. A window too small for its pinned slots lays the newest one over the video and says so.
-- **Hiding and showing.** A slot over the video works like a browser's compact sidebar: bring the pointer near its edge and it slides in (Settings › General › Side slots come within, 12 pt by default); move the pointer off it and it slides away a moment later (it waits while you type in it, while its menu is open, and while the pointer has only overshot the window past its edge). It also hides with ✕, its chord, Esc or a click on the video. Its menu can make it hide after you choose something to play, or only when asked, and can bring it with a click on a tongue instead: the tongue fades in as the pointer nears the edge. A drag near the edge brings nothing.
+- **Hiding and showing.** A slot over the video works like a browser's compact sidebar: bring the pointer near its edge and it slides in (Settings › Home & Interface › Side slots come within, 12 pt by default); move the pointer off it and it slides away a moment later (it waits while you type in it, while its menu is open, and while the pointer has only overshot the window past its edge). It also hides with ✕, its chord, Esc or a click on the video. Its menu can make it hide after you choose something to play, or only when asked, and can bring it with a click on a tongue instead: the tongue fades in as the pointer nears the edge. A drag near the edge brings nothing.
 - **Kept.** Each slot is saved as `slot-left=`, `slot-right=` and `slot-bottom=` (`content, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g. `plugin:Notes, overlay, glass, mouse-leaves, 400, hidden, at-once`). Pinned slots come back as they were; slots over the video start hidden. Hidden pages stay loaded, so showing one again does not reload it.
 - **Commands.** `⌥⌘P` (View › Show Plugin Panel) shows the first slot holding a page, `F8` the playlist's slot. View › Focus Plugin Panel (`⌃⌥⌘P`) gives the page the keyboard; the page's `focusPlayer()` (usually on Esc) gives it back.
 - **Keys.** While the page has the keyboard, a key it does not handle falls through to the player, as if the video had the keyboard (Space and the arrows included, rather than scrolling the page). So a page should call `preventDefault()` on the keys it handles itself. Nothing typed into a text field, textarea or editable element reaches the player.
@@ -368,10 +368,17 @@ The data lives in `~/.config/framescrub` (settings, bindings, icons) and `~/Libr
 
 ## Configure
 
-Settings (`⌘,`) has tabs for General, Scrolling, Saving, Display, Mouse & Trackpad and Stash. They edit two plain-text files, keeping your comments:
+Settings (`⌘,`) is the same window as Loupe's ([SettingsKit](https://github.com/ampire5/SettingsKit)): a sidebar with a search field and pages — General, Speed & Seeking, Home & Interface, Scrolling, Mouse & Trackpad, Key Bindings, Saving, Display, Colour, Performance, Stash, Advanced — with every setting of `framescrub.conf` on one of them, a line on each about what it does, its range and its default. Changes apply at once. A changed setting has a dot by its title and «Reset to Default» in its context menu; «Reset Page to Defaults…» is below each page.
+
+- **Key Bindings** lists the keys and the mouse buttons that do something, with where each comes from (built-in, the mouse profile, `input.conf`, `input-viewing.conf` / `input-editing.conf`). «+» binds a key you press or a button and how it is pressed (tap, hold, double tap, with the wheel, with the right button), «−» switches a binding off. An edit goes to the file that takes effect: a button the current mouse profile sets is written to that profile's file, anything else to `input.conf`. The wheel, trackpad and pinch gestures have their own table on Mouse & Trackpad.
+- **Colour** shows, under vibrance and auto colour, the value the open video itself or its folder (or a folder above it) sets — «This file: On», «This folder: 0.3» — with «Use Default» to drop it there.
+
+![The Mouse & Trackpad page of Settings](docs/images/settings.webp)
+
+The window edits two plain-text files, keeping your comments:
 
 - `~/.config/framescrub/framescrub.conf` — mpv-style `key=value` settings;
-- `~/.config/framescrub/input.conf` — bindings, `<input> <action> [args]`.
+- `~/.config/framescrub/input.conf` — bindings, `<input> <action> [args]` (and `input-viewing.conf` / `input-editing.conf` beside it for the mouse profiles).
 
 See **[docs/reference.md](docs/reference.md)** for every option.
 
@@ -404,7 +411,7 @@ Pull requests are welcome; a full contributing guide is on the roadmap.
 
 ## Roadmap
 
-Next up: subtitles and audio tracks, the shared Settings and Home from Loupe, a filmstrip in the seek bar — and a plugin architecture for media servers (Plex, Jellyfin, DLNA, HLS). See **[ROADMAP.md](ROADMAP.md)**.
+Next up: subtitles and audio tracks, a filmstrip in the seek bar — and a plugin architecture for media servers (Plex, Jellyfin, DLNA, HLS). See **[ROADMAP.md](ROADMAP.md)**.
 
 ## Credits
 

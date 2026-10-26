@@ -30,7 +30,7 @@ public final class PreferencesStore {
     /// if it differs; the file's warnings are returned for the caller to report.
     @discardableResult
     public func reload() -> [String] {
-        let (fresh, warnings) = Config.load()
+        let (fresh, warnings) = Config.load(from: url)
         if fresh != config {
             config = fresh
             for observer in observers { observer(config) }

@@ -12,13 +12,16 @@ let usesCommandLineTools = developerDir.hasPrefix("/Library/Developer/CommandLin
 let package = Package(
     name: "FrameScrub",
     platforms: [.macOS(.v26)],
-    products: [.executable(name: "FrameScrub", targets: ["FrameScrub"])],
+    products: [
+        .executable(name: "FrameScrub", targets: ["FrameScrub"]),
+        .executable(name: "FrameScrubBench", targets: ["FrameScrubBench"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.7.0"),
-        .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.5.0"),
+        .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.7.0"),
     ],
     targets: [
         .systemLibrary(
@@ -38,10 +41,30 @@ let package = Package(
                 .product(name: "StashKit", package: "StashKit"),
             ]
         ),
+        // The settings window's store, pages and binding tables (SettingsKit), apart from the app for tests and the bench.
+        .target(
+            name: "FrameScrubSettings",
+            dependencies: [
+                "FrameScrubCore",
+                .product(name: "LogiHIDPP", package: "LogiHIDPP"),
+                .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "StashKit", package: "StashKit"),
+            ]
+        ),
+        // Benches of the real windows (docs/bench): `FrameScrubBench settings`.
+        .executableTarget(
+            name: "FrameScrubBench",
+            dependencies: [
+                "FrameScrubCore",
+                "FrameScrubSettings",
+                .product(name: "SettingsKit", package: "SettingsKit"),
+            ]
+        ),
         .executableTarget(
             name: "FrameScrub",
             dependencies: [
                 "FrameScrubCore",
+                "FrameScrubSettings",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelKit", package: "InfoPanelKit"),
                 .product(name: "StashKitUI", package: "StashKit"),
@@ -58,6 +81,15 @@ let package = Package(
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
+            ],
+            swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
+        ),
+        .testTarget(
+            name: "FrameScrubSettingsTests",
+            dependencies: [
+                "FrameScrubSettings",
+                "FrameScrubCore",
+                .product(name: "SettingsKit", package: "SettingsKit"),
             ],
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),

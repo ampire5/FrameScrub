@@ -412,13 +412,14 @@ public struct Config: Equatable, Sendable {
         return (config, warnings)
     }
 
-    public static func load() -> (Config, [String]) {
-        let url = directory.appendingPathComponent("framescrub.conf")
+    public static func load(from url: URL = fileURL) -> (Config, [String]) {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return (Config(), []) }
         return parse(text)
     }
 
-    private mutating func set(_ key: String, _ value: String) -> Bool {
+    /// Sets `key` from its framescrub.conf text; false (and nothing changed) for an unknown key or a value the file
+    /// would refuse.
+    public mutating func set(_ key: String, _ value: String) -> Bool {
         func int(_ range: ClosedRange<Int>) -> Int? { Int(value).flatMap { range.contains($0) ? $0 : nil } }
         func double(_ range: ClosedRange<Double>) -> Double? { Double(value).flatMap { range.contains($0) ? $0 : nil } }
         func bool() -> Bool? {

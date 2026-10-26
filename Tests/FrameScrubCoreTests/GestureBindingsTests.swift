@@ -117,12 +117,12 @@ import Testing
         #expect(GestureBindingEditor.resetting(text) == "MX_PANEL+WHEEL_UP add auto-color-strength 0.05\nMBTN_BACK+WHEEL_UP scrub-edge start\nMBTN_FORWARD+WHEEL_DOWN scrub-edge end\nMX_GESTURE+WHEEL_UP add volume 2\n")
     }
 
-    // MARK: GesturePreferences
+    // MARK: InputPreferences
 
-    private func preferences(_ text: String? = nil) throws -> (GesturePreferences, URL) {
+    private func preferences(_ text: String? = nil) throws -> (InputPreferences, URL) {
         let url = makeTemporaryDirectory().appendingPathComponent("input.conf")
         if let text { try text.write(to: url, atomically: true, encoding: .utf8) }
-        return (GesturePreferences(url: url), url)
+        return (InputPreferences(url: url), url)
     }
 
     @Test func settingAppliesInMemoryAndWritesTheFile() throws {
@@ -164,7 +164,7 @@ import Testing
     @Test func aFailedWriteStillAppliesInMemory() throws {
         let blocker = makeTemporaryDirectory().appendingPathComponent("blocker")
         try "x".write(to: blocker, atomically: true, encoding: .utf8)
-        let prefs = GesturePreferences(url: blocker.appendingPathComponent("sub/input.conf"))
+        let prefs = InputPreferences(url: blocker.appendingPathComponent("sub/input.conf"))
         #expect(throws: (any Error).self) { try prefs.set(binding(.wheel, .vertical, [], .volume(9))) }
         #expect(prefs.inputMap.command(for: KeyChord.parse("WHEEL_UP")!) == .addVolume(9))
     }
@@ -173,7 +173,7 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".conf")
         defer { try? FileManager.default.removeItem(at: url) }
         try "WHEEL_UP scrub\n".write(to: url, atomically: true, encoding: .utf8)
-        let prefs = GesturePreferences(url: url, layout: .classic)
+        let prefs = InputPreferences(url: url, layout: .classic)
         var seen: [InputMap] = []
         prefs.addObserver { seen.append($0) }
         #expect(prefs.inputMap.command(for: KeyChord(key: "l")) == .abLoop)

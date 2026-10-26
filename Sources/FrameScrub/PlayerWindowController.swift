@@ -1,6 +1,7 @@
 import AppKit
 import CoreImage
 import FrameScrubCore
+import FrameScrubSettings
 import HomeScreenKit
 import InfoPanelKit
 import LogiHIDPP
@@ -1053,6 +1054,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func colorFileChanged() {
         colorMemory.open(core.url, size: core.readCache?.fileSize)
         core.apply(effectiveConfig())
+        SettingsPanel.refreshFolderOverrides()
+    }
+
+    /// The open video's own colour values and its folders', for the settings window's notes; nil without a video.
+    func colorSnapshot() -> ColorLayerSnapshot? { colorMemory.snapshot() }
+
+    /// The settings window's «Use Default» on a colour row: `level` drops `key`, the picture redraws.
+    func clearColor(_ key: String, on level: ColorLayerHit.Level) {
+        colorMemory.clear(key, on: level)
+        applyEffectiveConfig()
     }
 
     /// `globalConfig` with the open file's colour laid over it (colour memory §3); notes the origin for the stats.
@@ -1070,6 +1081,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Settings or the file's colour changed: bring the running player and the views in line with the effective config.
     private func applyEffectiveConfig() {
+        defer { SettingsPanel.refreshFolderOverrides() }   // a colour command may have set or dropped a level
         let config = effectiveConfig()
         let sortChanged = config.playlistSort != core.config.playlistSort
         let stashChanged = config.stashURL != core.config.stashURL || config.stashAPIKey != core.config.stashAPIKey
@@ -1613,7 +1625,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The wheel mode the user chose (SmartShift's free spin or ratchet), remembered as a Bool: absent means free
     /// spin. Settings binds to the same key.
-    static let wheelFreeSpinKey = "wheelFreeSpin"
+    static let wheelFreeSpinKey = FrameScrubSettingsStore.wheelFreeSpinDefaultsKey
 
     private static var savedFrame: CGRect? { frame(forKey: frameKey) }
 
@@ -2212,6 +2224,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             // the package's and the press would be written over later. The OSD only shows over the player.
             guard let self, byButton else { return }
             UserDefaults.standard.set(mode == .freeSpin, forKey: Self.wheelFreeSpinKey)
+            SettingsPanel.wheelFreeSpinDidChange()
             updatePrecisionWheel()
             if playerInFront { showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet") }
         }
@@ -2350,7 +2363,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// free spin only, while the pointer is over the video: not over the seek bar (its wheel steps the preview between
     /// keyframes), the playlist, the stats panel or the start screen, where macOS would scroll lists far too fast with
     /// it, nor over another window floating above the video (Spotlight, Raycast).
-    private func updatePrecisionWheel() {
+    func updatePrecisionWheel() {
         guard let mouseBridge else { return }
         let inFront = playerInFront
         if inFront && !playerWasInFront && core.config.wheelPrecision {

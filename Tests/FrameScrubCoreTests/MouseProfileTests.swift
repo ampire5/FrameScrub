@@ -96,7 +96,7 @@ import Testing
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         try "MX_PANEL mark-loop".write(to: dir.appendingPathComponent("input-editing.conf"), atomically: true, encoding: .utf8)
-        let prefs = GesturePreferences(url: dir.appendingPathComponent("input.conf"), layout: .classic)
+        let prefs = InputPreferences(url: dir.appendingPathComponent("input.conf"), layout: .classic)
         nonisolated(unsafe) var told: InputMap?
         prefs.addObserver { told = $0 }
         prefs.profile = .editing

@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import FrameScrubSettings
 import SwiftUI
 
 /// Carries a `Command` in a menu item's `representedObject`.
@@ -16,8 +17,9 @@ final class CommandBox: NSObject {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var controller: PlayerWindowController?
     private(set) var preferences: PreferencesStore!
-    private(set) var gestureBindings: GesturePreferences!
-    private var preferencesWindow: PreferencesWindowController?
+    private(set) var gestureBindings: InputPreferences!
+    /// The settings window's store, made on the first ⌘,.
+    private var settingsStore: FrameScrubSettingsStore?
     private let appIcon = AppIconSwitcher()
 
     /// View › App Icon…: the Dock icon picker (AppIconSwitcher).
@@ -46,7 +48,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private static let openFileNotification = Notification.Name("com.framescrub.open-file")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        prebuildPreferencesWindow()
         StartupTrace.mark("launched")
         let (config, configWarnings) = Config.load()
         if config.singleInstance, let primary = Self.primaryInstance() {
@@ -56,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)
-        gestureBindings = GesturePreferences(layout: config.keyLayout, profile: config.mouseProfile)
+        gestureBindings = InputPreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
@@ -344,26 +345,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    @objc func showPreferences(_ sender: Any?) {
-        makePreferencesWindow().show()
+    /// ⌘,: the settings window, made on the first call (never at launch).
+    @MainActor @objc func showPreferences(_ sender: Any?) {
+        guard let preferences, let gestureBindings else { return }
+        let store = settingsStore ?? makeSettingsStore(preferences)
+        let context = SettingsPanelContext(
+            inputPreferences: gestureBindings,
+            iconChoices: { AppIconSwitcher.choices(current: preferences.config.appIcon) },
+            translateKey: { KeyboardLayout.latin(keyCode: $0, shift: $1) },
+            menuRows: { [weak self] in self?.menuShortcutRows() ?? [] })
+        SettingsPanel.show(store: store, context: context)
     }
 
-    @discardableResult
-    private func makePreferencesWindow() -> PreferencesWindowController {
-        if let preferencesWindow { return preferencesWindow }
-        let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
-        let window = PreferencesWindowController(store: preferences, mouseTab: tab)
-        preferencesWindow = window
-        return window
+    @MainActor private func makeSettingsStore(_ preferences: PreferencesStore) -> FrameScrubSettingsStore {
+        let store = FrameScrubSettingsStore(
+            preferences: preferences,
+            colorLayers: { [weak self] in self?.controller?.colorSnapshot() },
+            clearColor: { [weak self] key, level in self?.controller?.clearColor(key, on: level) })
+        // The window's wheel row: the player sets the Logitech wheel to the new mode.
+        store.onWheelFreeSpinWrite = { [weak self] in self?.controller?.updatePrecisionWheel() }
+        settingsStore = store
+        return store
     }
 
-    /// Builds the settings window while the app is idle after launch (~0.1 s of main thread), so ⌘, only shows it.
-    /// Not while a video is playing: a hitch there matters more than a slower first ⌘,.
-    private func prebuildPreferencesWindow() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, controller?.hasOpenFile != true else { return }
-            makePreferencesWindow()
+    /// The menus' items with a shortcut, for the Key Bindings page: "⇧⌘O", "Open URL…".
+    private func menuShortcutRows() -> [(input: String, title: String)] {
+        var rows: [(input: String, title: String)] = []
+        func walk(_ menu: NSMenu) {
+            for item in menu.items {
+                if let submenu = item.submenu { walk(submenu); continue }
+                guard !item.keyEquivalent.isEmpty, !item.isSeparatorItem else { continue }
+                rows.append((Self.shortcutText(item), item.title))
+            }
         }
+        NSApp.mainMenu.map(walk)
+        return rows
+    }
+
+    /// A menu item's shortcut as menus show it: modifier glyphs (⌃⌥⇧⌘), then the key.
+    private static func shortcutText(_ item: NSMenuItem) -> String {
+        let key = item.keyEquivalent
+        var flags = item.keyEquivalentModifierMask
+        if key.count == 1, key != key.lowercased() { flags.insert(.shift) }   // "O" is ⇧O
+        var text = ""
+        if flags.contains(.control) { text += "⌃" }
+        if flags.contains(.option) { text += "⌥" }
+        if flags.contains(.shift) { text += "⇧" }
+        if flags.contains(.command) { text += "⌘" }
+        let names: [String: String] = [
+            "\u{8}": "⌫", "\u{7f}": "⌫", "\r": "↩", " ": "Space", "\u{1b}": "Esc",
+            String(UnicodeScalar(NSLeftArrowFunctionKey)!): "←", String(UnicodeScalar(NSRightArrowFunctionKey)!): "→",
+            String(UnicodeScalar(NSUpArrowFunctionKey)!): "↑", String(UnicodeScalar(NSDownArrowFunctionKey)!): "↓",
+        ]
+        return text + (names[key] ?? key.uppercased())
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {

@@ -239,8 +239,8 @@ the trackpad or menu items.
 `haptic-strength` (0…100, default `keep`) is the strength of ordinary patterns; `keep` leaves the mouse's own setting.
 `mx-panel-force` (0…100 across the mouse's range, default `0` — the lightest press, as in Loupe; `default` for the
 factory value, `keep` to leave it) is how hard the panel must be pressed. Pressing and releasing a button never buzzes
-by itself. Settings → Scrolling → Logitech mouse has the toggle, both strengths and the side buttons; the per-event
-patterns live in the file.
+by itself. Settings → Mouse & Trackpad has the toggle, a pattern per event, both strengths, the panel force and the
+side buttons.
 
 **Back / forward and Mac Mouse Fix.** `mx-side-buttons=watch` (default) listens to the buttons over HID++ without taking
 them from the system, so Mac Mouse Fix keeps its own Back / Forward actions (a swipe with Back held, say) and FrameScrub
@@ -251,7 +251,7 @@ FrameScrub sees nothing). On Home back / forward run no binding: they go back an
 Stash page in its own (with `take` too).
 
 **Precision Scroll.** Logitech mice with a high-resolution wheel and SmartShift get free spin and Precision Scroll in
-FrameScrub only, as one choice: with `wheel-precision=yes` (Settings → Scrolling → Logitech mouse) FrameScrub follows
+FrameScrub only, as one choice: with `wheel-precision=yes` (Settings → Scrolling → Logitech wheel) FrameScrub follows
 the wheel mode you pick while its window is in front. Free spin goes with Precision Scroll, the ratchet without it, and
 the SmartShift button switches between them (the OSD says `Free spin · Precision Scroll` or `Ratchet`). The choice is
 remembered between launches and starts as free spin; Settings has the same picker. The zones: the player window with a
@@ -589,7 +589,8 @@ the nearest folder above it that has the key (on a share, not above `/Volumes/<s
 built-in default. ⌥C / ⌥V save what is on screen for the folder (its subfolders inherit it), ⇧C / ⇧V make it the
 default in `framescrub.conf`; values below that would now be the same are dropped, so the picture never changes on a
 save. Playback > Colour has the same and Reset File Colour / Reset Folder Colour (enabled when there is something to
-reset). Settings > Display > Colour edits the defaults. A file's values are kept in its entry in
+reset). Settings > Colour edits the defaults; a row whose key the open video or its folder sets shows that level
+(«This file», «This folder», «Folder <name>») with «Use Default», which drops it there. A file's values are kept in its entry in
 `~/Library/Application Support/FrameScrub/positions.json` (also with `resume-playback=no`), the folders' in
 `~/Library/Application Support/FrameScrub/folder-colors.json` (up to 1000 folders, the least recently changed
 dropped first); nothing is written next to the videos. Renaming or moving a file or folder loses its colour. Saved

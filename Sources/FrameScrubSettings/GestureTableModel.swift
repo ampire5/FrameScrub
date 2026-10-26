@@ -1,15 +1,15 @@
 import Combine
 import FrameScrubCore
-import SwiftUI
+import Foundation
 
-/// The rows of the "Mouse & Trackpad" tab. Edits go through `GesturePreferences`, which applies them to the
+/// The rows of the gesture table (Mouse & Trackpad). Edits go through `InputPreferences`, which applies them to the
 /// running player first and writes input.conf afterwards.
-final class GestureModel: ObservableObject {
+public final class GestureTableModel: ObservableObject {
     @Published private(set) var rows: [GestureBinding]
     @Published var errorMessage: String?
-    private let preferences: GesturePreferences
+    private let preferences: InputPreferences
 
-    init(preferences: GesturePreferences) {
+    public init(preferences: InputPreferences) {
         self.preferences = preferences
         rows = preferences.bindings
         // Weak self: the preferences object outlives the window and keeps this closure.
@@ -21,6 +21,11 @@ final class GestureModel: ObservableObject {
     func update(_ old: GestureBinding, _ new: GestureBinding) { run { try self.preferences.replace(old, with: new) } }
     func add(_ row: GestureBinding) { run { try self.preferences.set(row) } }
     func reset() { run { try self.preferences.resetGestures() } }
+
+    /// What the window's search finds the table by: each row's gesture and action as the table names them.
+    public static func searchTexts(_ rows: [GestureBinding]) -> [String] {
+        rows.flatMap { [GestureTableView.title(of: $0), GestureTableView.actionTitle(of: $0.action)] }
+    }
 
     private func run(_ edit: () throws -> Void) {
         do {

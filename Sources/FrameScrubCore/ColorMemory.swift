@@ -138,6 +138,23 @@ public final class ColorMemory {
         }
     }
 
+    /// The open file's values and its folder chain (nearest first, each folder's own values); nil without a file.
+    public func snapshot() -> ColorLayerSnapshot? {
+        guard let folder else { return nil }
+        let chain = zip(FolderColors.ancestors(of: folder), folders.chain(for: folder)).map { path, values in
+            ColorLayerSnapshot.Folder(url: URL(fileURLWithPath: path, isDirectory: true), values: values)
+        }
+        return ColorLayerSnapshot(file: fileValues, chain: chain)
+    }
+
+    /// The settings window's «Use Default»: `level` drops its value of `key`; the levels above it show again.
+    public func clear(_ key: String, on level: ColorLayerHit.Level) {
+        switch level {
+        case .file: clearFile([key])
+        case .folder(let url): folders.clear([key], for: url)
+        }
+    }
+
     // MARK: Private
 
     private static let noVideo = Outcome(osd: "No video open", haptic: .error)
