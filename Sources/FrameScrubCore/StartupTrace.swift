@@ -46,4 +46,18 @@ public enum StartupTrace {
         guard enabled, lock.withLock({ marked.insert(key).inserted }) else { return }
         mark(key)
     }
+
+    /// The calling thread's CPU time in ms (`CLOCK_THREAD_CPUTIME_ID`): what an action costs the main thread, not
+    /// counting the time it waits.
+    public static func threadCPU() -> Double {
+        var t = timespec()
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
+        return Double(t.tv_sec) * 1000 + Double(t.tv_nsec) / 1e6
+    }
+
+    /// `label`'s main-thread CPU and wall time since `cpu` / `wall` (taken with `threadCPU()` and `Date()`).
+    public static func cost(_ label: String, cpu: Double, wall: Date) {
+        guard enabled else { return }
+        mark(String(format: "%@: %.1f ms CPU, %.1f ms wall", label, threadCPU() - cpu, Date().timeIntervalSince(wall) * 1000))
+    }
 }

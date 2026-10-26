@@ -748,6 +748,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// the window is the start screen. Home is made the first time and only hidden after that.
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
+        let cpu = StartupTrace.threadCPU(), wall = Date(), first = home == nil
         let view = home ?? makeHome()
         cancelStashTitleWait()
         if core.url != nil {
@@ -787,12 +788,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             applyStartScreenFrame()
         }
         if shown == .stash { stashLibrary?.focusPage() } else { window.makeFirstResponder(view.browser) }
-        StartupTrace.mark("home shown")
+        if StartupTrace.enabled {   // the bench: the layout and drawing this pass would leave to the run loop, counted here
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            StartupTrace.cost(first ? "home shown (first)" : "home shown", cpu: cpu, wall: wall)
+        }
     }
 
     /// Back to the video (or to the reason a file failed): Home stays in the window, hidden and parked.
     func hideHome() {
         guard let home, !homeHost.isHidden else { return }
+        let cpu = StartupTrace.threadCPU(), wall = Date()
         homeHost.isHidden = true
         home.isParked = true
         homeSource?.stopImages()
@@ -804,6 +810,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         titleBeforeHome = nil
         window?.makeFirstResponder(videoView)
         updatePrecisionWheel()
+        if StartupTrace.enabled, let window {
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            StartupTrace.cost("home hidden", cpu: cpu, wall: wall)
+        }
     }
 
     /// Home is in the window (Recent or Stash), not the video or why a file failed.
