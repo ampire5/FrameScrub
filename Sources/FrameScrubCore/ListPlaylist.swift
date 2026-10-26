@@ -1,14 +1,21 @@
 import Foundation
 
 /// One entry of a list a plugin page gave as the playlist: a media-server scene, a local file or an http(s) stream.
+/// `time` (seconds) is where it starts whenever it is opened, over the remembered position; nil leaves that.
 public enum PlaylistItem: Equatable, Sendable {
-    case scene(id: String, title: String?)
-    case file(URL, title: String?)
-    case stream(URL, title: String?)
+    case scene(id: String, title: String?, time: Double? = nil)
+    case file(URL, title: String?, time: Double? = nil)
+    case stream(URL, title: String?, time: Double? = nil)
 
     public var title: String? {
         switch self {
-        case .scene(_, let title), .file(_, let title), .stream(_, let title): title
+        case .scene(_, let title, _), .file(_, let title, _), .stream(_, let title, _): title
+        }
+    }
+
+    public var time: Double? {
+        switch self {
+        case .scene(_, _, let time), .file(_, _, let time), .stream(_, _, let time): time
         }
     }
 }
@@ -100,9 +107,9 @@ public struct PlaylistRow: Equatable, Sendable {
             return
         }
         switch item {
-        case let .scene(id, _): self.init(title: "Scene \(id)")
-        case let .file(url, _): self.init(file: url)
-        case let .stream(url, _):
+        case let .scene(id, _, _): self.init(title: "Scene \(id)")
+        case let .file(url, _, _): self.init(file: url)
+        case let .stream(url, _, _):
             let name = url.lastPathComponent
             self.init(title: name.isEmpty || name == "/" ? url.host ?? url.absoluteString : name)
         }

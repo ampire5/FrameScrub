@@ -251,7 +251,7 @@ struct Arguments {
 }
 
 extension Arguments {
-    /// `[{scene, title?} | {path, title?} | {url, title?}, …]`: not empty, at most `ListPlaylist.maxItems`; one bad item refuses the
+    /// `[{scene, title?, t?} | {path, title?, t?} | {url, title?, t?}, …]`: not empty, at most `ListPlaylist.maxItems`; one bad item refuses the
     /// whole list, naming its position.
     func playlistItems(_ key: String) throws(Failure) -> [PlaylistItem] {
         let list = try requiredObjectList(key)
@@ -273,17 +273,18 @@ extension PlaylistItem {
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         var title: String?
         if args.given("title") { title = try args.string("title") }
+        let time = try args.optionalTime("t")   // as `open`'s: seconds, not negative
         _ = try args.sceneInfo()   // checked here; `PluginMessage.sceneInfos` hands it over
         _ = try args.framesFolder()   // and `frameFolders`
         switch try args.source() {
         case "scene":
-            self = .scene(id: try args.sceneID("scene"), title: title)
+            self = .scene(id: try args.sceneID("scene"), title: title, time: time)
         case "path":
             let path = try args.string("path")
             guard path.hasPrefix("/") else { throw PluginMessage.Failure("path must be absolute") }
-            self = .file(URL(filePath: path, directoryHint: .notDirectory), title: title)   // not looked up: a share answers over the network
+            self = .file(URL(filePath: path, directoryHint: .notDirectory), title: title, time: time)   // not looked up: a share answers over the network
         case "url":
-            self = .stream(try args.streamURL("url"), title: title)
+            self = .stream(try args.streamURL("url"), title: title, time: time)
         default:
             throw PluginMessage.Failure("needs scene, path or url")
         }

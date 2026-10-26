@@ -45,8 +45,9 @@ import WebKit
 ///     framescrub.hide()               hide the page's slot; the keys go back to the player
 ///     framescrub.playlist(items, {index?, name?})
 ///                                     the playlist becomes this list instead of the folder, and item `index` (default 0)
-///                                     opens: items = [{scene, title?} | {path, title?} | {url, title?}], 1…2000 of
-///                                     them; one bad item refuses the whole list. {path} items need what open({path}) needs (one question
+///                                     opens: items = [{scene, title?, t?} | {path, title?, t?} | {url, title?, t?}],
+///                                     1…2000 of them; one bad item refuses the whole list. An item's t (seconds) is
+///                                     where it starts whenever it opens, over its remembered position (0: the start). {path} items need what open({path}) needs (one question
 ///                                     for all of them). Next / previous, autoadvance and the playlist slot follow the
 ///                                     list until a file is opened from elsewhere (Finder, Home, a link, open()). A scene's
 ///                                     file is looked for when its turn comes; one that cannot be opened fires `error`

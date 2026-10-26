@@ -341,6 +341,24 @@ final class HapticLog {
         #expect(nearEnd.position == 0)
     }
 
+    /// An open that lands on a time of its own (a page's `t`, even 0) does not seek to the remembered position first
+    /// nor announce it; the remembered A-B range still comes back.
+    @Test func aLandingTimeSkipsTheRememberedPosition() throws {
+        let url = Fixtures.url(Fixtures.h264)
+        let store = temporaryStore()
+        store.save(ResumeEntry(position: 10, loopA: 2, loopB: 3), for: url)
+        let delegate = RecordingDelegate()
+        let player = PlayerCore(config: Config(), enableAudio: false, fallbackRoot: makeTemporaryDirectory(), resumeStore: store)
+        player.delegate = delegate
+        defer { player.close() }
+        try player.open(url, fallbackPosition: 5, landingTime: 0)
+        #expect(player.position == 0)
+        #expect(player.loopA == 60 && player.loopB == 90)
+        #expect(!delegate.messages.contains { $0.hasPrefix("Resumed at") })
+        player.applyLanding(LinkTarget(time: 0))
+        #expect(player.position == 0)
+    }
+
     @Test func nearTheEndStartsFromTheBeginning() throws {
         let store = temporaryStore()
         store.save(ResumeEntry(position: 19), for: Fixtures.url(Fixtures.h264))

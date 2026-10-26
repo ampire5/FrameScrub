@@ -59,7 +59,7 @@ import Testing
         guard case let .open(.file(url, _)) = message(["cmd": "open", "path": dir]) else { Issue.record("not an open"); return }
         #expect(!url.hasDirectoryPath)
         let items = message(["cmd": "setPlaylist", "items": [["path": dir]]])
-        guard case let .setPlaylist(list, _, _) = items, case let .file(item, _) = list.first else { Issue.record("no item"); return }
+        guard case let .setPlaylist(list, _, _) = items, case let .file(item, _, _) = list.first else { Issue.record("no item"); return }
         #expect(!item.hasDirectoryPath)
     }
 
@@ -426,5 +426,27 @@ extension PluginMessageTests {
 
     @Test func enqueueEmptyFails() {
         #expect(reason(posted(#"{"cmd":"enqueue","items":[]}"#)) == "enqueue: items is empty")
+    }
+
+    /// An item's `t` is where it starts each time it opens (0: from the beginning, not the remembered position).
+    @Test func playlistItemsTakeAStartTime() {
+        #expect(message(posted(#"{"cmd":"setPlaylist","items":[{"url":"http://h/s/1","t":0},{"scene":2,"t":12.5},{"path":"/a.mp4","t":3}]}"#))
+                == .setPlaylist(items: [.stream(URL(string: "http://h/s/1")!, title: nil, time: 0),
+                                        .scene(id: "2", title: nil, time: 12.5),
+                                        .file(URL(fileURLWithPath: "/a.mp4"), title: nil, time: 3)],
+                                index: 0, name: nil))
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"url":"http://h/s/1","title":"A","t":0}]}"#))
+                == .enqueue([.stream(URL(string: "http://h/s/1")!, title: "A", time: 0)]))
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"scene":3}]}"#)) == .enqueue([.scene(id: "3", title: nil, time: nil)]))
+        #expect(PlaylistItem.stream(URL(string: "http://h/s/1")!, title: nil, time: 0).time == 0)
+        #expect(PlaylistItem.scene(id: "3", title: nil).time == nil)
+    }
+
+    /// As `open`'s `t`: a number of seconds, not negative; a bad one refuses the list, naming the item.
+    @Test func playlistItemTimeIsChecked() {
+        #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1},{"url":"http://h/s/1","t":-1}]}"#))
+                == "setPlaylist: items[1]: t must not be negative")
+        #expect(reason(posted(#"{"cmd":"enqueue","items":[{"scene":1,"t":"0"}]}"#)) == "enqueue: items[0]: t must be a number")
+        #expect(reason(posted(#"{"cmd":"enqueue","items":[{"scene":1,"t":null}]}"#)) == "enqueue: items[0]: t must be a number")
     }
 }

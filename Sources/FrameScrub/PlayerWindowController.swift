@@ -418,7 +418,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The rest of `openFile` once the file is read: the player takes it and the window follows.
     private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
-        openCore(prepared, fallbackPosition: fallbackPosition)
+        openCore(prepared, fallbackPosition: fallbackPosition, landingTime: landing?.time)
         core.sceneInfo = pageSceneInfos[url]   // a page's name for it: its frames and clips are named so
         core.frameFolder = pageFrameFolders[url]
         StartupTrace.mark("core opened")
@@ -464,10 +464,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
     /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
-    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?) {
+    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?, landingTime: Double? = nil) {
         holdsSegmentEvents = true
         heldSegmentEvent = nil
-        core.open(prepared, fallbackPosition: fallbackPosition)
+        core.open(prepared, fallbackPosition: fallbackPosition, landingTime: landingTime)
         holdsSegmentEvents = false
         pluginFileOpened()
         if let held = heldSegmentEvent {
@@ -2422,8 +2422,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         hud.show(openedHUD(direction > 0 ? .playlistNext : .playlistPrevious))
     }
 
-    /// Opens the list's item at `index` (a scene's file is looked for only now). One that cannot be opened says so on
-    /// screen and to the pages (`error`); at autoadvance (`plays`) the item after it is tried once.
+    /// Opens the list's item at `index` (a scene's file is looked for only now), at the item's own time when the page
+    /// gave one (over the remembered position). One that cannot be opened says so on screen and to the pages
+    /// (`error`); at autoadvance (`plays`) the item after it is tried once.
     private func openListItem(at index: Int, plays: Bool = false, retried: Bool = false) {
         guard let item = listPlaylist?.select(index) else { return }
         updatePlaylistPanel()   // a scene opens later: the row moves now
@@ -2435,21 +2436,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             openListItem(at: index + 1, plays: true, retried: true)
             showMessage("Cannot open \(title): skipped", duration: 3)
         }
+        let landing = item.time.map { LinkTarget(time: $0) }
         switch item {
-        case let .file(url, _), let .stream(url, _):
+        case let .file(url, _, _), let .stream(url, _, _):
             returnTab = .recent
             stashScene = nil
             stashOpens += 1   // a scene still being looked for must not replace this file
             queueGate.cancel()
-            openFile(url) { [weak self] outcome in
+            openFile(url, landing: landing) { [weak self] outcome in
                 switch outcome {
                 case .opened: if plays { self?.core.play() }
                 case .failed: failed()
                 case .superseded: break
                 }
             }
-        case let .scene(id, _):
-            openStashScene(StashScene(id: id, paths: []), plays: plays, onFailure: failed)
+        case let .scene(id, _, _):
+            openStashScene(StashScene(id: id, paths: []), landing: landing, plays: plays, onFailure: failed)
         }
     }
 
@@ -3067,9 +3069,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
                                  then apply: @escaping () -> Void) {
         let apply = { [weak self] in self?.whenFramesAllowed(request, origin: origin, verb: verb, then: apply) ?? () }
-        let streams = items.compactMap { item -> URL? in if case let .stream(url, _) = item { url } else { nil } }
+        let streams = items.compactMap { item -> URL? in if case let .stream(url, _, _) = item { url } else { nil } }
         guard !streams.contains(where: isStashURL) else { pluginFailed(request, Self.stashURLRefusal(verb)); return }
-        let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
+        let files = items.compactMap { item -> URL? in if case let .file(url, _, _) = item { url } else { nil } }
         switch pluginPolicy.decision(forOpening: files, from: origin) {
         case .allowed: apply()
         case .notMedia: pluginFailed(request, "\(verb): not a video file")

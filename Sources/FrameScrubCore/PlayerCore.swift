@@ -226,9 +226,11 @@ public final class PlayerCore {
     // MARK: Opening
 
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
-    /// resume point, Stash spec §2.3).
-    public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
-        open(try preparation(for: url)(), fallbackPosition: fallbackPosition)
+    /// resume point, Stash spec §2.3). `landingTime`: a position the opener lands on next (`applyLanding`), so the
+    /// remembered one is not sought (a stream would read there for nothing) nor announced; its A-B range and marks
+    /// still come back.
+    public func open(_ url: URL, fallbackPosition: Double? = nil, landingTime: Double? = nil) throws {
+        open(try preparation(for: url)(), fallbackPosition: fallbackPosition, landingTime: landingTime)
     }
 
     /// The part of opening `url` that reads it (the volume, the byte source, the read cache, the first probe), as work
@@ -249,8 +251,8 @@ public final class PlayerCore {
         }
     }
 
-    /// Opens a file `preparation(for:)` read; the file open until now is left.
-    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil) {
+    /// Opens a file `preparation(for:)` read; the file open until now is left. `landingTime` as for `open(_:)`.
+    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil) {
         let url = prepared.url, readCache = prepared.readCache, source = prepared.source
         networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
@@ -311,7 +313,7 @@ public final class PlayerCore {
         clock.followsAudio = true
         buildIndexInBackground(url, readCache: readCache, session: current)
         seek(toFrame: 0)
-        resumeIfRemembered(url, fallback: fallbackPosition)
+        resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
         if config.autoplay { play() }
         if speed != 1 { feedback(.speed(speed)) }   // a kept speed is shown, so a faster file is no surprise
     }
@@ -1763,8 +1765,9 @@ public final class PlayerCore {
                          for: url, size: readCache?.fileSize)
     }
 
-    /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back.
-    private func resumeIfRemembered(_ url: URL, fallback: Double?) {
+    /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back; `seeks`
+    /// false leaves the position (a landing time follows).
+    private func resumeIfRemembered(_ url: URL, fallback: Double?, seeks: Bool) {
         guard config.resumePlayback, let index else { return }
         guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
@@ -1776,7 +1779,7 @@ public final class PlayerCore {
                              },
                              open: saved.first { $0.count == 1 }.map { index.frameNumber(forSeconds: $0[0]) })
         }
-        guard entry.position > 0, durationSeconds - entry.position >= 5 else { return }
+        guard seeks, entry.position > 0, durationSeconds - entry.position >= 5 else { return }
         seek(toFrame: index.frameNumber(forSeconds: entry.position), direction: 0, hold: .nearest)
         osd("Resumed at \(FrameNaming.timecode(entry.position))")
     }
