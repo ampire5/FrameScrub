@@ -2509,7 +2509,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if folderRead == nil, let anchor = playlistAnchor, folderListing?.folder != folder(of: anchor) {
             readFolder(of: anchor)   // asked for before the first picture started it
         }
-        folderWait.run(reading: folderRead != nil, action)
+        folderWait.take(reading: folderRead != nil, action)?()   // run once the wait is left: it opens a file
     }
 
     /// The file the playlist is built around (`FolderWait.anchor`).

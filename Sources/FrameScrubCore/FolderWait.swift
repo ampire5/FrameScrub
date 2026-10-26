@@ -8,9 +8,16 @@ public struct FolderWait {
 
     public init() {}
 
-    /// Runs `action` now when no read is running (`reading` false), else keeps it for `readEnded`.
-    public mutating func run(reading: Bool, _ action: @escaping () -> Void) {
-        if reading { pending = action } else { pending = nil; action() }
+    /// `action` to run now when no read is running (`reading` false), else nil and `action` kept for `readEnded`. The
+    /// caller runs it once this call is over: the action opens a file, and the open cancels the wait, which inside this
+    /// mutating call would be a second access to the same wait.
+    public mutating func take(reading: Bool, _ action: @escaping () -> Void) -> (() -> Void)? {
+        if reading {
+            pending = action
+            return nil
+        }
+        pending = nil
+        return action
     }
 
     /// The read is over: the command that waited for it, to run once the listing is applied.

@@ -6,7 +6,7 @@ import Testing
     @Test func runsAtOnceWithNoReadRunning() {
         var wait = FolderWait()
         var ran = 0
-        wait.run(reading: false) { ran += 1 }
+        wait.take(reading: false) { ran += 1 }?()
         #expect(ran == 1)
         wait.readEnded()?()
         #expect(ran == 1)
@@ -15,7 +15,7 @@ import Testing
     @Test func waitsForTheReadWithoutBlocking() {
         var wait = FolderWait()
         var ran: [String] = []
-        wait.run(reading: true) { ran.append("next") }
+        #expect(wait.take(reading: true) { ran.append("next") } == nil)
         #expect(ran.isEmpty)   // the caller goes on: nothing waits on the read
         wait.readEnded()?()
         #expect(ran == ["next"])
@@ -25,8 +25,8 @@ import Testing
     @Test func aLaterCommandReplacesOneStillWaiting() {
         var wait = FolderWait()
         var ran: [String] = []
-        wait.run(reading: true) { ran.append("previous") }
-        wait.run(reading: true) { ran.append("next") }
+        #expect(wait.take(reading: true) { ran.append("previous") } == nil)
+        #expect(wait.take(reading: true) { ran.append("next") } == nil)
         wait.readEnded()?()
         #expect(ran == ["next"])
     }
@@ -34,9 +34,21 @@ import Testing
     @Test func cancelDropsTheWaitingCommand() {
         var wait = FolderWait()
         var ran = 0
-        wait.run(reading: true) { ran += 1 }
+        #expect(wait.take(reading: true) { ran += 1 } == nil)
         wait.cancel()
         #expect(wait.readEnded() == nil && ran == 0)
+    }
+
+    /// › with the folder read (2026-10-26 crash): the step opens a file, and the open cancels the wait. Run inside the
+    /// wait's own mutating call, the two accesses to the window's `folderWait` overlapped and Swift stopped the app.
+    @Test func theActionRunsAfterTheWaitIsLeft() {
+        final class Window { var wait = FolderWait(); var opened = 0 }
+        let window = Window()
+        window.wait.take(reading: false) {
+            window.wait.cancel()   // what openFile does
+            window.opened += 1
+        }?()
+        #expect(window.opened == 1)
     }
 
     @Test func theFileBeingOpenedAnchorsThePlaylist() {
