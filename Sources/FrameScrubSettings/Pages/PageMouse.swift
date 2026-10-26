@@ -72,8 +72,13 @@ extension SettingsPanel {
         ])
     }
 
-    /// The wheel, trackpad and pinch pairs; filled in by the gesture table.
+    /// The gesture table's model, made on the first `show` over the context's bindings.
+    static var gestureModel: GestureTableModel?
+
+    /// The wheel, trackpad and pinch pairs: one row per device, axis and modifiers.
     static var gestureTable: SettingsRow {
-        .custom("Gestures") { EmptyView() }
+        .custom("Gestures", searchTexts: { context.map { GestureTableModel.searchTexts($0.inputPreferences.bindings) } ?? [] }) {
+            if let gestureModel { GestureTableView(model: gestureModel) }
+        }
     }
 }

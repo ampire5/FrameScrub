@@ -351,8 +351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @discardableResult
     private func makePreferencesWindow() -> PreferencesWindowController {
         if let preferencesWindow { return preferencesWindow }
-        let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
-        let window = PreferencesWindowController(store: preferences, mouseTab: tab)
+        let window = PreferencesWindowController(store: preferences, mouseTab: nil)   // replaced by SettingsPanel next
         preferencesWindow = window
         return window
     }
