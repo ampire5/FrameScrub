@@ -261,6 +261,10 @@ public struct Config: Equatable, Sendable {
 
     public static var fileURL: URL { directory.appendingPathComponent("framescrub.conf") }
 
+    /// Keys of earlier versions, skipped without a warning: a file written by them keeps working (the start screen's
+    /// three, replaced by home-tab, home-card-size and recent-count when Home came).
+    public static let retiredKeys: Set<String> = ["start-tab", "start-card-size", "home-layout"]
+
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
         "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
@@ -405,6 +409,7 @@ public struct Config: Equatable, Sendable {
             }
             let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
             let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
+            if retiredKeys.contains(key) { continue }
             if !config.set(key, value) {
                 warnings.append("\(location): bad option '\(key)=\(value)'")
             }

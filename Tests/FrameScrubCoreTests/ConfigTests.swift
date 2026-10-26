@@ -54,6 +54,13 @@ import Testing
         #expect(bad.homeTab == .recent)
     }
 
+    @Test func skipsRetiredKeysSilently() {
+        let (c, warnings) = Config.parse("start-tab=recent\nstart-card-size=660\nhome-layout=scroll\nhome-tab=folders")
+        #expect(warnings.isEmpty)
+        #expect(c.homeTab == .folders)
+        #expect(Config.retiredKeys.isDisjoint(with: Config.keys))
+    }
+
     @Test func parsesStashStream() {
         for (text, value) in [("auto", StashStreaming.auto), ("never", .never), ("Always", .always)] {
             let (c, warnings) = Config.parse("stash-stream=\(text)")
@@ -118,11 +125,12 @@ import Testing
         for key in ["home-tab", "home-card-size", "recent-count", "home-sidebar"] { #expect(Config.keys.contains(key)) }
     }
 
-    /// The start screen's keys went with it (no migration): they are unknown now.
+    /// The start screen's keys went with it (no migration): they mean nothing now, and a file that still has them
+    /// opens without a warning (the owner's report of 2026-10-27).
     @Test func startScreenKeysAreGone() {
         for key in ["start-tab", "start-card-size", "home-layout"] {
             #expect(!Config.keys.contains(key))
-            #expect(!Config.parse("\(key)=1").1.isEmpty)
+            #expect(Config.parse("\(key)=1").1.isEmpty)
         }
     }
 

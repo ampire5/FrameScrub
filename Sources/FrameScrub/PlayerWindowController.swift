@@ -781,6 +781,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         hideSeekBarWork?.cancel()
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
+        osd.hide()   // the player's messages and icons were about the video, now behind Home
+        hud.hide()
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
@@ -1342,6 +1344,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func showMessage(_ text: String, duration: Double = 1.5) {
+        // Over Home the OSD's corner is the toolbar's: Home's own toast says it, above its status line.
+        if showsHome, let browser = home?.browser {
+            browser.showToast(text, for: max(duration, 3))
+            return
+        }
         // Only the player's "Saved…" OSD is clickable; any other message must not keep its handler.
         osd.onClick = nil
         osd.show(text, duration: duration)
@@ -1680,7 +1687,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
               let command = inputMap.command(for: chord) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
-            guard holdKeyCode == nil, stillDown else { return }
+            guard holdKeyCode == nil, stillDown, !showsHome else { return }
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -1722,6 +1729,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `toggle-*` / `cycle-*` that switched something (no `.error` on the way; not `cycle pause`) plays `.toggle`. `fresh`: not a key's
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
+        if showsHome, !command.worksWithoutPlayer { return }   // the video behind Home is paused and stays so
         if case let .pluginAction(name) = command { runPluginAction(name); return }   // the page's, not the player's
         core.inputIsFresh = fresh
         haptics.from(source) {
@@ -2131,6 +2139,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                          heldButton: MouseButton? = nil) {
         for action in actions {
             switch action {
+            case .scrubFrames, .scrubEdge where showsHome:
+                continue   // the wheel over Home scrolls Home
             case let .scrubFrames(frames, ticks):
                 positionWillMove()
                 core.inputIsFresh = fresh

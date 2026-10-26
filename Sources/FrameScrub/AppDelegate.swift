@@ -515,6 +515,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             #selector(toggleHomeSidebar(_:))].contains(item.action) {
             return controller?.showsHome == true
         }
+        // Over Home the video is paused behind it: its commands wait until it is back.
+        if let box = item.representedObject as? CommandBox, !box.command.worksWithoutPlayer,
+           controller?.showsHome == true { return false }
         if item.action == #selector(closeWindow(_:)) {
             let video = NSApp.keyWindow === controller?.window && controller?.hasOpenFile == true
             item.title = video ? "Close Video" : "Close"
