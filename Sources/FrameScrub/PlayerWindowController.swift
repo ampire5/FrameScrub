@@ -1423,7 +1423,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
         }
         videoView.onOtherButtonUp = { [weak self] button, time in self?.buttons.appKitUp(button, at: time) }
-        videoView.onPointerMoved = { [weak self] dx, dy in self?.buttons.move(dx: dx, dy: dy) }
         videoView.onMouseMoved = { [weak self] in
             self?.showCursorAfterScrub()
             self?.revealSeekBar()

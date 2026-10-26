@@ -5,7 +5,8 @@ import Foundation
 /// pointer movement and timer ticks; it answers with the chords that fired (`MX_PANEL`, `MBTN_BACK_LONG`,
 /// `MBTN_FORWARD_DBL`, `MBTN_RIGHT+MBTN_MID`) and, for a wheel event, the held-button modifier its chord gets.
 ///
-/// - A button with only a tap binding fires on the press.
+/// - A button with only a tap binding fires on the press, but back and forward: they are clicks, firing on the release
+///   unless the pointer drifted (other apps drag with them: Mac Mouse Fix switches the Space with Back held).
 /// - With a `_LONG`, `_DBL` or chord binding (`MBTN_BACK+WHEEL_UP`: the button held) the tap fires on the release,
 ///   unless a wheel event, a drift of `driftPoints` or the long press cancelled it.
 /// - `_DBL`: the release starts a `doubleInterval` wait; a second press inside it fires `<b>_DBL` and nothing else,
@@ -79,10 +80,11 @@ public struct ButtonGestures: Sendable {
 
     private func kind(_ b: MouseButton) -> Kinds { kinds[b] ?? Kinds() }
 
-    /// A tap that fires on the press itself: nothing else is bound to the button (besides the right chord).
+    /// A tap that fires on the press itself: nothing else is bound to the button (besides the right chord), and it is
+    /// not back or forward (a drag with those is another app's gesture, known only by the release).
     private func firesOnPress(_ b: MouseButton) -> Bool {
         let k = kind(b)
-        return k.tap && !k.long && !k.double && !k.chords
+        return k.tap && !k.long && !k.double && !k.chords && b != .back && b != .forward
     }
 
     private func chord(_ b: MouseButton, _ keys: Modifiers, _ suffix: String = "") -> KeyChord {

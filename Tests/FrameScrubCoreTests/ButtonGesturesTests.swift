@@ -198,10 +198,32 @@ import Testing
     }
 
     @Test func tapOnlyButtonFiresOnPress() {
-        var g = make()
-        #expect(g.press(.forward, keys: [], rightHeld: false, at: 0) == [forward])
-        #expect(g.release(.forward, at: 5) == [])
+        var g = Self.gestures("MX_GESTURE screenshot")
+        #expect(g.press(.gesture, keys: [], rightHeld: false, at: 0) == [KeyChord(key: "MX_GESTURE")])
+        #expect(g.release(.gesture, at: 5) == [])
         #expect(g.nextDeadline == nil)
+    }
+
+    /// Back and forward are clicks: other apps drag with them (Mac Mouse Fix switches the Space with Back held), so
+    /// even a tap-only one waits for the release, and a drag before it is no click.
+    @Test func tapOnlySideButtonFiresOnRelease() {
+        var g = make()
+        #expect(g.press(.forward, keys: [], rightHeld: false, at: 0) == [])
+        #expect(g.nextDeadline == nil)
+        #expect(g.release(.forward, at: 5) == [forward])
+        var b = Self.gestures("MBTN_BACK screenshot")
+        #expect(b.press(.back, keys: [], rightHeld: false, at: 0) == [])
+        #expect(b.release(.back, at: 0.1) == [back])
+    }
+
+    @Test func dragWithATapOnlySideButtonIsNoClick() {
+        var g = Self.gestures("MBTN_BACK screenshot")
+        _ = g.press(.back, keys: [], rightHeld: false, at: 0)
+        g.move(dx: -478, dy: -102)   // a Space swipe: the pointer frozen, the deltas still come
+        #expect(g.release(.back, at: 0.8) == [])
+        _ = g.press(.back, keys: [], rightHeld: false, at: 1)
+        g.move(dx: 3, dy: -2)        // a tremble
+        #expect(g.release(.back, at: 1.1) == [back])
     }
 
     @Test func tapWithoutLongIgnoresDuration() {
@@ -213,7 +235,8 @@ import Testing
 
     @Test func firedChordsCarryTheKeysOfThePress() {
         var g = make()
-        #expect(g.press(.forward, keys: .alt, rightHeld: false, at: 0) == [KeyChord(key: "MBTN_FORWARD", modifiers: .alt)])
+        _ = g.press(.forward, keys: .alt, rightHeld: false, at: 0)
+        #expect(g.release(.forward, at: 0.1) == [KeyChord(key: "MBTN_FORWARD", modifiers: .alt)])
         _ = g.press(.panel, keys: [.meta, .shift], rightHeld: false, at: 1)
         #expect(g.release(.panel, at: 1.1) == [KeyChord(key: "MX_PANEL", modifiers: [.meta, .shift])])
         _ = g.press(.panel, keys: .ctrl, rightHeld: false, at: 2)
@@ -357,8 +380,8 @@ import Testing
     @Test func wheelGoesToTheChordButtonAndCancelsTheOtherHeldOne() {
         var g = Self.gestures("MBTN_BACK screenshot\nMBTN_FORWARD screenshot\nMBTN_FORWARD+WHEEL_UP screenshot")
         _ = g.press(.forward, keys: [], rightHeld: false, at: 0)
-        #expect(g.press(.back, keys: [], rightHeld: false, at: 0.05) == [back])     // tap-only: on the press
-        _ = g.release(.back, at: 0.06)
+        _ = g.press(.back, keys: [], rightHeld: false, at: 0.05)
+        #expect(g.release(.back, at: 0.06) == [back])     // a side button: on the release, even tap-only
         _ = g.press(.mid, keys: [], rightHeld: false, at: 0.07)                      // unbound: not held at all
         #expect(g.held == [.forward])
         #expect(g.wheel(hasDelta: true, momentum: false, at: 0.1) == .forwardButton)

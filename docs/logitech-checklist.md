@@ -78,7 +78,9 @@ With Mac Mouse Fix running and `mx-side-buttons=watch`:
 
 - [ ] Back / Forward tap in FrameScrub: `mark-in` / `mark-out` once each, never twice (no double mark, no double OSD);
       MMF's own action for the button does not show anything visible.
-- [ ] Back + drag (MMF's swipe): MMF switches the Space, FrameScrub marks nothing.
+- [ ] Back + drag (MMF's swipe): MMF switches the Space, FrameScrub marks nothing — in Editing and in Viewing (Back
+      with only a tap: no info panel), with MMF's "lock pointer during drag" on, the pointer over the video, a slot or
+      the seek bar.
 - [ ] First click after returning to FrameScrub from another app counts too.
 - [ ] FrameScrub in front, pointer over the Finder window: Back does nothing in FrameScrub (it is Finder's business);
       over a FrameScrub window it marks.
