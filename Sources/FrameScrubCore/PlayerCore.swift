@@ -1205,6 +1205,18 @@ public final class PlayerCore {
         if held.paused { pause() }
     }
 
+    /// The volume (0…100) from the seek bar's slider. Moving it unmutes, as a player's slider does; shown as the keys'
+    /// changes are, and like them kept for this session only (`volume` in the config is where each one starts).
+    public func setVolume(_ level: Double) {
+        guard level.isFinite else { return }
+        let level = min(max(level, 0), 100)
+        guard level != volume || isMuted else { return }
+        volume = level
+        isMuted = false
+        applyVolume()
+        feedback(.volume(Int(volume)))
+    }
+
     private func applyVolume() {
         audio?.volume = isMuted ? 0 : Float(volume / 100)
         scrubAudio?.audible = !isMuted && volume > 0

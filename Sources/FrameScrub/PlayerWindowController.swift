@@ -1309,6 +1309,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.showCursorAfterScrub()
             self?.updatePrecisionWheel()
         }
+        let transport = seekBar.transport
+        transport.onPrevious = { [weak self] in self?.runFromSeekBar(.playlistPrev) }
+        transport.onNext = { [weak self] in self?.runFromSeekBar(.playlistNext) }
+        transport.onToggleMute = { [weak self] in self?.runFromSeekBar(.cycleMute) }
+        transport.onVolume = { [weak self] in
+            self?.core.setVolume($0)
+            self?.revealSeekBar()
+        }
         core.onIndexReady = { [weak self] in
             self?.previewProvider?.updateIndex($0)
             self?.pluginGrabber?.updateIndex($0)
@@ -2374,6 +2382,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The panel shows the page's list while there is one, else the folder.
     private func updatePlaylistPanel() {
+        defer { updateTransport() }   // the seek bar's ⏮ ⏭ follow the same list
         if let listPlaylist {
             listRowIndices = listPlaylist.indices(matching: playlistFilter)
             playlistPanel.showList(name: listPlaylist.name)
@@ -2735,6 +2744,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.update(frameCount: core.frameCount, position: core.position, cached: core.cache.cachedRanges(),
                        loopA: core.loopA, loopB: core.loopB, marks: marks.segments.map { $0.start...$0.end },
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
+        updateTransport()
+    }
+
+    /// The seek bar's ⏮ ⏭ and volume, as the playlist and the player are now; the controls touch only what changed.
+    /// ⏮ ⏭ follow < and >: a page's list, Stash's queue (whose ends only Stash knows), else the folder.
+    private func updateTransport() {
+        let (previous, next): (Bool, Bool) = if let listPlaylist {
+            (listPlaylist.previous != nil, listPlaylist.next != nil)
+        } else if followsStashQueue {
+            (true, true)
+        } else {
+            (playlist?.previous != nil, playlist?.next != nil)
+        }
+        seekBar.transport.update(hasPrevious: previous, hasNext: next, volume: core.volume, muted: core.isMuted)
+    }
+
+    /// A click on a seek bar control: the command as its key runs it, silently (the bar plays no haptics), and the
+    /// bar stays up.
+    private func runFromSeekBar(_ command: Command) {
+        runInput(command, from: .menu)
+        updateTransport()
+        revealSeekBar()
     }
 
     // MARK: Slots and plugin pages
@@ -3304,6 +3335,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func player(_ player: PlayerCore, showFeedback feedback: Feedback) {
         hud.show(feedback)
+        switch feedback {
+        case .volume, .mute: updateTransport()   // a key's change shows on the slider
+        default: break
+        }
     }
 
     private func revealFrames() {

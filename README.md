@@ -82,6 +82,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
 - **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
+- Under the seek bar's track, on the right: previous / next item in the playlist (dimmed at its ends) and the volume, a mute button and a slider (moving it unmutes; like the volume keys it lasts until quit, `volume` in the config is where it starts).
 - Scene detection: jump to the next scene or back to the start of this one.
 - `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.

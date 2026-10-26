@@ -359,6 +359,25 @@ final class HapticLog {
         #expect(player.position == 0)
     }
 
+    /// The seek bar's volume slider: an absolute level, clamped, shown as a key's change; moving it unmutes.
+    @Test func volumeSliderSetsTheLevelAndUnmutes() throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        player.setVolume(42.4)
+        #expect(player.volume == 42.4 && !player.isMuted)
+        #expect(delegate.feedback.last == .volume(42))
+        player.perform(.cycleMute)
+        #expect(player.isMuted)
+        player.setVolume(150)
+        #expect(player.volume == 100 && !player.isMuted)
+        let shown = delegate.feedback.count
+        player.setVolume(100)   // nothing changed: nothing shown
+        player.setVolume(.nan)
+        #expect(delegate.feedback.count == shown && player.volume == 100)
+        player.setVolume(-5)
+        #expect(player.volume == 0)
+    }
+
     @Test func nearTheEndStartsFromTheBeginning() throws {
         let store = temporaryStore()
         store.save(ResumeEntry(position: 19), for: Fixtures.url(Fixtures.h264))
