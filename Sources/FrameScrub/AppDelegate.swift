@@ -16,7 +16,7 @@ final class CommandBox: NSObject {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var controller: PlayerWindowController?
     private(set) var preferences: PreferencesStore!
-    private(set) var gestureBindings: GesturePreferences!
+    private(set) var gestureBindings: InputPreferences!
     private var preferencesWindow: PreferencesWindowController?
     private let appIcon = AppIconSwitcher()
 
@@ -56,7 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)
-        gestureBindings = GesturePreferences(layout: config.keyLayout, profile: config.mouseProfile)
+        gestureBindings = InputPreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,

@@ -2,14 +2,14 @@ import Combine
 import FrameScrubCore
 import SwiftUI
 
-/// The rows of the "Mouse & Trackpad" tab. Edits go through `GesturePreferences`, which applies them to the
+/// The rows of the "Mouse & Trackpad" tab. Edits go through `InputPreferences`, which applies them to the
 /// running player first and writes input.conf afterwards.
 final class GestureModel: ObservableObject {
     @Published private(set) var rows: [GestureBinding]
     @Published var errorMessage: String?
-    private let preferences: GesturePreferences
+    private let preferences: InputPreferences
 
-    init(preferences: GesturePreferences) {
+    init(preferences: InputPreferences) {
         self.preferences = preferences
         rows = preferences.bindings
         // Weak self: the preferences object outlives the window and keeps this closure.
