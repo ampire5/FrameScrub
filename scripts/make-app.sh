@@ -21,6 +21,14 @@ strip "$bin"
 outside=$(otool -L "$bin" | tail -n +2 | sed -E 's/^[[:space:]]+//; s/ \(compatibility.*$//' | grep -vE '^(/usr/lib/|/System/)' || true)
 [[ -z "$outside" ]] || { echo "error: FrameScrub links outside the system:"$'\n'"$outside" >&2; exit 1; }
 cp Resources/Info.plist "$app/Contents/Info.plist"
+# Which build this is (About FrameScrub, Settings › General; BuildInfo): the commit, its branch and date, whether the
+# tree had uncommitted changes, and when it was built.
+bake() { plutil -insert "$1" -string "$2" "$app/Contents/Info.plist"; }
+bake FSBuildHash "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+bake FSBuildBranch "$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+bake FSBuildCommitDate "$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M' 2>/dev/null || true)"
+bake FSBuildDirty "$([[ -n $(git status --porcelain 2>/dev/null) ]] && echo 1 || echo 0)"
+bake FSBuildDate "$(date '+%Y-%m-%d %H:%M')"
 # App icon: the Icon Composer package is compiled by actool into Assets.car (Liquid Glass icon, CFBundleIconName)
 # plus AppIcon.icns (CFBundleIconFile, for older readers). actool ships with Xcode, not with the Command Line
 # Tools; without it the prerendered Resources/AppIcon.icns (scripts/make-icns.sh) is used.

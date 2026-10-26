@@ -145,6 +145,9 @@ struct PreferencesView: View {
         return Binding(get: { Int(inner.wrappedValue.rounded()) }, set: { inner.wrappedValue = Double($0) })
     }
 
+    /// Read once: the bundle does not change while the app runs.
+    private static let buildLine = BuildInfo.line(of: .current)
+
     private var general: some View {
         Form {
             Section("Playback") {
@@ -220,6 +223,17 @@ struct PreferencesView: View {
                     Text("Fit (shrink, then scroll)").tag(HomeLayoutMode.fit)
                     Text("Scroll").tag(HomeLayoutMode.scroll)
                     Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
+                }
+            }
+            Section("Build") {
+                // Which build this is, to quote when something is wrong (selectable, and a button copies it).
+                HStack {
+                    Text(Self.buildLine).textSelection(.enabled).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Self.buildLine, forType: .string)
+                    }
                 }
             }
         }
