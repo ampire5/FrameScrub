@@ -134,15 +134,16 @@ import Testing
 
     @Test func thePolicyDispatchesOnlyADeclaredNameOfAShownPage() {
         let declared = [PluginAction(name: "mark", label: "Mark", key: nil)]
-        #expect(PluginActionPolicy.shouldDispatch("mark", declared: declared, shown: true))
-        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: declared, shown: false))
-        #expect(!PluginActionPolicy.shouldDispatch("next", declared: declared, shown: true))
-        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: [], shown: true))
+        // while the page is in a slot, shown or hidden (an overlay slot hides while the video plays)
+        #expect(PluginActionPolicy.shouldDispatch("mark", declared: declared, inSlot: true))
+        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: declared, inSlot: false))
+        #expect(!PluginActionPolicy.shouldDispatch("next", declared: declared, inSlot: true))
+        #expect(!PluginActionPolicy.shouldDispatch("mark", declared: [], inSlot: true))
     }
 
-    @Test func theDeclaredKeysAreBoundOnlyWhileThePanelIsShown() {
+    @Test func theDeclaredKeysAreBoundWhileThePageIsInASlot() {
         let declared = [PluginAction(name: "mark", label: "Mark", key: chord("Alt+1"))]
-        #expect(PluginActionPolicy.bindable(declared, shown: true) == declared)
-        #expect(PluginActionPolicy.bindable(declared, shown: false).isEmpty)
+        #expect(PluginActionPolicy.bindable(declared, inSlot: true) == declared)
+        #expect(PluginActionPolicy.bindable(declared, inSlot: false).isEmpty)
     }
 }

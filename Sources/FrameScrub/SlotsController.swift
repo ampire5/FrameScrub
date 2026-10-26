@@ -247,6 +247,11 @@ import FrameScrubCore
     }
 
     /// The page started something playing (`open`, `playlist`): its overlay slot goes when it hides after a choice.
+    /// The plugin page under the pointer, in a slot on screen.
+    var pageUnderPointer: PluginPanel? {
+        orderedSlots.lazy.compactMap { $0.page }.first { $0.hasPointer }
+    }
+
     func pageChosePlay(_ page: PluginPanel) {
         guard let slot = orderedSlots.first(where: { $0.page === page }) else { return }
         hideAfterChoice(slot)
@@ -608,6 +613,11 @@ import FrameScrubCore
         let menu = NSMenu()
         menu.autoenablesItems = false
         addContentItems(to: menu, for: slot)
+        if let page = slot.page {
+            menu.addItem(.separator())
+            let reload = menu.addItem(withTitle: "Reload Page", action: nil, keyEquivalent: "r")   // ⌘R in the page too
+            reload.handler = { [weak page] in page?.reload() }
+        }
         if slot.setting.content != .empty {
             menu.addItem(.separator())
             for edge in SlotEdge.allCases where edge != slot.edge {

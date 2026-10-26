@@ -20,6 +20,8 @@ public struct ClipRange: Sendable, Equatable {
 public struct ClipJob: Sendable, Equatable {
     public let id: UUID
     public let source: URL
+    /// What the clip is named after (`%{video-name}`): a page's scene for a stream (`SceneInfo.namingURL`); nil: `source`.
+    public let nameSource: URL?
     public let ranges: [ClipRange]
     /// The frame-dir for this video.
     public let directory: URL
@@ -34,11 +36,12 @@ public struct ClipJob: Sendable, Equatable {
     /// Read limit in bytes/s, 0 = none.
     public let readLimit: Int
 
-    public init(id: UUID = UUID(), source: URL, ranges: [ClipRange], directory: URL, fallbackDirectory: URL,
-                template: String, aFrame: Int, aSeconds: Double, endSeconds: Double, readLimit: Int) {
+    public init(id: UUID = UUID(), source: URL, nameSource: URL? = nil, ranges: [ClipRange], directory: URL,
+                fallbackDirectory: URL, template: String, aFrame: Int, aSeconds: Double, endSeconds: Double, readLimit: Int) {
         precondition(!ranges.isEmpty, "a clip needs a range")
         self.id = id
         self.source = source
+        self.nameSource = nameSource
         self.ranges = ranges
         self.directory = directory
         self.fallbackDirectory = fallbackDirectory
@@ -333,7 +336,7 @@ private final class ClipOutput {
     init(job: ClipJob, input: MediaSource, streams kept: [Int32], directory: URL, startSeconds: Double,
          fileExtension: String) throws {
         let name = ClipOutput.availableName(
-            FrameNaming.clipFileName(forVideo: job.source, startSeconds: startSeconds, endSeconds: job.endSeconds,
+            FrameNaming.clipFileName(forVideo: job.nameSource ?? job.source, startSeconds: startSeconds, endSeconds: job.endSeconds,
                                      frame: job.aFrame, seconds: job.aSeconds, template: job.template,
                                      fileExtension: fileExtension),
             in: directory)

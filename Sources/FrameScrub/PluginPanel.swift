@@ -29,8 +29,8 @@ import WebKit
 ///                                     earlier list, [] withdraws them. A key is bound only where the user's keys leave it
 ///                                     free; a name the user bound to `plugin-action <name>` in input.conf keeps their key.
 ///                                     An unknown key name is accepted but may never be pressable. The actions are listed
-///                                     in the key help. They belong to the loaded page: they stay while the panel is hidden
-///                                     (keys are bound only while it is shown) and are dropped when a new page commits
+///                                     in the key help. They belong to the loaded page: keys are bound while it is in a slot,
+///                                     shown or hidden (the video has the keyboard then), and are dropped when a new page commits
 ///                                     (a link, a reload) or the page's process dies; a navigation that fails or is cancelled
 ///                                     leaves them. A reply sent while the panel is hidden says what the keys will become
 ///                                     once it is shown. Only keyboard chords bind: a mouse button, wheel, swipe or pinch
@@ -53,6 +53,12 @@ import WebKit
 ///                                     (at autoadvance the item after it is tried once)
 ///     framescrub.enqueue(items)       add items at the end of the list; with the folder as the playlist, a list of the
 ///                                     file on screen and the items begins. Past 2000 in all it is refused whole
+///                                     An open({path|url}) and {path|url} items may carry info: {title?, studio?,
+///                                     performers?, date?, code?, url?} (SceneInfo): the window and OSD read it as a
+///                                     Stash scene's details; a stream's frames and clips are named after it.
+///                                     They may carry frames: "/absolute/folder" too: where the item's saved frames and
+///                                     clips go (the same consent as a local path). Back / forward mouse buttons over the
+///                                     page go through its history; Reload Page (slot menu) or ⌘R in the page reloads it
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
 /// Requests with an answer (they need a file open, else they reject):
@@ -119,6 +125,7 @@ import WebKit
     var onPageReplaced: (() -> Void)?
     /// Whether the page's slot is on screen: only then does the page hear the player's state.
     var isShownInSlot = false
+    private var historyButtons: Any?
     /// A text field (or another element that takes typing) in the page has the focus.
     var isTyping: Bool { keys.editing }
     /// Tells the pages apart in the requests they post (`PluginRequest.page`).
@@ -214,6 +221,7 @@ import WebKit
             self?.keys.released($0.keyCode)
             self?.onKeyUp?($0)
         }
+        webView.onReload = { [weak self] in self?.reload() }
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.setValue(false, forKey: "drawsBackground")
         webView.navigationDelegate = self
@@ -231,6 +239,7 @@ import WebKit
         failure.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
         failure.translatesAutoresizingMaskIntoConstraints = false
         addSubview(failure)
+        installHistoryButtons()
         NSLayoutConstraint.activate([
             failure.leadingAnchor.constraint(equalTo: webView.leadingAnchor, constant: 16),
             failure.trailingAnchor.constraint(equalTo: webView.trailingAnchor, constant: -16),
@@ -247,7 +256,9 @@ import WebKit
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
             let id = PluginRequest.id(of: body)
             switch PluginMessage.parse(body) {
-            case let .success(command): onMessage?(PluginRequest(id: id, page: token, message: command), origin)
+            case let .success(command):
+                onMessage?(PluginRequest(id: id, page: token, message: command, infos: PluginMessage.sceneInfos(body),
+                                         frames: PluginMessage.frameFolders(body)), origin)
             case let .failure(failure): fail(id: id, failure.reason)
             }
         }
@@ -321,6 +332,39 @@ import WebKit
         webView.load(URLRequest(url: url))
         return true
     }
+
+    /// The mouse's back and forward buttons over the page go through its history, as in a browser (and as on the
+    /// Stash page); the player's bindings for them run elsewhere. The press is taken too, so nothing else acts on it.
+    private func installHistoryButtons() {
+        historyButtons = NSEvent.addLocalMonitorForEvents(matching: [.otherMouseDown, .otherMouseUp]) { [weak self] event in
+            guard event.buttonNumber == 3 || event.buttonNumber == 4 else { return event }
+            let taken = MainActor.assumeIsolated { () -> Bool in
+                guard let self, self.isPointerOverPage(event) else { return false }
+                if event.type == .otherMouseUp { event.buttonNumber == 3 ? self.goBack() : self.goForward() }
+                return true
+            }
+            return taken ? nil : event
+        }
+    }
+
+    private func isPointerOverPage(_ event: NSEvent) -> Bool {
+        guard let window, event.window === window, isShownInSlot, !isHiddenOrHasHiddenAncestor else { return false }
+        return webView.bounds.contains(webView.convert(event.locationInWindow, from: nil))
+    }
+
+    /// Whether the pointer is over the page now (the Logitech mouse's own button events carry no place).
+    var hasPointer: Bool {
+        guard let window, isShownInSlot, !isHiddenOrHasHiddenAncestor else { return false }
+        let point = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        return webView.bounds.contains(webView.convert(point, from: nil))
+    }
+
+    isolated deinit {
+        if let historyButtons { NSEvent.removeMonitor(historyButtons) }
+    }
+
+    func goBack() { webView.goBack() }
+    func goForward() { webView.goForward() }
 
     /// Loads the page again from the server.
     func reload() {
@@ -485,6 +529,17 @@ import WebKit
 /// Reports when the web view takes or gives back the keyboard, and the keys pressed in it.
 @MainActor private final class PanelWebView: WKWebView {
     var onFocusChange: ((Bool) -> Void)?
+    /// ⌘R while the page has the keyboard.
+    var onReload: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
+        if flags == .command, event.keyCode == 15, window?.firstResponder === self {   // kVK_ANSI_R, on any layout
+            onReload?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
     /// A key went down: its first sight, not WebKit sending back one the page left unhandled.
     var onPress: ((NSEvent) -> Void)?
     /// A key came up, whatever the page did with it.

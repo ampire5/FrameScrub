@@ -177,4 +177,16 @@ import Testing
         f.reset()
         #expect(f.mouseRelease(.back) == true)
     }
+
+    @Test func overAPluginPageBackAndForwardAreThePagesHistory() {
+        // taken: only the mouse's events bring them, so they navigate here
+        #expect(SideButtonFilter.pluginPagePress(.back, mode: .take) == .pageBack)
+        #expect(SideButtonFilter.pluginPagePress(.forward, mode: .take) == .pageForward)
+        // watched or the system's: AppKit brings them to the page itself; the player's binding must not run as well
+        for mode in [SideButtonsMode.watch, .system] {
+            #expect(SideButtonFilter.pluginPagePress(.back, mode: mode) == .drop, "\(mode)")
+            #expect(SideButtonFilter.pluginPagePress(.forward, mode: mode) == .drop, "\(mode)")
+        }
+        #expect(SideButtonFilter.pluginPagePress(.mid, mode: .take) == .pass)
+    }
 }
