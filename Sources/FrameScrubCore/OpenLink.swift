@@ -76,7 +76,7 @@ public enum OpenLink {
         let subject: Subject
         if let path = item("path") {
             guard path.hasPrefix("/") else { return nil }
-            subject = .file(URL(fileURLWithPath: path))
+            subject = .file(URL(filePath: path, directoryHint: .notDirectory))   // not looked up: a share answers over the network
         } else if let scene = item("scene")?.trimmingCharacters(in: .whitespaces), !scene.isEmpty {
             subject = .stashScene(id: scene)
         } else {

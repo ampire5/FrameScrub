@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
            let target = OpenLink.target(from: link) {
             controller.open(target)   // a link on the command line, as from another program
         } else if let path = paths.first {
-            controller.open(URL(fileURLWithPath: path))   // a failure stays on screen with its reason
+            controller.open(URL(filePath: path, directoryHint: .notDirectory))   // a failure stays on screen with its reason
         } else if let target = pendingTarget {
             controller.open(target)
         } else if let url = pendingURL {

@@ -45,21 +45,31 @@ import Testing
     @Test func openALocalFile() {
         #expect(message(["cmd": "open", "path": "/a/b.mp4"])
                 == .open(.file(URL(fileURLWithPath: "/a/b.mp4"), landing: LinkTarget())))
-        #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "seg": [1, 9]])
+        #expect(message(["cmd": "open", "path": "/a.mp4", "t": 4, "segments": [[1, 9]]])
                 == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(time: 4, segments: [1...9]))))
         #expect(message(["cmd": "open", "path": "rel/a.mp4"]) == nil)
         #expect(message(["cmd": "open", "path": 5]) == nil)
         #expect(message(["cmd": "open"]) == nil)
     }
 
+    /// A path to open is taken as a file without asking the disk: on a share every question is a round trip, made on
+    /// the main thread. (A path that is a directory would otherwise come back as a directory URL.)
+    @Test func aPathToOpenIsNotLookedUp() {
+        let dir = FileManager.default.temporaryDirectory.path
+        guard case let .open(.file(url, _)) = message(["cmd": "open", "path": dir]) else { Issue.record("not an open"); return }
+        #expect(!url.hasDirectoryPath)
+        let items = message(["cmd": "setPlaylist", "items": [["path": dir]]])
+        guard case let .setPlaylist(list, _, _) = items, case let .file(item, _) = list.first else { Issue.record("no item"); return }
+        #expect(!item.hasDirectoryPath)
+    }
+
     @Test func openAStashScene() {
         #expect(message(["cmd": "open", "scene": "42", "paths": ["/mnt/a.mp4"]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget())))
-        #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "seg": [2, 3]])
+        #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "segments": [[2, 3]]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget(segments: [2...3]))))
-        // A scene wins over a path when both are given.
-        #expect(message(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"])
-                == .open(.stashScene(id: "1", paths: ["/x"], landing: LinkTarget())))
+        // A scene and a path together are refused, not one of them picked.
+        #expect(reason(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"]) == "open: give one of path, scene, url")
         // Without paths (or with none) they are asked of Stash.
         #expect(message(["cmd": "open", "scene": "42"]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
         #expect(message(["cmd": "open", "scene": "42", "paths": []]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
@@ -72,9 +82,9 @@ import Testing
     @Test func openRefusesBadExtras() {
         #expect(message(["cmd": "open", "path": "/a.mp4", "t": "4"]) == nil)
         #expect(message(["cmd": "open", "path": "/a.mp4", "t": -1]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [9, 3]]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == nil)
-        #expect(message(["cmd": "open", "path": "/a.mp4", "seg": "1-3"]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[9, 3]]]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[1]]]) == nil)
+        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": "1-3"]) == nil)
     }
 
     @Test func unknownOrMissingCommand() {
@@ -97,8 +107,8 @@ import Testing
         #expect(reason(["cmd": "loop", "a": 3, "b": 1]) == "loop: b must be above a, and a not negative")
         #expect(reason(["cmd": "open", "path": "x"]) == "open: path must be absolute")
         #expect(reason(["cmd": "open", "scene": "1", "paths": "x"]) == "open: paths must be an array of strings")
-        #expect(reason(["cmd": "open", "path": "/a.mp4", "seg": [1]]) == "open: seg must be [a, b] with b above a")
-        #expect(reason(["cmd": "open"]) == "open: path or scene is missing")
+        #expect(reason(["cmd": "open", "path": "/a.mp4", "segments": [[1]]]) == "open: each segment must be [a, b] with b above a")
+        #expect(reason(["cmd": "open"]) == "open: path, scene or url is missing")
         #expect(reason(["cmd": "play"]) == nil)
     }
 
@@ -146,11 +156,9 @@ import Testing
                            landing: LinkTarget(time: 4, segments: [1...2, 5...6], lock: false, advance: .next))))
         #expect(message(["cmd": "open", "scene": "9", "segments": [[1, 2]]])
             == .open(.stashScene(id: "9", paths: [], landing: LinkTarget(segments: [1...2]))))
-        // segments wins over the single seg pair; seg alone stays a one-item list
-        #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[1, 2]], "seg": [7, 8]])
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [1...2]))))
+        // the older single seg pair is not heard
         #expect(message(["cmd": "open", "path": "/a.mp4", "seg": [7, 8]])
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
+            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget())))
         #expect(message(["cmd": "open", "path": "/a.mp4", "segments": [[2, 1]]]) == nil)
         #expect(message(["cmd": "open", "path": "/a.mp4", "advance": "x"]) == nil)
     }
@@ -169,14 +177,12 @@ import Testing
     @Test func segmentArgumentsAreCheckedStrictly() {
         #expect(reason(posted(#"{"cmd":"segments","segments":[[true,2]]}"#)) == "segments: each segment must be [a, b] with b above a")
         #expect(reason(posted(#"{"cmd":"segments","segments":[[0,true]]}"#)) == "segments: each segment must be [a, b] with b above a")
-        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","seg":[false,true]}"#)) == nil)
+        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":[[false,true]]}"#)) == nil)
         #expect(message(posted(#"{"cmd":"segments","segments":[[0,2]]}"#)) == .segments([0...2], lock: nil, advance: nil))
         #expect(reason(posted(#"{"cmd":"goSegment","i":1.5}"#)) == "goSegment: i must be a whole number")
         #expect(message(posted(#"{"cmd":"goSegment","i":1.0}"#)) == .goSegment(1))
         #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null}"#))
             == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget())))
-        #expect(message(posted(#"{"cmd":"open","path":"/a.mp4","segments":null,"seg":[7,8]}"#))
-            == .open(.file(URL(fileURLWithPath: "/a.mp4"), landing: LinkTarget(segments: [7...8]))))
         #expect(reason(posted(#"{"cmd":"segments","segments":null}"#)) == "segments: segments is missing")
     }
 
@@ -204,12 +210,12 @@ import Testing
         #expect(PluginEvent.focus.name == "focus")
         #expect(PluginEvent.focus.detail == nil)
         #expect(PluginEvent.blur.name == "blur")
-        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil, source: .file).name == "fileopened")
-        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", scene: nil, source: .file).detail == """
-        {"path":"/a/b.mp4","scene":null,"source":"file"}
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", url: nil, scene: nil, source: .file).name == "fileopened")
+        #expect(PluginEvent.fileOpened(path: "/a/b.mp4", url: nil, scene: nil, source: .file).detail == """
+        {"path":"/a/b.mp4","scene":null,"source":"file","url":null}
         """)
-        #expect(PluginEvent.fileOpened(path: "/scene/42/stream", scene: "42", source: .stream).detail == """
-        {"path":"/scene/42/stream","scene":"42","source":"stream"}
+        #expect(PluginEvent.fileOpened(path: nil, url: "http://h:9999/scene/42/stream", scene: "42", source: .stream).detail == """
+        {"path":null,"scene":"42","source":"stream","url":"http://h:9999/scene/42/stream"}
         """)
         #expect(PluginSource(url: URL(string: "http://h:9999/scene/42/stream")!) == .stream)
         #expect(PluginSource(url: URL(fileURLWithPath: "/a.mp4")) == .file)
@@ -220,6 +226,44 @@ import Testing
         let landing = LinkTarget(time: 1, segments: [0...2])
         #expect(PluginOpen.file(URL(fileURLWithPath: "/a"), landing: landing).landing == landing)
         #expect(PluginOpen.stashScene(id: "1", paths: ["/a"], landing: landing).landing == landing)
+        #expect(PluginOpen.stream(URL(string: "http://h/s/1")!, landing: landing).landing == landing)
+    }
+
+    @Test func openStream() {
+        #expect(message(["cmd": "open", "url": "http://127.0.0.1:8793/stream/5?kind=trailer", "t": 3])
+                == .open(.stream(URL(string: "http://127.0.0.1:8793/stream/5?kind=trailer")!, landing: LinkTarget(time: 3))))
+        #expect(message(["cmd": "open", "url": "HTTPS://cdn.example/a%20b.mp4", "segments": [[1, 2]]])
+                == .open(.stream(URL(string: "HTTPS://cdn.example/a%20b.mp4")!, landing: LinkTarget(segments: [1...2]))))
+        for bad in ["file:///v/a.mp4", "ftp://h/a.mp4", "/v/a.mp4", "http://", "http:///a.mp4", "", "h/a.mp4"] {
+            #expect(reason(["cmd": "open", "url": bad]) == "open: url must be http(s)", "\(bad)")
+        }
+        #expect(reason(["cmd": "open", "url": 5]) == "open: url must be a string")
+        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "path": "/v/a.mp4"]) == "open: give one of path, scene, url")
+        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "scene": 3]) == "open: give one of path, scene, url")
+        // null names none: a page may build {path: x.path, url: x.url}
+        #expect(message(posted(#"{"cmd":"open","url":"http://h/a.mp4","path":null}"#))
+                == .open(.stream(URL(string: "http://h/a.mp4")!, landing: LinkTarget())))
+        #expect(message(posted(#"{"cmd":"open","scene":"1","path":null,"url":null}"#))
+                == .open(.stashScene(id: "1", paths: [], landing: LinkTarget())))
+        #expect(reason(posted(#"{"cmd":"open","url":null}"#)) == "open: path, scene or url is missing")
+    }
+
+    @Test func playlistStreamItems() {
+        #expect(message(posted(#"{"cmd":"setPlaylist","items":[{"url":"http://h/s/1","title":"A"},{"scene":2}]}"#))
+                == .setPlaylist(items: [.stream(URL(string: "http://h/s/1")!, title: "A"), .scene(id: "2", title: nil)],
+                                index: 0, name: nil))
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"url":"http://h/s/1"}]}"#))
+                == .enqueue([.stream(URL(string: "http://h/s/1")!, title: nil)]))
+        #expect(reason(posted(#"{"cmd":"enqueue","items":[{"url":"file:///a.mp4"}]}"#)) == "enqueue: items[0]: url must be http(s)")
+        #expect(reason(posted(#"{"cmd":"enqueue","items":[{"scene":1},{"url":"http://h/a","path":"/a.mp4"}]}"#))
+                == "enqueue: items[1]: give one of path, scene, url")
+        #expect(message(posted(#"{"cmd":"enqueue","items":[{"path":"/a.mp4","url":null}]}"#))
+                == .enqueue([.file(URL(fileURLWithPath: "/a.mp4"), title: nil)]))
+    }
+
+    @Test func fileOpenedForAStream() {
+        #expect(PluginEvent.fileOpened(path: nil, url: "http://h/s/1", scene: nil, source: .stream).detail
+                == #"{"path":null,"scene":null,"source":"stream","url":"http://h/s/1"}"#)
     }
 
     @Test func actionsCommand() {
@@ -349,7 +393,7 @@ extension PluginMessageTests {
 
     @Test func setPlaylistBadItemNamesPosition() {
         #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1},{"foo":2}]}"#))
-                == "setPlaylist: items[1] needs scene or path")
+                == "setPlaylist: items[1] needs scene, path or url")
         #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":""}]}"#)) == "setPlaylist: items[0]: scene is empty")
         #expect(reason(posted(#"{"cmd":"setPlaylist","items":[{"scene":1,"title":5}]}"#))
                 == "setPlaylist: items[0]: title must be a string")

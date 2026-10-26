@@ -134,6 +134,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var folderListing: FolderListing?
     /// The folder read running in the background (a NAS folder can take seconds).
     private var folderRead: (folder: URL, done: DispatchGroup, result: FolderReadResult)?
+    /// A command that needs the whole folder, waiting for that read.
+    private var folderWait = FolderWait()
     private let folderQueue = DispatchQueue(label: "framescrub.folder", qos: .userInitiated)
     /// The opened file whose "12 / 48" line waits for the first read of its folder.
     private var positionPending: URL?
@@ -261,38 +263,54 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// A `framescrub://open` link: the file (or the Stash scene, found or streamed as for ▶), then its position,
-    /// segment and plugin page. A scene's open is asynchronous: true means it was begun.
-    @discardableResult
-    func open(_ target: OpenLink.Target) -> Bool {
+    /// segment and plugin page. A scene's open is asynchronous.
+    func open(_ target: OpenLink.Target) {
         if let plugin = target.plugin { showLinkPlugin(plugin) }
         switch target.subject {
         case let .file(url):
-            return open(url, landing: target.landing)
+            open(url, landing: target.landing)
         case let .stashScene(id):
             dropListPlaylist()
             openStashScene(id: id, paths: [], landing: target.landing)
-            return true
         }
     }
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
-    /// where a link asked to land in it.
-    @discardableResult
-    func open(_ url: URL, landing: LinkTarget? = nil) -> Bool {
+    /// where a link asked to land in it; `then`: what became of the open.
+    func open(_ url: URL, landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
         returnTab = .recent
         stashScene = nil
+        stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
-        return openFile(url, landing: landing)
+        openFile(url, landing: landing, then: done)
     }
+
+    /// What became of an `openFile`: a stream opens a while later, and another open or a close may come first.
+    enum OpenOutcome { case opened, failed, superseded }
+
+    /// Counts opens and the closes and failures that replace a file on screen: a stream read in the background opens
+    /// only if nothing came after it.
+    private var fileOpens = 0
+    /// The file being read for an open, until it opens or is abandoned, and how to stop its reads.
+    private var openingURL: URL?
+    private var openingCancellation: OpenCancellation?
+    /// "Opening <name>…", shown only when an open takes longer than `openingMessageDelay` (most files open sooner), and
+    /// the work item that shows it.
+    private var openingMessage: String?
+    private var openingMessageItem: DispatchWorkItem?
+    private static let openingMessageDelay = 0.3
 
     /// Opens `url`; `fallbackPosition` is where to start when nothing is remembered for it (Stash's resume point).
     /// `landing` (a link's or plugin's position and segments) is applied once it is open; it goes with this open only,
-    /// so a failed open or the user's next file never inherits it.
-    @discardableResult
+    /// so a failed open or the user's next file never inherits it. Every file is read in the background (a file on a
+    /// share can take seconds, and macOS may first ask whether the app may read the network volume); the previous file
+    /// stops at once and `then` hears how the open ended.
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
-                          landing: LinkTarget? = nil) -> Bool {
+                          landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         StartupTrace.beginOpen(url.lastPathComponent)
+        abandonOpening()
+        folderWait.cancel()   // a step or delete asked for the file before this one
         cancelEdgeDrag()   // the marks it moves are this file's
         cancelStashTitleWait()
         stashSession?.leave()   // the file on screen until now
@@ -315,66 +333,136 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         resetAutoColor()   // computed for the previous file's picture; the first frame with a picture is analysed
         rebuildPlaylist(around: url)   // set even if open fails, so < and > can skip a broken file
         failedURL = nil
-        do {
-            openedAt = ProcessInfo.processInfo.systemUptime
-            indexingShownAt = nil
-            try openCore(url, fallbackPosition: fallbackPosition)
-            StartupTrace.mark("core opened")
-            if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
-            colorFileChanged()   // before anything below reads the colour
-            startScreen.isHidden = true
-            stashLibrary?.isHidden = true
-            updatePrecisionWheel()
-            // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon, up to
-            // 0.4 s on a NAS, and a NAS folder read competes with the file's own reads: both wait for the first picture.
-            // A stream (Stash's, no file on this Mac) has no folder, no file facts and no place in Recent.
-            videoView.onNextPicture = { [weak self] in
-                guard url.isFileURL else { return }
-                self?.window?.representedURL = url
-                self?.readFolder(of: url)
-                self?.readFileFacts(of: url)
-            }
-            showPlaylistPosition(url, opening: true)
-            positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
-            if url.isFileURL {
-                NSDocumentController.shared.noteNewRecentDocumentURL(url)
-                var hidden = HiddenRecent()
-                hidden.reveal(url)   // removed from Recent once: opening it again brings it back
-            }
-            videoView.rotationClockwise = core.info?.rotationClockwise ?? 0
-            gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
-            updateGeometry(reshapeWindow: false)
-            startCropSampler()
-            enhancer.isEnabled = core.config.srStill
-            videoView.scaleMode = core.config.scaleMode
-            videoView.sharpen = core.config.sharpen
-            updateColorCorrection()
-            updateScreenPixelSize()
-            configurePreview(force: true)
-            // The window keeps its size: the picture fits into it (⌘1–⌘4 and aspect changes still size the window).
-            window?.resizeIncrements = NSSize(width: 1, height: 1)   // no aspect left from the previous file
-            revealSeekBar()
-            statsFileChanged()
-            StartupTrace.mark("open returned")
-            return true
-        } catch {
-            showFailure(OpenFailure(error), url: url)
-            return false
+        openedAt = ProcessInfo.processInfo.systemUptime
+        indexingShownAt = nil
+        // The previous file stops now; the window stays responsive while the file answers.
+        closeCore()
+        startScreen.isHidden = true
+        stashLibrary?.isHidden = true
+        window?.representedURL = nil
+        updateTitle(url)
+        statsFileChanged()
+        openingURL = url
+        let cancellation = OpenCancellation()
+        openingCancellation = cancellation
+        let message = "Opening \(ByteSources.isRemote(url) ? "the stream" : url.lastPathComponent)…"
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, openingURL == url, openingMessage == message else { return }
+            osd.onClick = nil
+            osd.show(message, duration: nil)   // stays until the open ends
         }
+        openingMessage = message
+        openingMessageItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.openingMessageDelay, execute: item)
+        let prepare = core.preparation(for: url, cancellation: cancellation)
+        let open = fileOpens
+        Task { [weak self] in
+            // Blocking reads: on a dispatch thread, not the cooperative pool.
+            let (result, facts) = await withCheckedContinuation {
+                (answer: CheckedContinuation<(Result<PreparedOpen, Error>, URL?), Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    let result = Result { try prepare() }
+                    answer.resume(returning: (result, Self.warmedFileURL(url, opened: (try? result.get()) != nil)))
+                }
+            }
+            guard let self, open == fileOpens else {
+                try? result.get().discard()
+                done?(.superseded)
+                return
+            }
+            openingCancellation = nil   // the cache is the player's now
+            endOpening()
+            switch result {
+            case let .success(prepared):
+                finishOpen(url, prepared, facts: facts ?? url, fallbackPosition: fallbackPosition, landing: landing)
+                done?(.opened)
+            case let .failure(error):
+                showFailure(OpenFailure(error), url: url, facts: facts)
+                done?(.failed)
+            }
+        }
+    }
+
+    /// `url` as one NSURL whose resource values (Recent's type, the title bar's icon and name) were read here, on the
+    /// preparation's thread: AppKit asks that object, so the main thread finds them in its cache. Each is a round trip
+    /// to a share (`getattrlist`: 0.1–0.3 s per open on SMB, sampled 2026-10-26); a stream has none. A file that did
+    /// not open (`opened` false) gets one only if it exists: that too is asked here, not on the main thread.
+    nonisolated private static func warmedFileURL(_ url: URL, opened: Bool) -> URL? {
+        guard url.isFileURL else { return opened ? url : nil }
+        if !opened, !FileManager.default.fileExists(atPath: url.path) { return nil }
+        let warmed = NSURL(fileURLWithPath: url.path)
+        _ = try? warmed.resourceValues(forKeys: [.typeIdentifierKey, .contentTypeKey, .localizedNameKey, .effectiveIconKey])
+        return warmed as URL
+    }
+
+    /// Whatever opened or was shown next replaces a file still being read: its answer is dropped and its reads stop.
+    private func abandonOpening() {
+        fileOpens += 1
+        openingCancellation?.cancel()
+        openingCancellation = nil
+        endOpening()
+    }
+
+    /// An open is over (opened, failed or abandoned): its message goes, or never comes.
+    private func endOpening() {
+        guard openingURL != nil else { return }
+        openingURL = nil
+        openingMessageItem?.cancel()
+        openingMessageItem = nil
+        if let message = openingMessage, osd.visibleText == message { osd.hide() }
+        openingMessage = nil
+    }
+
+    /// The rest of `openFile` once the file is read: the player takes it and the window follows.
+    private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
+        openCore(prepared, fallbackPosition: fallbackPosition)
+        StartupTrace.mark("core opened")
+        if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
+        colorFileChanged()   // before anything below reads the colour
+        startScreen.isHidden = true
+        stashLibrary?.isHidden = true
+        updatePrecisionWheel()
+        // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon and name:
+        // 0.1–0.4 s on a NAS when asked cold, behind the file's own reads. `facts` has them from the preparation's
+        // thread, but a URL's cached values last only until the main run loop turns: so it is set now, in this pass,
+        // with Recent below (1–2 ms instead, measured 2026-10-26). A NAS folder read competes with the file's own
+        // reads: it waits for the first picture. A stream has no folder, no file facts and no place in Recent.
+        if url.isFileURL { window?.representedURL = facts }
+        videoView.onNextPicture = { [weak self] in
+            guard url.isFileURL else { return }
+            self?.readFolder(of: url)
+            self?.readFileFacts(of: url)
+        }
+        showPlaylistPosition(url, opening: true)
+        positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
+        if url.isFileURL {
+            NSDocumentController.shared.noteNewRecentDocumentURL(facts)
+            var hidden = HiddenRecent()
+            hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+        }
+        videoView.rotationClockwise = core.info?.rotationClockwise ?? 0
+        gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
+        updateGeometry(reshapeWindow: false)
+        startCropSampler()
+        enhancer.isEnabled = core.config.srStill
+        videoView.scaleMode = core.config.scaleMode
+        videoView.sharpen = core.config.sharpen
+        updateColorCorrection()
+        updateScreenPixelSize()
+        configurePreview(force: true)
+        // The window keeps its size: the picture fits into it (⌘1–⌘4 and aspect changes still size the window).
+        window?.resizeIncrements = NSSize(width: 1, height: 1)   // no aspect left from the previous file
+        revealSeekBar()
+        statsFileChanged()
+        StartupTrace.mark("open returned")
     }
 
     /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
     /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
-    private func openCore(_ url: URL, fallbackPosition: Double?) throws {
+    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?) {
         holdsSegmentEvents = true
         heldSegmentEvent = nil
-        do {
-            try core.open(url, fallbackPosition: fallbackPosition)
-        } catch {
-            holdsSegmentEvents = false
-            heldSegmentEvent = nil
-            throw error
-        }
+        core.open(prepared, fallbackPosition: fallbackPosition)
         holdsSegmentEvents = false
         pluginFileOpened()
         if let held = heldSegmentEvent {
@@ -388,7 +476,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var failedURL: URL?
 
     /// Leaves the previous file and keeps the reason on screen until another file opens.
-    private func showFailure(_ failure: OpenFailure, url: URL) {
+    /// `facts`: the file as `warmedFileURL` gave it, nil when it does not exist.
+    private func showFailure(_ failure: OpenFailure, url: URL, facts: URL?) {
+        abandonOpening()   // a stream still being read must not open over the reason
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -405,16 +495,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.onNextPicture = nil
         statsFileChanged()
         readFolder(of: url)
-        window?.representedURL = FileManager.default.fileExists(atPath: url.path) ? url : nil
+        window?.representedURL = facts
         window?.title = url.lastPathComponent
     }
 
     /// A file (or the reason it did not open, or a Stash scene being deleted) is on screen.
-    var hasOpenFile: Bool { core.url != nil || failedURL != nil || failedScene != nil || deletingScene }
+    var hasOpenFile: Bool {
+        core.url != nil || openingURL != nil || failedURL != nil || failedScene != nil || deletingScene
+    }
 
     /// ⌘W / the back button: leaves the file and shows where it came from; with no file, closes the window.
     func closeFile() {
         guard hasOpenFile else { window?.performClose(nil); return }
+        abandonOpening()
+        folderWait.cancel()
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)   // the start screen shows it next
         cancelStashTitleWait()
@@ -490,16 +584,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             stashScene = scene   // only now: during a mount the scene on screen (and ⌘⌫'s dialog) is still the old one
             switch result {
             case let .file(url), let .stream(url):
-                let opened = openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
-                                      fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil, landing: landing)
-                if opened { stashSession.began(sceneID: scene.id, duration: core.durationSeconds) }
                 window?.makeFirstResponder(videoView)
-                if scene.automatic {
-                    hud.show(openedHUD(queueDirection > 0 ? .playlistNext : .playlistPrevious))
-                    if opened, queuePlays, core.isPaused { core.play() }
+                let (queuePlays, step) = (queuePlays, queueDirection > 0 ? Feedback.playlistNext : .playlistPrevious)
+                openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
+                         fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil, landing: landing) { [weak self] outcome in
+                    guard let self else { return }
+                    if scene.automatic, outcome != .superseded { hud.show(openedHUD(step)) }
+                    switch outcome {
+                    case .opened:
+                        stashSession.began(sceneID: scene.id, duration: core.durationSeconds)
+                        if (scene.automatic && queuePlays || plays) && core.isPaused { core.play() }
+                    case .failed: onFailure?()
+                    case .superseded: break
+                    }
                 }
-                if opened, plays, core.isPaused { core.play() }
-                if !opened { onFailure?() }
             case let .failed(failure):
                 showStashFailure(failure, scene: scene)
                 onFailure?()
@@ -509,6 +607,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A scene whose file was not found on the shares: the reason stays on screen until another file opens.
     private func showStashFailure(_ failure: OpenFailure, scene: StashScene) {
+        abandonOpening()   // a stream still being read must not open over the reason
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
@@ -692,7 +791,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func recentMenuChosen(_ path: String, _ item: String) {
-        let url = URL(fileURLWithPath: path)
+        let url = URL(filePath: path, directoryHint: .notDirectory)
         switch item {
         case "finder": NSWorkspace.shared.activateFileViewerSelecting([url])
         case "copy": copyPath(of: url)
@@ -792,6 +891,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
+        abandonOpening()   // a stream answering later must not open in a closed window
         stashSession?.flushBeforeQuit()
         for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
         slotWrites = [:]
@@ -1195,7 +1295,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         startScreen.onCard = { [weak self] path, _ in
             guard let self else { return }
-            open(URL(fileURLWithPath: path))
+            open(URL(filePath: path, directoryHint: .notDirectory))   // not looked up: a share answers over the network
             self.window?.makeFirstResponder(videoView)
         }
         startScreen.onMenu = { [weak self] path, item in self?.recentMenuChosen(path, item) }
@@ -1229,13 +1329,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 }
                 return
             }
-            waitForFolder()
-            guard let playlist else { return }
-            let anchor = playlistAnchor
-            self.window?.makeFirstResponder(videoView)
-            if let target = playlist.files.first(where: { $0 != anchor }) {   // the first match other than this file
-                openFile(target)
-                slots.playlistChosePlay()
+            whenFolderRead { [weak self] in
+                guard let self, let playlist else { return }
+                let anchor = playlistAnchor
+                self.window?.makeFirstResponder(videoView)   // not the buildViews parameter
+                if let target = playlist.files.first(where: { $0 != anchor }) {   // the first match other than this file
+                    openFile(target)
+                    slots.playlistChosePlay()
+                }
             }
         }
         playlistPanel.onEndFilter = { [weak self] in
@@ -1458,6 +1559,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         core.url != nil && core.speed != 1 ? .speed(core.speed) : event
     }
 
+    /// A file opened by next / previous plays at a kept speed other than 1× (`keep-speed`): its icon replaces the step's,
+    /// so a faster or slower file is never a surprise.
+    private func showKeptSpeed(after outcome: OpenOutcome) {
+        if outcome == .opened, core.speed != 1 { hud.show(.speed(core.speed)) }
+    }
+
     /// The key held for hold-speed (backlog 4.5); its key-up, the window losing focus, or the keyboard moving between
     /// the video and the plugin panel ends the hold.
     private var holdKeyCode: UInt16?
@@ -1529,27 +1636,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .playlistPrev:
             if listPlaylist != nil { stepListPlaylist(-1); return }
             if followsStashQueue { stepStashQueue(-1); return }
-            waitForFolder()
-            if let previous = playlist?.previous {
-                _ = playlistEndBump.stepped(moved: true, direction: -1, fresh: core.inputIsFresh)
-                openFile(previous)
-                hud.show(openedHUD(.playlistPrevious))
-            } else {
-                showMessage("First file")
-                if playlistEndBump.stepped(moved: false, direction: -1, fresh: core.inputIsFresh) { haptics.play(.end) }
-            }
+            whenFolderRead { [weak self] in self?.stepFolder(-1) }
         case .playlistNext:
             if listPlaylist != nil { stepListPlaylist(1); return }
             if followsStashQueue { stepStashQueue(1); return }
-            waitForFolder()
-            if let next = playlist?.next {
-                _ = playlistEndBump.stepped(moved: true, direction: 1, fresh: core.inputIsFresh)
-                openFile(next)
-                hud.show(openedHUD(.playlistNext))
-            } else {
-                showMessage("Last file")
-                if playlistEndBump.stepped(moved: false, direction: 1, fresh: core.inputIsFresh) { haptics.play(.end) }
-            }
+            whenFolderRead { [weak self] in self?.stepFolder(1) }
         case let .windowScale(scale):
             applyWindowSize(.scale(scale))
         case .windowFit:
@@ -2220,6 +2311,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         updatePlaylistPanel()
     }
 
+    /// < and > in the folder: the file before or after; at an end the window says so.
+    private func stepFolder(_ direction: Int) {
+        if let target = direction > 0 ? playlist?.next : playlist?.previous {
+            _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
+            hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
+            openFile(target) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
+        } else {
+            showMessage(direction > 0 ? "Last file" : "First file")
+            if playlistEndBump.stepped(moved: false, direction: direction, fresh: core.inputIsFresh) { haptics.play(.end) }
+        }
+    }
+
     /// < and > in a page's list: the item before or after; the ends stop as the folder's do.
     private func stepListPlaylist(_ direction: Int) {
         guard let listPlaylist else { return }
@@ -2248,25 +2351,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage("Cannot open \(title): skipped", duration: 3)
         }
         switch item {
-        case let .file(url, _):
+        case let .file(url, _), let .stream(url, _):
             returnTab = .recent
             stashScene = nil
             stashOpens += 1   // a scene still being looked for must not replace this file
             queueGate.cancel()
-            if openFile(url) {
-                if plays { core.play() }
-            } else {
-                failed()
+            openFile(url) { [weak self] outcome in
+                switch outcome {
+                case .opened: if plays { self?.core.play() }
+                case .failed: failed()
+                case .superseded: break
+                }
             }
         case let .scene(id, _):
             openStashScene(StashScene(id: id, paths: []), plays: plays, onFailure: failed)
         }
     }
 
-    /// What is on screen as a list item, for `enqueue` in the folder: the Stash scene, else the open file.
+    /// What is on screen as a list item, for `enqueue` in the folder: the Stash scene, else the open stream or file.
     private var currentPlaylistItem: PlaylistItem? {
         if case let .stash(sceneID, _) = origin, core.url != nil { return .scene(id: sceneID, title: window?.title) }
-        return core.url.map { .file($0, title: nil) }
+        guard let url = core.url else { return nil }
+        return ByteSources.isRemote(url) ? .stream(url, title: window?.title) : .file(url, title: nil)
     }
 
     private func folder(of url: URL) -> URL { url.standardizedFileURL.deletingLastPathComponent() }
@@ -2289,11 +2395,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func folderReadFinished(_ result: FolderReadResult) {
-        guard let listing = result.listing else { return }
         if folderRead?.result === result { folderRead = nil }
+        defer { if folderRead == nil { folderWait.readEnded()?() } }   // the command that waited, on the new listing
+        guard let listing = result.listing else { return }
         guard let anchor = playlistAnchor, folder(of: anchor) == listing.folder else { return }   // another folder by now
         let pending = positionPending == anchor
-        guard listing != folderListing || pending else { return }   // already applied by waitForFolder()
+        guard listing != folderListing || pending else { return }   // nothing new since the last read
         folderListing = listing
         positionPending = nil
         rebuildPlaylist(around: anchor)
@@ -2301,19 +2408,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if pending { showPlaylistPosition(anchor) } else { updateTitle(anchor) }
     }
 
-    /// Commands that need the whole folder (next or previous file, delete, Return in the filter) wait for a read
-    /// still running, as if it had been made in the open.
-    private func waitForFolder() {
+    /// Commands that need the whole folder (next or previous file, delete, Return in the filter) run once a read still
+    /// running is over (`FolderWait`), as if it had been made in the open; the window answers meanwhile.
+    private func whenFolderRead(_ action: @escaping () -> Void) {
         if folderRead == nil, let anchor = playlistAnchor, folderListing?.folder != folder(of: anchor) {
             readFolder(of: anchor)   // asked for before the first picture started it
         }
-        guard let folderRead else { return }
-        folderRead.done.wait()
-        folderReadFinished(folderRead.result)
+        folderWait.run(reading: folderRead != nil, action)
     }
 
-    /// The file the playlist is built around: the open one, or the one whose open failed.
-    private var playlistAnchor: URL? { core.url ?? failedURL }
+    /// The file the playlist is built around (`FolderWait.anchor`).
+    private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
     private func setPlaylistSort(_ sort: PlaylistSort) {
         guard sort != core.config.playlistSort else { return }
@@ -2343,9 +2448,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             deleteStashScene(sceneID, url: url)
             return
         }
-        waitForFolder()
+        whenFolderRead { [weak self] in self?.removeFile(url) }
+    }
+
+    /// The rest of ⌘⌫ once the folder is read: the neighbour to open next is known.
+    private func removeFile(_ url: URL) {
         let neighbour = playlist?.neighbourAfterRemoval
         let outcome = FileRemoval.remove(url, confirmDelete: { confirmPermanentDelete(url) }, release: {
+            abandonOpening()   // ⌘⌫ while it was still being read
             dropSceneSearch(waitForTheDecoder: true)   // a permanent delete follows at once
             closeCore()
             videoView.clear()
@@ -2413,9 +2523,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     showMessage("Cannot delete \(name): \(error.localizedDescription)", duration: 5)
                     return
                 }
-                openFile(url, origin: origin, fallbackPosition: position)
-                if case let .stash(id, _) = origin { stashSession.began(sceneID: id, duration: core.durationSeconds) }
-                showMessage("Cannot delete \(name): \(error.localizedDescription)", duration: 5)
+                openFile(url, origin: origin, fallbackPosition: position) { [weak self] outcome in
+                    guard let self, outcome != .superseded else { return }
+                    if outcome == .opened, case let .stash(id, _) = origin {
+                        stashSession.began(sceneID: id, duration: core.durationSeconds)
+                    }
+                    showMessage("Cannot delete \(name): \(error.localizedDescription)", duration: 5)
+                }
             }
         }
     }
@@ -2712,6 +2826,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             page.map(slots.pageChosePlay)
             dropListPlaylist()
             openStashScene(id: id, paths: paths, landing: landing)
+        case let .open(.stream(url, landing)):   // nothing on this Mac is read: no consent to ask
+            guard !isStashURL(url) else { pluginFailed(request, Self.stashURLRefusal("open")); return }
+            page.map(slots.pageChosePlay)
+            open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.absoluteString) }
+            return
         case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
         case .hide:
             if let page { slots.hide(page: page) }
@@ -2750,7 +2869,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             let details = PluginInfo(path: url.path, name: url.lastPathComponent, fps: info.frameRate,
                                      duration: core.durationSeconds, durationFrames: core.frameCount, width: info.width,
                                      height: info.height, rotation: info.rotationClockwise, codec: info.format.videoCodec,
-                                     source: PluginSource(url: url))
+                                     source: PluginSource(url: url),
+                                     url: ByteSources.isRemote(url) ? url.absoluteString : nil)
             pluginDone(request, result: details.json)
         case .marks:
             let marks = PluginMarks(marks: core.marks, loopA: core.loopA, loopB: core.loopB, seconds: index.seconds(forFrame:))
@@ -2813,12 +2933,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
+    /// A page's `open` of a file or stream, answered once the open is over.
+    private func answerOpen(_ request: PluginRequest, _ outcome: OpenOutcome, name: String) {
+        switch outcome {
+        case .opened: pluginDone(request)
+        case .failed: pluginFailed(request, "open: cannot open \(name)")
+        case .superseded: pluginFailed(request, "open: replaced by another open")
+        }
+    }
+
     /// A local file the page asked for: only a video, and only once the user has allowed the page's origin to open
     /// files (asked the first time, remembered in `plugin-open-allowed`).
     private func openFromPlugin(_ url: URL, landing: LinkTarget, origin: PluginOrigin, request: PluginRequest) {
         let openIt = { [self] in
-            if open(OpenLink.Target(file: url, landing: landing)) { pluginDone(request) }
-            else { pluginFailed(request, "open: cannot open \(url.path)") }
+            open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.path) }
         }
         switch pluginPolicy.decision(forOpening: url, from: origin) {
         case .allowed:
@@ -2836,6 +2964,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A page's list with local files: allowed as `open({path})` would be for each of them, with one question for all.
     private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
                                  then apply: @escaping () -> Void) {
+        let streams = items.compactMap { item -> URL? in if case let .stream(url, _) = item { url } else { nil } }
+        guard !streams.contains(where: isStashURL) else { pluginFailed(request, Self.stashURLRefusal(verb)); return }
         let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
         switch pluginPolicy.decision(forOpening: files, from: origin) {
         case .allowed: apply()
@@ -2846,6 +2976,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             askOpenConsent(origin, asked: asked, verb: verb, request: request, then: apply)
         }
     }
+
+    /// A URL on the Stash server: read with the API key, so a page may not name it (`{scene}` opens Stash's scenes).
+    private func isStashURL(_ url: URL) -> Bool { !StashOpenPolicy.headers(for: url, config: core.config).isEmpty }
+
+    private static func stashURLRefusal(_ verb: String) -> String { "\(verb): a Stash URL: open it by scene" }
 
     /// The first time a page's origin opens local files: ask, remember a yes in `plugin-open-allowed`.
     private func askOpenConsent(_ origin: PluginOrigin, asked: String, verb: String, request: PluginRequest,
@@ -2878,7 +3013,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func pluginFileOpened() {
         var scene: String?
         if case let .stash(sceneID, _) = origin { scene = sceneID }
-        dispatchToPages(.fileOpened(path: core.url?.path, scene: scene, source: core.url.map(PluginSource.init) ?? .file))
+        let source = core.url.map(PluginSource.init) ?? .file
+        dispatchToPages(.fileOpened(path: source == .file ? core.url?.path : nil,
+                                    url: source == .stream ? core.url?.absoluteString : nil, scene: scene, source: source))
     }
 
     /// The player's state for the pages: at once on a state change, else ten times a second while frames show for a page
@@ -3088,12 +3225,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
-        waitForFolder()
-        guard let next = playlist?.next else { return }
-        if openFile(next) {
-            core.play()
-        } else {
-            playerDidReachEnd(player)   // the playlist now follows the broken file: move past it
+        whenFolderRead { [weak self] in
+            guard let self, let next = playlist?.next else { return }
+            openFile(next) { [weak self] outcome in
+                switch outcome {
+                case .opened: self?.core.play()
+                case .failed: self?.playerDidReachEnd(player)   // the playlist now follows the broken file: move past it
+                case .superseded: break
+                }
+            }
         }
     }
 

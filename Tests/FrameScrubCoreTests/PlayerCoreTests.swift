@@ -45,6 +45,47 @@ final class HapticLog {
         return (player, delegate, root)
     }
 
+    /// A file read on another thread (`preparation`) opens like `open(url)`, over the file open until then; a
+    /// preparation that is discarded leaves the player as it was.
+    @Test func aPreparedOpenReplacesTheFileOnScreen() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        let other = Fixtures.url(Fixtures.withAudio)
+        let prepare = player.preparation(for: other)
+        let prepared = try await Task.detached { try prepare() }.value
+        #expect(player.url == Fixtures.url(Fixtures.h264))   // nothing changed while it was read
+        let unused = try await Task.detached { try prepare() }.value
+        unused.discard()
+        delegate.frames.removeAll()
+        player.open(prepared)
+        #expect(player.url == other)
+        #expect(player.info?.width == 640)
+        #expect(await eventually { !delegate.frames.isEmpty })
+        #expect(delegate.frames.first.map { readFrameNumber($0.pixelBuffer) } == 0)
+    }
+
+    /// Making a preparation touches nothing (the window makes it on the main thread): a missing file fails only when
+    /// the preparation runs.
+    @Test func aPreparationReadsNothingUntilItRuns() async throws {
+        let (player, _, root) = try makePlayer()
+        defer { player.close() }
+        let prepare = player.preparation(for: root.appendingPathComponent("missing.mp4"))
+        await #expect(throws: (any Error).self) { try await Task.detached { try prepare() }.value }
+        #expect(player.url == Fixtures.url(Fixtures.h264))
+    }
+
+    /// A cancelled preparation reads nothing more: it ends with `ECANCELED` and the player is untouched.
+    @Test func aCancelledPreparationStops() async throws {
+        let (player, _, _) = try makePlayer()
+        defer { player.close() }
+        let cancellation = OpenCancellation()
+        cancellation.cancel()
+        let prepare = player.preparation(for: Fixtures.url(Fixtures.withAudio), cancellation: cancellation)
+        let error = await #expect(throws: POSIXError.self) { try await Task.detached { try prepare() }.value }
+        #expect(error?.code == .ECANCELED)
+        #expect(player.url == Fixtures.url(Fixtures.h264))
+    }
+
     // MARK: Scrub audio
 
     /// The scrub audio is set up beside the video; these tests start once it is in.

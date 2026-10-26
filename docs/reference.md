@@ -481,6 +481,8 @@ app-icon=horse                  # Dock icon while running: horse, or a picture o
 
 Seeking stays quick on high-bitrate files from network volumes (SMB/NFS/AFP):
 
+- Every file opens in the background: the window stays responsive while a share answers (or while macOS asks
+  whether FrameScrub may read a network volume); "Opening <name>…" shows when it takes longer than 0.3 s.
 - All decoders of a file (forward, backward, seek-bar thumbnails, audio, export) read it through one cache of
   2 MiB blocks (`read-cache`): each block crosses the network once, and sequential reading (playback, export)
   loads the next ~3 s ahead. Under memory pressure this budget is cut like the frame cache.
@@ -540,7 +542,11 @@ file never loads it) and kept, so going back finds the same page.
 - A file on no share this Mac can reach (no mount, no rule, or the share will not mount) plays as **Stash's stream**
   (`<stash-url>/scene/<id>/stream`, read with Range requests like a file, the API key sent along). `stash-stream=never`
   fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
-  `source: "file" | "stream"`.
+  `source: "file" | "stream"`; for a stream `fileopened` gives the URL as `url` and `path: null`, and `info` adds
+  `url`.
+- A stream (Stash's or a plugin page's) opens in the background: the previous file stops at once, "Opening the
+  stream…" shows until it plays, and the window stays responsive. Another open or ⌘W abandons it. Its bytes are used
+  as they arrive, so it plays once the start of the file is in, not after a whole 2 MiB block.
 - `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found
   on the shares (or streamed) as for ▶. A plugin page's `open({scene})` without `paths` does the same.
 
