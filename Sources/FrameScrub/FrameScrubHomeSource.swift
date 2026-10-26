@@ -24,7 +24,11 @@ import HomeScreenModel
     private var durations: [String: Double] = [:]
     private let durationStore = DurationStore()
     private var durationSave: DispatchWorkItem?
+    /// The sorts of Recent and the app's lists, for this run; a folder's are kept (`folderSorts`).
     private var sorts: [BrowserLocation: BrowserSort] = [:]
+    private let folderSorts: FolderSorts
+    /// `playlist-sort`'s order, for a folder without one of its own.
+    private let defaultSort: () -> BrowserSort
     /// Each folder's last listing as read, for the way back and for re-listing with new lengths without a read.
     private var listings: [URL: [BrowserEntry]] = [:]
     /// Folder cards' facts and the videos their covers are made of, by folder, for this run; the run filling them.
@@ -36,8 +40,11 @@ import HomeScreenModel
     private var relistOnly = false
     private var relist: DispatchWorkItem?
 
-    init(recentURLs: @escaping () -> [URL], thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer,
-         stashPage: @escaping () -> NSView?, hasStash: @escaping () -> Bool) {
+    init(folderSorts: FolderSorts, defaultSort: @escaping () -> BrowserSort, recentURLs: @escaping () -> [URL],
+         thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer, stashPage: @escaping () -> NSView?,
+         hasStash: @escaping () -> Bool) {
+        self.folderSorts = folderSorts
+        self.defaultSort = defaultSort
         self.recentURLs = recentURLs
         self.stashPage = stashPage
         self.hasStash = hasStash
@@ -336,12 +343,16 @@ import HomeScreenModel
         listings[entry.url.deletingLastPathComponent()] = nil
     }
 
-    /// Recent: newest first; a folder: by name, or as the user last sorted it this run.
+    /// Recent: newest first, or as the user last sorted it this run; a folder: its own order, kept across runs and
+    /// shared with the player's list, else `playlist-sort`'s.
     func sort(for location: BrowserLocation) -> BrowserSort {
-        sorts[location] ?? (location == .source(HomeRecent.source) ? BrowserSort(key: .date, ascending: false) : .standard)
+        if case .folder(let folder) = location { return folderSorts.sort(for: folder) ?? defaultSort() }
+        return sorts[location] ?? (location == .source(HomeRecent.source) ? BrowserSort(key: .date, ascending: false) : .standard)
     }
 
-    func setSort(_ sort: BrowserSort, for location: BrowserLocation) { sorts[location] = sort }
+    func setSort(_ sort: BrowserSort, for location: BrowserLocation) {
+        if case .folder(let folder) = location { folderSorts.set(sort, for: folder) } else { sorts[location] = sort }
+    }
 
     func info(for source: String) -> HomeSourceInfo {
         source == HomeRecent.stash

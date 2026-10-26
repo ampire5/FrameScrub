@@ -45,7 +45,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var hasShownHome = false
     /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
     /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
-    private var folderReturn: (folder: URL, file: URL, order: BrowserSort)?
+    private var folderReturn: (folder: URL, file: URL)?
+    /// Each folder's order, shared with Home's grid.
+    private let folderSorts: FolderSorts
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
     /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
@@ -225,7 +227,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Where the effective colour came from at the last recompute (the stats mark it).
     private var colorOrigin = ColorOrigin.default
 
-    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors) {
+    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors, folderSorts: FolderSorts) {
+        self.folderSorts = folderSorts
         self.preferences = preferences
         let resumeStore = ResumeStore()   // one store: the core keeps the colour the edits write when it saves the position
         core = PlayerCore(config: config, resumeStore: resumeStore)
@@ -292,12 +295,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
-    /// `homeFolder`: the folder it was opened from in Home and Home's order of it (closing goes back there).
-    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, BrowserSort)? = nil,
+    /// `homeFolder`: the folder it was opened from in Home (closing goes back there).
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
-        folderReturn = homeFolder.map { (folder: $0.0, file: url, order: $0.1) }
+        folderReturn = homeFolder.map { (folder: $0, file: url) }
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -781,7 +784,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
-        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0, order: r.order) : nil } ?? r }
+        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0) : nil } ?? r }
         let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
@@ -856,6 +859,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func makeHome() -> HomeView {
         let source = FrameScrubHomeSource(
+            folderSorts: folderSorts, defaultSort: { [weak self] in self?.core.config.playlistSort.defaultSort ?? .standard },
             recentURLs: { [weak self] in
                 RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths,
                                   limit: self?.core.config.recentCount ?? 50)
@@ -868,7 +872,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
             guard let self else { return }
             if case .folder(let folder) = location {
-                self.open(url, homeFolder: (folder, sort))   // the playlist in the grid's order
+                self.open(url, homeFolder: folder)   // the playlist in the grid's order: the folder's own (FolderSorts)
             } else {
                 self.open(url)
             }
@@ -1827,7 +1831,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .closeFile:
             closeFile()
         case .cyclePlaylistSort:
-            setPlaylistSort(core.config.playlistSort.next)
+            setPlaylistSort((playlistAnchor.flatMap { PlaylistSort(rawValue: folderSort(folder(of: $0)).key.rawValue) } ?? core.config.playlistSort).next)
         case .playlistFilter:
             beginPlaylistFilter()
         case .togglePlaylist:
@@ -2470,10 +2474,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func rebuildPlaylist(around url: URL) {
         let folder = folder(of: url)
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
-        // A folder opened from Home goes in Home's order; any other in `playlist-sort`'s.
-        let order = homeOrder(around: url)
-        playlist = Playlist(current: url, sort: order ?? core.config.playlistSort.defaultSort, filter: playlistFilter,
-                            listing: listing)
+        // The folder's order, as Home shows it, however the video was opened.
+        playlist = Playlist(current: url, sort: folderSort(folder), filter: playlistFilter, listing: listing)
         updatePlaylistPanel()
     }
 
@@ -2488,7 +2490,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         listRowIndices = []
-        playlistPanel.showSort(homeOrder(around: playlistAnchor).flatMap { PlaylistSort(rawValue: $0.key.rawValue) } ?? core.config.playlistSort)
+        playlistPanel.showSort(playlistAnchor.map { folderSort(folder(of: $0)) } ?? core.config.playlistSort.defaultSort)
         guard let playlist else { return }
         playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
     }
@@ -2613,22 +2615,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file the playlist is built around (`FolderWait.anchor`).
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
-    /// Home's order of the folder `file` is in, while that folder is the one opened from Home.
-    private func homeOrder(around file: URL?) -> BrowserSort? {
-        guard let r = folderReturn, let file, folder(of: file) == r.folder.standardizedFileURL else { return nil }
-        return r.order
+    /// `folder`'s order, the one Home's grid shows it in: its own (`FolderSorts`), else `playlist-sort`'s.
+    private func folderSort(_ folder: URL) -> BrowserSort {
+        folderSorts.sort(for: folder) ?? core.config.playlistSort.defaultSort
     }
 
+    /// The panel's order menu and F9: the open folder's order, for Home's grid too. The field it has already turns
+    /// around, another starts in its first direction (`BrowserSortChoice`).
     private func setPlaylistSort(_ sort: PlaylistSort) {
-        if let anchor = playlistAnchor, homeOrder(around: anchor) != nil {   // the user's choice here replaces the order Home gave
-            folderReturn?.order = sort.defaultSort
-            rebuildPlaylist(around: anchor)
+        guard let anchor = playlistAnchor, let key = BrowserSort.Key(rawValue: sort.rawValue) else { return }
+        let folder = folder(of: anchor)
+        var choice = BrowserSortChoice(current: folderSort(folder))
+        let chosen = choice.choose(key)
+        folderSorts.set(chosen, for: folder)
+        rebuildPlaylist(around: anchor)
+        showMessage("Folder order: \(Self.orderTitle(chosen))")
+    }
+
+    /// "Name (A–Z)", "Date (newest first)", "Size (smallest first)".
+    private static func orderTitle(_ sort: BrowserSort) -> String {
+        switch sort.key {
+        case .name: sort.ascending ? "Name (A–Z)" : "Name (Z–A)"
+        case .date: sort.ascending ? "Date (oldest first)" : "Date (newest first)"
+        case .size: sort.ascending ? "Size (smallest first)" : "Size (largest first)"
         }
-        guard sort != core.config.playlistSort else { return }
-        do { try preferences.update(["playlist-sort"]) { $0.playlistSort = sort } } catch {   // applyConfig rebuilds the list
-            showMessage("Cannot save settings: \(error)", duration: 4)
-        }
-        showMessage("Folder order: \(sort.title)")
     }
 
     /// The other mouse profile, kept (`mouse-profile`); the settings' observers rebuild the bindings.
