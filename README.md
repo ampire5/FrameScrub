@@ -82,6 +82,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
 - **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
+- Under the seek bar's track, on the right: previous / next item in the playlist (dimmed at its ends) and the volume, a mute button and a slider (moving it unmutes; like the volume keys it lasts until quit, `volume` in the config is where it starts).
 - Scene detection: jump to the next scene or back to the start of this one.
 - `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
@@ -106,6 +107,7 @@ As far as we know, no other Mac app goes this deep into Logitech hardware, and i
 - **Any mouse**: the wheel scrubs, the side wheel seeks, right click plays, and every button and wheel can be rebound in `input.conf`.
 - **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
 - **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
+- **Two mouse profiles**: Editing is the bindings above, marks and their edges under back and forward. Viewing, the default, is the same but leaves the marks alone: back shows the file's info, forward does nothing (yet). Hold the SmartShift button for 0.6 s to switch (a click is felt then, and the OSD says which); a short press still switches the wheel between free spin and ratchet. FrameScrub takes the button over while it sets the wheel itself (the player in front, `wheel-precision=yes`); elsewhere it is the mouse's own. View → Mouse Buttons for Editing and `cycle-mouse-profile` switch too. Your own lines for a profile go to `input-viewing.conf` or `input-editing.conf` next to `input.conf` (`mouse-profile`).
 - **TourBox Lite**: a ready-made preset in `extras/tourbox`.
 
 **Icon**
@@ -150,12 +152,16 @@ Stash support keeps growing in FrameScrub and in its sibling image viewer [Loupe
 
 ## Plugins
 
-A plugin is a web page that sits in a panel beside the video and drives the player through `window.framescrub`: notes taken against the timeline, chapter marking, a review checklist, a custom playlist. The player knows nothing of what the page is for.
+A plugin is a web page that sits in a slot beside the video and drives the player through `window.framescrub`: notes taken against the timeline, chapter marking, a review checklist, a media-server library that hands the player a playlist. The player knows nothing of what the page is for.
 
-- **Set one** with `plugin-url=` in `framescrub.conf` (or Settings → General → Plugin panel); `plugin-width=` (240…1200 points) is the panel's width, and dragging its edge writes it. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too.
-- **Show it** with View › Show Plugin Panel (`⌥⌘P`, a toggle). View › Focus Plugin Panel (`⌃⌥⌘P`) gives the page the keyboard; the page's `focusPlayer()` (usually on Esc) gives it back.
+- **List them** in `framescrub.conf`, one line each: `plugin=Notes | http://localhost:8000/notes/`, name before the ` | `, then an `http(s)` or `file:` URL. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too, listed as `Plugin`.
+- **Slots.** The window has three: left, right and bottom. Each holds the playlist, one plugin page, or nothing. `⌃⌘←`, `⌃⌘→` and `⌃⌘↓` (View › Slots) show a slot with the keyboard or hide it; an empty one opens its **+** menu, which offers the playlist and the listed plugins. The header's title menu changes what the slot shows, moves it to another slot (two slots trade places), and clears it. The same plugin in two slots is two pages.
+- **Pinned or over the video.** 📌 pins a slot: it takes its room from the video. Otherwise it lies over the video, which keeps its size, as a card on a backdrop that ◐ cycles through glass (the video blurred and darkened), clear and dark; a pinned slot is always dark. Drag a slot's inner edge to size it. A window too small for its pinned slots lays the newest one over the video and says so.
+- **Hiding and showing.** A slot over the video works like a browser's compact sidebar: bring the pointer near its edge and it slides in (Settings › General › Side slots come within, 12 pt by default); move the pointer off it and it slides away a moment later (it waits while you type in it, while its menu is open, and while the pointer has only overshot the window past its edge). It also hides with ✕, its chord, Esc or a click on the video. Its menu can make it hide after you choose something to play, or only when asked, and can bring it with a click on a tongue instead: the tongue fades in as the pointer nears the edge. A drag near the edge brings nothing.
+- **Kept.** Each slot is saved as `slot-left=`, `slot-right=` and `slot-bottom=` (`content, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g. `plugin:Notes, overlay, glass, mouse-leaves, 400, hidden, at-once`). Pinned slots come back as they were; slots over the video start hidden. Hidden pages stay loaded, so showing one again does not reload it.
+- **Commands.** `⌥⌘P` (View › Show Plugin Panel) shows the first slot holding a page, `F8` the playlist's slot. View › Focus Plugin Panel (`⌃⌥⌘P`) gives the page the keyboard; the page's `focusPlayer()` (usually on Esc) gives it back.
 - **Keys.** While the page has the keyboard, a key it does not handle falls through to the player, as if the video had the keyboard (Space and the arrows included, rather than scrolling the page). So a page should call `preventDefault()` on the keys it handles itself. Nothing typed into a text field, textarea or editable element reaches the player.
-- **Trust.** Only pages from an origin you configured get the bridge and are heard: the origin (scheme, host and port) of `plugin-url`, and of any `plugin=` link you open. A `file:` page works from `plugin-url` only, not from a link. Links to other origins and new windows open in your default browser.
+- **Trust.** Only pages from an origin you configured get the bridge and are heard: the origin (scheme, host and port) of each listed plugin, and of any `plugin=` link you open. A `file:` page works from the list only, not from a link. Links to other origins and new windows open in your default browser.
 - **Opening local files** is a step further: a page may open only video files, by absolute path, and the first time an origin asks you are asked to allow it. The answer is kept in `plugin-open-allowed=` (comma-separated origins, e.g. `http://localhost:8000`).
 
 A minimal page: it shows the time, has a button that jumps to 30 s, and declares one action on `Alt+1`.
@@ -179,7 +185,9 @@ A minimal page: it shows the time, has a button that jumps to 30 s, and declares
 </script>
 ```
 
-### The bridge (version 1)
+### The bridge (version 2)
+
+`framescrub.version` says which. Version 2 adds `hide`, `playlist`, `enqueue`, `framescrub.stash` and the slot's `panel` state.
 
 Every verb posts a command and forgets it; a failure fires the `error` event with the reason. `framescrub.request(cmd, args)` does the same with a Promise that resolves with the result or rejects with an `Error` saying what was wrong, e.g. `request("seek", {t: 12})`. Times are seconds.
 
@@ -193,38 +201,60 @@ Every verb posts a command and forgets it; a failure fires the `error` event wit
 | `lock(on)` | Lock to the segments or release them |
 | `goSegment(i)` | Seek to the start of segment `i` (from 0) |
 | `actions(list)` | Declare `[{name, label, key?}]`; `[]` withdraws |
-| `open(o)` | Open a file or Stash scene (below) |
+| `open(o)` | Open a file, a Stash scene or an `http(s)` stream (below) |
 | `focusPlayer()` | Keys go to the player again |
+| `hide()` | Hide the page's slot; the keys go back to the player |
+| `playlist(items, {index?, name?})` | The playlist becomes this list and item `index` (default 0) opens (below) |
+| `enqueue(items)` | Add items at the end of the list |
 
 Requests that answer (they need a file open, else they reject):
 
 | Request | Reply |
 |---|---|
-| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream"}` |
+| `info` | `{path, name, fps, duration, durationFrames, width, height, rotation, codec, source: "file" \| "stream", url}`; `url` is the stream's URL, `null` for a file; for a stream `path` is the URL's path part |
 | `marks` | `{loop, loopFrames, segments: [{start, end, startFrame, endFrame}], openFrame, openStart}`: the A-B range and the cut marks |
-| `playlist` | `{index, count, total, name}`: the file's place in its folder (from 0) |
+| `playlist` | `{index, count, total, name, source: "folder" \| "list" \| "stash"}`: the file's place in its playlist (from 0) |
 | `frame` `{t \| frame, maxSize?}` | `{t, frame, width, height, dataURL}`: a JPEG fitted into `maxSize` pixels (16…512, default 512) |
 | `actions` `{actions}` | `{bound: [{key, name}], refused: [{key, name, reason}]}` |
 
-**State.** `framescrub.state` is the latest; `framescrub.onstate = s => …` or the window event `framescrubstate` (`event.detail`) hear each change:
+**State.** `framescrub.state` is the latest; `framescrub.onstate = s => …` or the window event `framescrubstate` (`event.detail`) hear each change: A page whose slot is hidden still hears it, at most four times a second (ten while shown), and its `state.visible` and `panel.shown` say which it is.
 
-`{ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null, segments: {list, current, locked, advance} | null, visible}`
+`{ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop: [a, b] | null, segments: {list, current, locked, advance} | null, visible, panel}`, where `panel` is the page's slot: `{slot: "left" | "right" | "bottom", mode: "pinned" | "overlay", backdrop: "dark" | "glass" | "clear", shown, focused}`, so a page can fit its look to a glass or clear backdrop.
 
 **Events.** `framescrub.on<name> = detail => …`, or the window event `framescrub<name>`:
 
 | Event | When / detail |
 |---|---|
 | `focus` `blur` | The panel took / gave back the keyboard |
-| `fileopened` | `{path, scene, source}` once a file is open, however it was opened; before any `segment` event for it |
+| `fileopened` | `{path, url, scene, source}` once a file is open (`path` for a file, `url` for a stream, the other `null`), however it was opened; before any `segment` event for it |
 | `segment` | `{current, locked}` when the current segment or the lock changes |
 | `action` | `{name, t, frame}` when the user presses a key bound to the page's action (not repeated while held) |
-| `error` | A reason string, when a verb sent without a reply failed |
+| `panel` | The same as `state.panel`, whenever it changes (also while the slot is hidden) |
+| `error` | A reason string, when a verb sent without a reply failed, or a playlist item could not be opened |
 
 ### Segments and opening files
 
 `segments` locks playback and scrubbing to the given ranges; `advance` is `"repeat"` or `"next"` for what happens at a segment's end (default: `segment-advance` in `framescrub.conf`). It fails with "no segment inside the file" when none falls in the open file, and `lock` fails with "no segments" without any. The same landing works in a link: `framescrub://open?path=…&t=12&seg=10-20,35-40&lock=1&adv=next`.
 
-`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `source` in `fileopened` and `info` says which.
+`open({path, t?, segments?, lock?, advance?})` opens a local video; the file must be a video, the path absolute, and the origin allowed as above. Like a stream it is read in the background (a file on a share can take a while), and the request is answered once it is open. `open({scene, paths?, t?, …})` opens a **Stash** scene by id: without `paths` they are asked of Stash, then found on your shares as for ▶ on a scene page, or played as Stash's stream when no share has the file (`stash-stream`, with `stash-url` set). `open({url, t?, …})` plays an `http(s)` URL as a stream, with no consent asked (nothing on this Mac is read); it opens in the background, and the request is answered once it is open (or fails, or `open: replaced by another open`); no request headers or cookies are passed, so a page whose stream needs them serves it through its own backend. A URL on the Stash server is refused ("a Stash URL: open it by scene"): it would be read with the API key. Exactly one of `path`, `scene`, `url` is given. `source` in `fileopened` and `info` says which.
+
+### Playlists from a page
+
+`playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?, t?} | {path, title?, t?} | {url, title?, t?}, …]`, 1…2000 of them, and one bad item refuses the whole call. An item's `t` (seconds, not negative, as `open`'s) is where it starts every time it opens, by index, previous/next or autoadvance, instead of the position remembered for it (`t: 0` always starts from the beginning); without `t` it resumes as any file does. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
+
+An `open({path | url, …})` and each `{path | url}` item may also carry `frames: "/absolute/folder"`: where frames saved from it (S, the range export) and its clips go, instead of `frame-dir`, created when needed (the fallback folder when it cannot be written). Naming a folder writes on this Mac's disk, so it needs the same one-time consent as a page's local files (`plugin-open-allowed`). The "Saved to …" message then gives the whole path; a click on it shows the file in the Finder.
+
+In a slot, the mouse's back and forward buttons go through the page's history while the pointer is over it (elsewhere they keep their bindings), and **Reload Page** in the slot's ▾ menu, or ⌘R while the page has the keyboard, loads it again.
+
+An `open({path | url, …})` and each `{path | url}` item of `playlist` / `enqueue` may carry `info: {title?, studio?, performers?, date?, code?, url?}`: what the page knows about it (strings up to 500 characters, at most 50 performers, `date` as `YYYY-MM-DD`, an `http(s)` `url`; anything else refuses the call). The window title and the OSD then read `Title — Studio · date`, as for a Stash scene; a stream, which has no file name of its own, is also exported under it: `%{video-name}` of its frames and clips (and its fallback folder) becomes `<date> [<code>] <title> (<performers>)`, the parts given. A local file keeps its own name.
+
+`framescrub.stash` is `{url, apiKey}` for the Stash server in Settings, or `null` without one, so a page can ask Stash itself. Only the plugins in your list get it; a page a link brought gets `null`.
+
+```js
+const fs = window.framescrub;
+fs.playlist(scenes.map(s => ({ scene: s.id, title: s.title })), { index: 0, name: "Watch later" });
+fs.hide();
+```
 
 ### Actions and keys
 
@@ -233,7 +263,7 @@ Requests that answer (they need a file open, else they reject):
 - A key already bound to anything in `input.conf` (even `ignore`) is `key taken`; ⌘ chords of the menu items (⌘O, ⌘W, ⌘G, ⌥⌘P…) are refused the same way.
 - Mouse buttons, the wheel, swipes and pinches are refused with `not a key`.
 - To choose the key yourself, bind the action's name in `input.conf`: `Alt+9 plugin-action mark`. That key wins over the page's own (`user binding`), and an action without a key is reachable this way only.
-- Keys are bound only while the panel is shown; the actions are dropped when a new page loads or the page's process dies.
+- Keys are bound while the page is in a slot, shown or hidden (an overlay slot hides while the video plays, and that is when such a key is wanted: the video has the keyboard), and work from the player's keyboard as its own keys do; taking the page out of its slot withdraws them, and the actions are dropped when a new page loads or the page's process dies.
 
 ## Under the hood
 
@@ -323,6 +353,9 @@ scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homeb
 ```
 
 A plain `swift build` or `swift run` finds Homebrew's FFmpeg instead, if any: the scripts point SwiftPM at FrameScrub's.
+
+`make-app.sh` writes which build it is into the app (branch, commit, its date, uncommitted changes, build date):
+About FrameScrub and the bottom of Settings › General show it, with a button that copies it.
 
 ### Uninstall
 

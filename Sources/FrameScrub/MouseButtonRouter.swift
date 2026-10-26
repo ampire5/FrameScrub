@@ -6,6 +6,10 @@ import FrameScrubCore
 /// and the chords that fire go to `onFire`. It owns the recogniser's one timer (run-loop mode `.common`, so it also
 /// runs during menu tracking and live resize), armed at `nextDeadline` after every call.
 ///
+/// While a bound button is held it also watches the pointer's movement wherever it goes, FrameScrub's windows (a local
+/// monitor) and the rest (a global one): a drag is no press even with the pointer over a slot, outside the window, or
+/// frozen (Mac Mouse Fix locks it while Back drags the Space, and the deltas still come). At rest no monitor is set.
+///
 /// One clock throughout: NSEvent timestamps and `ProcessInfo.systemUptime` (the timer, the bridge's events) are the
 /// same uptime. `cancelAll` forgets everything in flight: the window lost focus or closed, the app went to the
 /// background.
@@ -23,6 +27,8 @@ import FrameScrubCore
     private var filter = SideButtonFilter()
     private var timer: Timer?
     private var armedDeadline: Double?
+    /// The movement monitors, set while a bound button is held (`watchMoves`).
+    private var moveMonitors: [Any] = []
 
     /// What `gestures` was made from: a reload that changes none of it keeps the presses in flight (a panel held
     /// for `add auto-color-strength` saves framescrub.conf with each wheel step).
@@ -100,8 +106,8 @@ import FrameScrubCore
         return modifier
     }
 
-    /// Pointer movement in points while buttons may be held (a press that drifted is a drag).
-    func move(dx: Double, dy: Double) {
+    /// Pointer movement in points while buttons are held (a press that drifted is a drag): from `watchMoves`.
+    private func move(dx: Double, dy: Double) {
         gestures.move(dx: dx, dy: dy)
         rearm()
     }
@@ -126,8 +132,10 @@ import FrameScrubCore
         if !fired.isEmpty { onFire(fired) }
     }
 
-    /// A one-shot timer at the recogniser's next deadline, replaced whenever that moves.
+    /// A one-shot timer at the recogniser's next deadline, replaced whenever that moves; and the movement monitors
+    /// for what is held now.
     private func rearm() {
+        watchMoves()
         let deadline = gestures.nextDeadline
         guard deadline != armedDeadline else { return }
         armedDeadline = deadline
@@ -141,6 +149,27 @@ import FrameScrubCore
         }
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
+    }
+
+    /// The movement monitors exist exactly while a bound button is held. An event goes either to FrameScrub (the local
+    /// monitor) or to another app (the global one), so none counts twice; deltas, not places: a frozen pointer moves too.
+    private func watchMoves() {
+        let wanted = !gestures.held.isEmpty
+        guard wanted == moveMonitors.isEmpty else { return }
+        guard wanted else {
+            moveMonitors.forEach(NSEvent.removeMonitor)
+            moveMonitors = []
+            return
+        }
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let local = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.move(dx: Double(event.deltaX), dy: Double(event.deltaY)) }
+            return event
+        }
+        let global = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+            MainActor.assumeIsolated { self?.move(dx: Double(event.deltaX), dy: Double(event.deltaY)) }
+        }
+        moveMonitors = [local, global].compactMap { $0 }
     }
 
     private func tick() {

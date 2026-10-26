@@ -92,6 +92,23 @@ public struct PluginPolicy: Equatable, Sendable {
         return openAllowed.contains(origin) ? .allowed : .needsConsent
     }
 
+    /// Whether the page at `origin` may give a playlist with these local `files`: one answer for all of them, so a
+    /// list with a single non-video is refused whole. No files: nothing to ask.
+    public func decision(forOpening files: [URL], from origin: PluginOrigin) -> OpenDecision {
+        let decisions = files.map { decision(forOpening: $0, from: origin) }
+        for refusal in [OpenDecision.untrusted, .notMedia, .needsConsent] where decisions.contains(refusal) {
+            return refusal
+        }
+        return .allowed
+    }
+
+    /// Whether the page at `origin` may have frames saved in a folder it names (`frames`): the same answer as for
+    /// opening its local files, since both reach this Mac's disk.
+    public func decision(forSavingFrom origin: PluginOrigin) -> OpenDecision {
+        guard isTrusted(origin) else { return .untrusted }
+        return openAllowed.contains(origin) ? .allowed : .needsConsent
+    }
+
     public mutating func allowOpening(from origin: PluginOrigin) {
         openAllowed.insert(origin)
     }

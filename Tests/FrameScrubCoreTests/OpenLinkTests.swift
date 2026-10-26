@@ -55,6 +55,12 @@ import Testing
         #expect(target?.start == 12.5)
     }
 
+    /// The file of a link is taken as a file without asking the disk (a share answers each question over the network).
+    @Test func aLinksFileIsNotLookedUp() {
+        let dir = FileManager.default.temporaryDirectory.path.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        #expect(OpenLink.target(from: link("framescrub://open?path=\(dir)"))?.file?.hasDirectoryPath == false)
+    }
+
     @Test func aSegmentAloneStartsAtItsBeginning() {
         let target = OpenLink.target(from: link("framescrub://open?path=%2Fa.mp4&seg=3.5-9"))
         #expect(target?.time == nil)

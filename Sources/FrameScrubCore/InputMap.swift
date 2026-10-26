@@ -69,6 +69,9 @@ public struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         set.insert(KeyChord(key: "p", modifiers: [.meta, .alt]))
         set.insert(KeyChord(key: "p", modifiers: [.meta, .alt, .ctrl]))
         set.insert(KeyChord(key: "f", modifiers: [.meta, .ctrl]))
+        for key in ["LEFT", "RIGHT", "DOWN"] {   // View › Slots
+            set.insert(KeyChord(key: key, modifiers: [.meta, .ctrl]))
+        }
         return set
     }()
 
@@ -138,6 +141,8 @@ public enum Command: Equatable, Sendable {
     case playlistPrev, playlistNext, togglePlaylist, cyclePlaylistSort, playlistFilter
     case deleteFile, closeFile
     case toggleUpscaler, cycleUpscaler
+    /// The other mouse profile (`MouseProfile`).
+    case cycleMouseProfile
     case toggleVibrance, toggleAutoColor
     /// `save-auto-color [folder]` / `save-vibrance [folder]`: the effective values of the set become the default (`framescrub.conf`) or the folder's.
     case saveAutoColor(folder: Bool), saveVibrance(folder: Bool)
@@ -228,6 +233,7 @@ public enum Command: Equatable, Sendable {
         case .deleteFile: return "delete-file"
         case .closeFile: return "close-file"
         case .toggleUpscaler: return "toggle-upscaler"
+        case .cycleMouseProfile: return "cycle-mouse-profile"
         case .cycleUpscaler: return "cycle-upscaler"
         case .toggleVibrance: return "toggle-vibrance"
         case .toggleScrubAudio: return "toggle-scrub-audio"
@@ -328,6 +334,7 @@ public enum Command: Equatable, Sendable {
         case ("delete-file", nil): return .deleteFile
         case ("close-file", nil): return .closeFile
         case ("toggle-upscaler", nil): return .toggleUpscaler
+        case ("cycle-mouse-profile", nil): return .cycleMouseProfile
         case ("cycle-upscaler", nil): return .cycleUpscaler
         case ("toggle-vibrance", nil): return .toggleVibrance
         case ("toggle-scrub-audio", nil): return .toggleScrubAudio

@@ -25,10 +25,10 @@ public final class MediaSource {
     /// The streams' parameters came from the file's first probe (`ReadCache.probe`), not from probing again.
     public let usedSharedProbe: Bool
 
-    /// Opens `url` through `readCache` (`cached: false` reads past its blocks; `noParse` is for index-only demuxing).
-    public init(url: URL, readCache: ReadCache? = nil, cached: Bool = true, noParse: Bool = false) throws {
+    /// Opens `url` through `readCache` (`cached: false` reads past its blocks; `noParse` is for index-only demuxing; `readAhead: false` loads no blocks beyond the ones asked for).
+    public init(url: URL, readCache: ReadCache? = nil, cached: Bool = true, noParse: Bool = false, readAhead: Bool = true) throws {
         let cache = try readCache ?? ReadCache(url: url, budgetBytes: 0)
-        let reader = try AVIOReader(cache: cache, cached: cached)
+        let reader = try AVIOReader(cache: cache, cached: cached, readAhead: readAhead)
         guard let allocated = avformat_alloc_context() else { throw FFmpegError(-1, "allocate demuxer") }
         allocated.pointee.pb = reader.context   // custom I/O: avformat_close_input leaves pb to us
         // No AVFMT_FLAG_NOFILLIN: without it the stream's start_time (the index's zero) would be left unset for

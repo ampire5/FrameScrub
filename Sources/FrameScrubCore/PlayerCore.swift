@@ -71,9 +71,17 @@ public final class PlayerCore {
     public let clock: PlaybackClock
 
     public private(set) var url: URL?
+    /// What the page that opened the file says about it (`SceneInfo`): a stream's frames and clips are named after it.
+    /// Set after an open; an open or a close clears it.
+    public var sceneInfo: SceneInfo? { didSet { if sceneInfo != oldValue { rebuildExporter() } } }
+    /// The page's folder for this file's frames and clips (`frames`), instead of `frame-dir`. Set after an open; an open or
+    /// a close clears it.
+    public var frameFolder: URL? { didSet { if frameFolder != oldValue { rebuildExporter() } } }
     public private(set) var info: MediaSource?
     /// The open file's shared reads (spec §4).
     public private(set) var readCache: ReadCache?
+    /// How hard the open file may be read (`network-mode` and the file's volume), decided when it opens.
+    public private(set) var networkPolicy = NetworkPolicy.local
     public private(set) var index: FrameIndex?
     public private(set) var position = 0
     public private(set) var isPaused = true
@@ -156,7 +164,7 @@ public final class PlayerCore {
     public var revealTarget: URL? {
         if let lastSavedURL { return lastSavedURL }
         guard let exporter else { return nil }
-        let folder = exporter.settings.naming.directory(forVideo: exporter.videoURL)
+        let folder = exporter.settings.naming.directory(forVideo: exporter.nameURL)
         return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
     }
     private var frameOSDPending = false
@@ -218,13 +226,37 @@ public final class PlayerCore {
     // MARK: Opening
 
     /// Opens `url`; `fallbackPosition` (seconds) is where to start when nothing is remembered for the file (Stash's
-    /// resume point, Stash spec §2.3).
-    public func open(_ url: URL, fallbackPosition: Double? = nil) throws {
-        let readCache = try ReadCache(url: url, budgetBytes: readCacheBudget(pressureFactor), source: byteSource(url, config))
-        let source = try MediaSource(url: url, readCache: readCache)
+    /// resume point, Stash spec §2.3). `landingTime`: a position the opener lands on next (`applyLanding`), so the
+    /// remembered one is not sought (a stream would read there for nothing) nor announced; its A-B range and marks
+    /// still come back.
+    public func open(_ url: URL, fallbackPosition: Double? = nil, landingTime: Double? = nil) throws {
+        open(try preparation(for: url)(), fallbackPosition: fallbackPosition, landingTime: landingTime)
+    }
+
+    /// The part of opening `url` that reads it (the volume, the byte source, the read cache, the first probe), as work
+    /// that touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
+    /// Making it touches nothing: even the volume's kind (a `statfs`, which waits for an SMB server) is asked when it
+    /// runs. `cancellation` stops it while it reads.
+    public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
+        let config = config, factor = pressureFactor
+        nonisolated(unsafe) let byteSource = byteSource
+        return {
+            let policy = NetworkPolicy.resolve(config.networkMode, url: url)
+            let budget = Self.readCacheBudget(config: config, policy: policy, factor: factor)
+            let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
+            try cancellation?.watch(readCache)
+            let source = try MediaSource(url: url, readCache: readCache)
+            readCache.probe = StreamProbe(source)
+            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source)
+        }
+    }
+
+    /// Opens a file `preparation(for:)` read; the file open until now is left. `landingTime` as for `open(_:)`.
+    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil) {
+        let url = prepared.url, readCache = prepared.readCache, source = prepared.source
+        networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
-        readCache.probe = StreamProbe(source)
-        readCache.readAheadBytes = Int(source.bytesPerSecond * 3)
+        readCache.readAheadBytes = min(Int(source.bytesPerSecond * networkPolicy.readAheadSeconds), readCacheBudget(1) / 2)
         // Segments given while no file was open are for this one; those of the file open now go with it.
         let pendingSegments = index == nil && !segmentsSource.isEmpty
             ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
@@ -249,7 +281,8 @@ public final class PlayerCore {
         let filler = CacheFiller(url: url, index: approximate, cache: cache,
                                  estimatedFrameBytes: source.estimatedFrameBytes,
                                  playbackLookahead: max(8, Int(source.frameRate * 2)),
-                                 preferHardware: config.hwdec.prefersHardware, readCache: readCache)
+                                 preferHardware: config.hwdec.prefersHardware, readCache: readCache,
+                                 policy: networkPolicy, frameRate: source.frameRate)
         filler.onInsert = { [weak self] n in
             DispatchQueue.main.async { self?.frameInserted(n, session: current) }
         }
@@ -280,7 +313,7 @@ public final class PlayerCore {
         clock.followsAudio = true
         buildIndexInBackground(url, readCache: readCache, session: current)
         seek(toFrame: 0)
-        resumeIfRemembered(url, fallback: fallbackPosition)
+        resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
         if config.autoplay { play() }
         if speed != 1 { feedback(.speed(speed)) }   // a kept speed is shown, so a faster file is no surprise
     }
@@ -310,6 +343,8 @@ public final class PlayerCore {
         readCache?.close()
         readCache = nil
         url = nil
+        sceneInfo = nil
+        frameFolder = nil
         info = nil
         index = nil
         exporter = nil
@@ -357,7 +392,8 @@ public final class PlayerCore {
 
     private func rebuildExporter() {
         guard let url, let info else { return }
-        exporter = FrameExporter(videoURL: url, rotationClockwise: info.rotationClockwise,
+        exporter = FrameExporter(videoURL: url, nameURL: sceneInfo?.namingURL(for: url), folder: frameFolder,
+                                 rotationClockwise: info.rotationClockwise,
                                  settings: ExportSettings(config: config, fallbackRoot: fallbackRoot,
                                                           screenPixels: screenPixelSize, color: colorCorrection,
                                                           geometry: displayGeometry),
@@ -749,7 +785,7 @@ public final class PlayerCore {
         case .showProgress: osd(progressText)
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
-             .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .cycleAspect, .windowScale, .windowFit,
+             .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .cycleAspect, .windowScale, .windowFit,
              .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
@@ -824,7 +860,7 @@ public final class PlayerCore {
             decoder: filler?.decoderStatus.map { "\($0.codec) (\($0.backend.rawValue))" } ?? "starting",
             frame: position, lastFrame: index.frameCount - 1, exactIndex: index.isExact, time: progressText,
             cache: "\(cache.usedBytes >> 20) / \(cache.budgetBytes >> 20) MiB, \(cache.count) frames",
-            readCache: readCache?.stats.text, seek: seekTimer.text, index: indexStatus.text,
+            readCache: readCache.map { networkPolicy.isNetwork ? $0.stats.text + ", network mode" : $0.stats.text }, seek: seekTimer.text, index: indexStatus.text,
             speed: speedText, volume: isMuted ? "muted" : "\(Int(volume))%", saved: savedCount, marks: marksText, abLoop: abLoop,
             sharpness: sharpnessText, change: changeText, lastDecodeError: filler?.lastError.map { "\($0)" },
             clips: clipQueue.flatMap { $0.isBusy ? "saving 1 · \($0.waitingCount) waiting" : nil })
@@ -1167,6 +1203,18 @@ public final class PlayerCore {
         heldFrom = nil   // the direction stays: a ping-pong turn or the shuttle during the hold is kept
         applySpeed(held.speed)
         if held.paused { pause() }
+    }
+
+    /// The volume (0…100) from the seek bar's slider. Moving it unmutes, as a player's slider does; shown as the keys'
+    /// changes are, and like them kept for this session only (`volume` in the config is where each one starts).
+    public func setVolume(_ level: Double) {
+        guard level.isFinite else { return }
+        let level = min(max(level, 0), 100)
+        guard level != volume || isMuted else { return }
+        volume = level
+        isMuted = false
+        applyVolume()
+        feedback(.volume(Int(volume)))
     }
 
     private func applyVolume() {
@@ -1567,15 +1615,16 @@ public final class PlayerCore {
         }
         guard !ranges.isEmpty else { osd("Nothing left outside the marks"); return }
         let naming = FrameNaming(directoryTemplate: config.frameDirectory, fileTemplate: config.frameTemplate)
+        let named = sceneInfo?.namingURL(for: url) ?? url
         let busy = clipQueue.isBusy   // an idle queue starts the first job at once; do not count it while the worker wakes
         for job in ranges {
             let first = job[0].lowerBound, last = job[job.count - 1].upperBound
             clipQueue.enqueue(ClipJob(
-                source: url,
+                source: url, nameSource: sceneInfo?.namingURL(for: url),
                 ranges: job.map { ClipRange(startPTS: index.pts(forFrame: $0.lowerBound), endPTS: index.pts(forFrame: $0.upperBound),
                                             keyframePTS: index.isExact ? index.pts(forFrame: index.keyframe(atOrBefore: $0.lowerBound)) : nil) },
-                directory: naming.directory(forVideo: url),
-                fallbackDirectory: FrameNaming.fallbackDirectory(forVideo: url, root: fallbackRoot),
+                directory: frameFolder ?? naming.directory(forVideo: named),
+                fallbackDirectory: FrameNaming.fallbackDirectory(forVideo: named, root: fallbackRoot),
                 template: config.clipTemplate + mode.nameSuffix, aFrame: first, aSeconds: index.seconds(forFrame: first),
                 endSeconds: index.seconds(forFrame: last), readLimit: config.clipReadLimitMB * 1_000_000))
         }
@@ -1647,7 +1696,7 @@ public final class PlayerCore {
                 case let .success(saved):
                     self.savedCount += 1
                     self.lastSavedURL = saved.url
-                    var text = saved.usedFallbackDirectory ? "Saved to \(saved.url.path)" : "Saved: \(saved.url.lastPathComponent)"
+                    var text = saved.namesFolder ? "Saved to \(saved.url.path)" : "Saved: \(saved.url.lastPathComponent)"
                     if let reason = saved.fallbackReason { text += " · Upscaled with Lanczos (\(reason))" }
                     self.osd(text)
                     self.haptic(.done)
@@ -1728,8 +1777,9 @@ public final class PlayerCore {
                          for: url, size: readCache?.fileSize)
     }
 
-    /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back.
-    private func resumeIfRemembered(_ url: URL, fallback: Double?) {
+    /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back; `seeks`
+    /// false leaves the position (a landing time follows).
+    private func resumeIfRemembered(_ url: URL, fallback: Double?, seeks: Bool) {
         guard config.resumePlayback, let index else { return }
         guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
@@ -1741,7 +1791,7 @@ public final class PlayerCore {
                              },
                              open: saved.first { $0.count == 1 }.map { index.frameNumber(forSeconds: $0[0]) })
         }
-        guard entry.position > 0, durationSeconds - entry.position >= 5 else { return }
+        guard seeks, entry.position > 0, durationSeconds - entry.position >= 5 else { return }
         seek(toFrame: index.frameNumber(forSeconds: entry.position), direction: 0, hold: .nearest)
         osd("Resumed at \(FrameNaming.timecode(entry.position))")
     }
@@ -1782,7 +1832,11 @@ public final class PlayerCore {
     }
 
     private func readCacheBudget(_ factor: Double) -> Int {
-        Int(Double(config.readCacheMiB << 20) * factor)
+        Self.readCacheBudget(config: config, policy: networkPolicy, factor: factor)
+    }
+
+    private static func readCacheBudget(config: Config, policy: NetworkPolicy, factor: Double) -> Int {
+        Int(Double(max(config.readCacheMiB, config.readCacheMiB > 0 ? policy.minReadCacheMiB : 0) << 20) * factor)
     }
 
     private func watchMemoryPressure() {
@@ -1795,4 +1849,45 @@ public final class PlayerCore {
         source.resume()
         memoryPressure = source
     }
+}
+
+/// Stops a `PlayerCore.preparation` that is no longer wanted: its read cache closes, so the reads it waits for end
+/// with `ECANCELED` and their downloads stop.
+public final class OpenCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cache: ReadCache?
+    private var cancelled = false
+
+    public init() {}
+
+    public func cancel() {
+        lock.withLock { () -> ReadCache? in
+            cancelled = true
+            return cache
+        }?.close()
+    }
+
+    /// The preparation's read cache, closed at once if the cancel came first.
+    func watch(_ readCache: ReadCache) throws {
+        let late = lock.withLock { () -> Bool in
+            cache = readCache
+            return cancelled
+        }
+        if late {
+            readCache.close()
+            throw POSIXError(.ECANCELED)
+        }
+    }
+}
+
+/// What `PlayerCore.preparation(for:)` read of a file, for `PlayerCore.open(_:)`. Made on one thread and handed to
+/// another once; nothing else touches it in between.
+public struct PreparedOpen: @unchecked Sendable {
+    public let url: URL
+    let policy: NetworkPolicy
+    let readCache: ReadCache
+    let source: MediaSource
+
+    /// Releases what was read, for an open that was abandoned.
+    public func discard() { readCache.close() }
 }

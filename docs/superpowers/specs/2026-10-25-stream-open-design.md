@@ -1,0 +1,117 @@
+# Streams open off the main thread and play from the first bytes
+
+Date: 2026-10-25. Status: implemented.
+
+## Problem
+
+Opening an `http(s)` stream (a plugin page's or Stash's) blocks the main thread for 2.5–4 s on a slow server. Measured
+with a plugin page's trailers (a video CDN behind a local plugin service, ~0.8 MB/s per connection, 0.35–0.5 s to the first byte of every request):
+
+- `HTTPByteSource` asks for `bytes=0-0` (the size): ~0.4 s, plus whatever the server needs to find the file;
+- the demuxer's first read takes `ReadCache` block 0, a 2 MiB ranged GET that is waited for whole: ~3 s;
+- `avformat_open_input` and `avformat_find_stream_info` need only ~410 KB of it (`ffprobe -v debug` on the same
+  trailer: 114 KB before `find_stream_info`, 409 KB after; 0.98 s for the whole open over one connection).
+
+All of it happens inside `PlayerCore.open`, called from `PlayerWindowController.openFile` on the main thread.
+
+## Design
+
+### Bytes as they arrive
+
+- `ByteSource` gains `read(at:count:into:progress:)`: the same read, calling `progress(n)` whenever the first `n`
+  bytes are in the buffer. The default implementation reads, then reports once (files are unchanged).
+  `HTTPByteSource` reports as the response body arrives (a per-task `URLSession` delegate).
+- `ReadCache` keeps a block being loaded as a partial block: the buffer it is filled into and how many bytes are in.
+  A reader whose offset is already in returns what is there (a short read; AVIO asks again for the rest), instead of
+  waiting for the whole block. A reader beyond what has arrived waits for more or for the end. A failed load fails
+  the readers still waiting; bytes already handed out stay valid.
+- At most 4 such loads run on the cache's own queue (a reader may seek away before its block is complete); past that
+  a reader loads on its own thread. A closed cache stops its downloads (`progress` answers false and the request is
+  cancelled), and the reader that started a load is served from it even if the block was evicted meanwhile.
+- Block size, eviction, read-ahead and the number of requests stay as they are: one ranged GET per 2 MiB block.
+  (Smaller blocks would pay the first-byte wait more often: at 0.4 s per request and 0.8 MB/s a 256 KiB block runs
+  at a third of the link.)
+
+### The open in the background
+
+- `PlayerCore.open` is split: `PlayerCore.prepare(url, …)` makes the byte source, the read cache and the first
+  `MediaSource` (everything that reads the file) and touches no player state; `open(_ prepared:, fallbackPosition:)`
+  does the rest on the main thread. `open(url)` stays as `open(prepare(url))` for callers that wait.
+- `openFile` keeps its synchronous path for files on this Mac (unchanged behaviour). For a stream it leaves the file
+  on screen at once (the player stops), shows "Opening <name>…", runs `prepare` on a `.userInitiated` queue and
+  finishes the open on the main thread.
+- `prepare` runs on a dispatch queue (it blocks; not on Swift's cooperative pool) and carries an `OpenCancellation`:
+  an abandoned open closes its read cache, so its reads end and its downloads stop.
+- Every open and every close counts (`fileOpens`): an answer that arrives after another open, ⌘W or a failure
+  shown in between is dropped and its read cache closed. Superseded opens report nothing to the user.
+- `openFile` reports its outcome to a closure: `.opened`, `.failed` or `.superseded`. A file's open calls it before
+  returning; a stream's when `prepare` comes back. Callers that acted on its `Bool` (a plugin's `open`, a list item,
+  autoadvance, a Stash scene, a failed delete) act in the closure; a plugin request that was superseded is answered
+  `open: replaced by another open`.
+- While a stream is opening, ⌘W abandons it and goes back like a close; `hasOpenFile` is true.
+
+### Files too (2026-10-26)
+
+Every file opens the same way (the split above), not only streams: an SMB open blocked the window 0.2–1.1 s, and the
+first open of a share by a newly signed build waits in `open()` for macOS's "access files on a network volume"
+question (the window froze 9 minutes in a bench). Besides the preparation, the main thread asked the share four more
+things, each found by `sample`:
+
+- `NetworkPolicy.resolve` (`statfs`) when the preparation was made: now inside it;
+- `URL(fileURLWithPath:)` of a page's `open({path})`, a playlist item, a `framescrub://open` link, a Recent card or a
+  launch argument: it `lstat`s the path to learn whether it is a folder (124 ms per open on SMB); now
+  `URL(filePath:directoryHint: .notDirectory)`;
+- `noteNewRecentDocumentURL` (the file's type: `getattrlist`, 140 ms per open) and the title bar's proxy icon
+  (`representedURL`: icon and name, 0.1–0.4 s, behind the file's own reads): the preparation's thread reads these
+  values into one `NSURL`, and both are set from it in the pass that finishes the open (a URL's cached values last
+  only until the main run loop turns: set at the first picture, the cache was gone);
+- "Opening <name>…" appears only when an open takes longer than 0.3 s.
+
+## Out of scope
+
+No change to read-ahead depth, parallel requests or the plugin service.
+
+## Tests
+
+- `HTTPByteSourceTests`: progress reports arrive in order, end at the read's length, and the bytes up to each report
+  are the file's.
+- `ReadCacheTests`: with a source that delivers a block in steps, a read at the block's start returns before the
+  block is complete; a read beyond the delivered bytes waits; a failure mid-block fails the waiting reader.
+- `PlayerCore`: `prepare` then `open(prepared)` opens like `open(url)`.
+- Bench: `docs/bench.md`-style numbers for ▶ → playing through the plugin service before and after, and the main thread's longest
+  block during an open.
+
+## Measured
+
+2026-10-25, M4 MacBook Pro, plugin trailers (1080p, a video CDN), each trailer opened once (the plugin service asks its site for its
+address on the first request), the two ways alternating. `HTTPByteSource` + `ReadCache` + the first `MediaSource`,
+i.e. `PlayerCore.preparation`, on a test thread:
+
+| | size (`0-0`) | probe | open |
+|---|---|---|---|
+| before (whole 2 MiB block) | 309–966 ms | 1 542–2 394 ms | 1 877–2 713 ms |
+| after (bytes as they arrive) | 314–509 ms | 185–1 141 ms | 541–1 533 ms (3 of 4 under 750 ms) |
+
+Before, all of the open ran on the main thread; after, the main thread does only `open(prepared)` and the window.
+
+In the app (a bench page in a slot: `request("open", {url})` of plugin trailers never opened before, then the first
+`state` playing after the stream's `fileopened`; meanwhile `request("info")` every 50 ms, its slowest reply is how long
+the main thread was blocked). Same evening, CDN ~3.2 MB/s, five different trailers each:
+
+| | `open` answered | playing | slowest reply |
+|---|---|---|---|
+| before (b4b7fb6) | 848–1 673 ms | 1 015–1 872 ms | 800–1 622 ms |
+| after | 565–1 071 ms | 732–1 381 ms | 2–37 ms |
+
+Files on SMB (2026-10-26, same M4, the same bench page with `request("open", {path})`; files never opened before, a
+new set for each row, 4K MKV/MP4 of 3–60 GB on two NAS; "slowest reply" is the longest main-thread block):
+
+| | `open` answered | playing | slowest reply |
+|---|---|---|---|
+| before (846ffe3), share A | 229–1 210 ms | 273–1 297 ms | 177–1 080 ms |
+| background preparation only, share A | 142–1 539 ms | 320–1 749 ms | 21–933 ms (Recent, proxy icon, `lstat`) |
+| all of the above, share B | 305–619 ms | 348–682 ms | 41–77 ms |
+| all of the above, local files | 40–307 ms | 87–666 ms | 2–7 ms |
+
+While macOS's access question was up (a new build, the Downloads folder) the window answered within 43 ms, the open
+waiting 182 s for the answer.

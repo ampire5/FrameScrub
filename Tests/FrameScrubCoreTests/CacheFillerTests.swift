@@ -12,6 +12,23 @@ import Testing
         return (filler, cache)
     }
 
+    @Test func aNetworkPolicyKeepsThePausedWindowSmall() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let cache = FrameCache(budgetBytes: 400 << 20)
+        var policy = NetworkPolicy.network
+        policy.frameAheadSeconds = 1
+        policy.frameBehindSeconds = 0.5
+        let filler = CacheFiller(url: source.url, index: index, cache: cache, estimatedFrameBytes: source.estimatedFrameBytes,
+                                 playbackLookahead: 30, policy: policy, frameRate: 30)
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .paused)
+        #expect(await eventually { (285...330).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!cache.contains(331))   // 130 frames of budget would have reached ~346
+        #expect(!cache.contains(284))
+    }
+
     @Test func fillsBothSidesOfFocusWhilePaused() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)   // ~130 frames of 1080p NV12
         filler.start()
@@ -217,6 +234,28 @@ import Testing
             #expect(await eventually(timeout: 5) { cache.contains(n) })
         }
         #expect(await eventually { filler.poolReleases >= 1 })   // the forward worker's
+    }
+
+    /// Rocking one frame forward and back (2026-10-26): each turn tilted the window between 25% and 75% behind, so
+    /// half of it was evicted and decoded again on every step: ~1400–2800 frames and 100 seeks for 200 steps.
+    @Test func rockingAFrameBackAndForthKeepsTheWindow() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 300)
+        let inserted = InsertLog()
+        filler.onInsert = { inserted.append($0) }
+        filler.start()
+        defer { filler.stop() }
+        filler.setFocus(300, mode: .paused, direction: 1)
+        try await Task.sleep(for: .seconds(2))   // the window is full
+        let before = inserted.withLock { $0.count }
+        var n = 300
+        for i in 0..<100 {
+            let direction = i % 2 == 0 ? -1 : 1
+            n += direction
+            filler.setFocus(n, mode: .paused, direction: direction)
+            #expect(await eventually(timeout: 5) { cache.contains(n) })
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(inserted.withLock { $0.count } - before < 20)
     }
 
     @Test func steppingForwardKeepsTheDecoders() async throws {

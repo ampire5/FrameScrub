@@ -14,15 +14,14 @@ final class VideoView: NSView {
     var onScroll: ((NSEvent) -> Void)?
     var onMagnify: ((NSEvent) -> Void)?
     var onMouseButton: ((String) -> Void)?
+    /// A single left click on the picture (the slots over the video hide).
+    var onLeftClick: (() -> Void)?
     /// `MBTN_MID`, `MBTN_BACK`, `MBTN_FORWARD` went down: the button, the keyboard modifiers, whether the right button
     /// is held, and the event time.
     var onOtherButton: ((MouseButton, Modifiers, Bool, Double) -> Void)?
     /// The same buttons went up: the button and the event time.
     var onOtherButtonUp: ((MouseButton, Double) -> Void)?
     var onMouseMoved: (() -> Void)?
-    /// The pointer moved by (dx, dy) points, buttons held or not (mouse-moved and right / other-button drags): a held
-    /// button's press that moves too far is a drag (`ButtonGestures.move`).
-    var onPointerMoved: ((Double, Double) -> Void)?
     /// The pointer came into the view or left it.
     var onEnterExit: (() -> Void)?
     var onOpenFile: ((URL) -> Void)?
@@ -333,11 +332,8 @@ final class VideoView: NSView {
         if !rightUsedAsModifier { onMouseButton?("MBTN_RIGHT") }
     }
     override func mouseMoved(with event: NSEvent) {
-        onPointerMoved?(Double(event.deltaX), Double(event.deltaY))
         onMouseMoved?()
     }
-    override func rightMouseDragged(with event: NSEvent) { onPointerMoved?(Double(event.deltaX), Double(event.deltaY)) }
-    override func otherMouseDragged(with event: NSEvent) { onPointerMoved?(Double(event.deltaX), Double(event.deltaY)) }
 
     /// A button the Logitech mouse reported went down while the right one is held: like an AppKit button then, the
     /// right release is no `MBTN_RIGHT`.
@@ -358,6 +354,7 @@ final class VideoView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 1 { onLeftClick?() }
         if event.clickCount == 2 { onMouseButton?("MBTN_LEFT_DBL") }
     }
 

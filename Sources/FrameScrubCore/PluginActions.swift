@@ -62,15 +62,17 @@ public enum PluginActions {
     }
 }
 
-/// What the player does with the declared actions, apart from the window.
+/// What the player does with the declared actions, apart from the window. They count while the page is in a slot,
+/// shown or hidden: an overlay slot hides while the video plays, and its page's keys (`Alt+D`: download this) are
+/// wanted then most. A page taken out of its slot (another content, a cleared slot) withdraws them.
 public enum PluginActionPolicy {
-    /// A key bound to `plugin-action <name>` reaches the page only while the panel is shown and the page declared `name`.
-    public static func shouldDispatch(_ name: String, declared: [PluginAction], shown: Bool) -> Bool {
-        shown && declared.contains { $0.name == name }
+    /// A key bound to `plugin-action <name>` reaches the page only while it is in a slot and declared `name`.
+    public static func shouldDispatch(_ name: String, declared: [PluginAction], inSlot: Bool) -> Bool {
+        inSlot && declared.contains { $0.name == name }
     }
 
-    /// The actions whose keys are bound: all of them while the panel is shown, none while it is hidden.
-    public static func bindable(_ declared: [PluginAction], shown: Bool) -> [PluginAction] {
-        shown ? declared : []
+    /// The actions whose keys are bound: all of them while the page is in a slot, none otherwise.
+    public static func bindable(_ declared: [PluginAction], inSlot: Bool) -> [PluginAction] {
+        inSlot ? declared : []
     }
 }

@@ -1,9 +1,13 @@
 import AppKit
 
 /// Bottom bar: track (thicker while pointed at), cached ranges, the A-B range, the previewed frame, playhead and a
-/// time label. Click or drag to seek; scrolls over it go to `onScroll` (the preview's keyframe steps).
+/// time label, with the transport controls (previous / next item, mute and volume) at the right under the track.
+/// Click or drag to seek; scrolls over it go to `onScroll` (the preview's keyframe steps). The controls keep their
+/// clicks and scrolls: none reaches the track or the video.
 final class SeekBarView: NSView {
     var onSeek: ((Double) -> Void)?
+    /// The controls; set by the window, and their state by `updateTransport`.
+    let transport = TransportControls()
     private var frameCount = 0
     private var position = 0
     private var cached: [ClosedRange<Int>] = []
@@ -25,11 +29,18 @@ final class SeekBarView: NSView {
         layer?.cornerRadius = 8
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         label.textColor = .white
+        label.lineBreakMode = .byTruncatingTail
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)   // a narrow window cuts the text, not the controls
         label.translatesAutoresizingMaskIntoConstraints = false
+        transport.translatesAutoresizingMaskIntoConstraints = false
         addSubview(label)
+        addSubview(transport)
         NSLayoutConstraint.activate([
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: transport.leadingAnchor, constant: -12),
+            transport.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            transport.centerYAnchor.constraint(equalTo: label.centerYAnchor),
         ])
     }
 
@@ -125,8 +136,10 @@ final class SeekBarView: NSView {
     }
 
     override func mouseMoved(with event: NSEvent) {
-        hovering = alphaValue > 0.01
-        if hovering { onHover?(fraction(event)) }
+        let overControls = transport.frame.insetBy(dx: -4, dy: -4).contains(convert(event.locationInWindow, from: nil))
+        let wasHovering = hovering
+        hovering = alphaValue > 0.01 && !overControls
+        if hovering { onHover?(fraction(event)) } else if wasHovering { onHover?(nil) }   // onto the controls: no preview
     }
 
     override func mouseEntered(with event: NSEvent) { onEnterExit?() }
@@ -138,4 +151,119 @@ final class SeekBarView: NSView {
     }
 
     private func seek(_ event: NSEvent) { onSeek?(fraction(event)) }
+}
+
+/// ⏮ ⏭ and the volume (mute button and slider) on the seek bar. Clicks between the controls, scrolls and drags stay
+/// here; the controls never take the keyboard (keys go on to the player). Shown state changes only when it differs:
+/// the window refreshes it on every player update.
+final class TransportControls: NSView {
+    var onPrevious: (() -> Void)?
+    var onNext: (() -> Void)?
+    var onToggleMute: (() -> Void)?
+    /// The slider moved: 0…100.
+    var onVolume: ((Double) -> Void)?
+
+    private let previous = TransportControls.button("backward.end.fill", label: "Previous item")
+    private let next = TransportControls.button("forward.end.fill", label: "Next item")
+    private let mute = TransportControls.button("speaker.wave.3.fill", label: "Mute")
+    private let slider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
+    private var shown: (previous: Bool, next: Bool, volume: Int, muted: Bool)?
+
+    private static let symbol = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+    private static let tint = NSColor(white: 1, alpha: 0.9)
+    private static let dimmed = NSColor(white: 1, alpha: 0.3)
+
+    init() {
+        super.init(frame: .zero)
+        appearance = NSAppearance(named: .darkAqua)   // light controls on the bar's dark plate, whatever the system's
+        previous.target = self
+        previous.action = #selector(previousClicked)
+        next.target = self
+        next.action = #selector(nextClicked)
+        mute.target = self
+        mute.action = #selector(muteClicked)
+        slider.target = self
+        slider.action = #selector(sliderMoved)
+        slider.controlSize = .mini
+        slider.isContinuous = true
+        slider.refusesFirstResponder = true
+        slider.trackFillColor = Self.tint
+        slider.toolTip = "Volume"
+        slider.setAccessibilityLabel("Volume")
+        let views: [NSView] = [previous, next, mute, slider]
+        for view in views {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(view)
+        }
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 22),
+            previous.leadingAnchor.constraint(equalTo: leadingAnchor),
+            next.leadingAnchor.constraint(equalTo: previous.trailingAnchor, constant: 2),
+            mute.leadingAnchor.constraint(equalTo: next.trailingAnchor, constant: 14),
+            slider.leadingAnchor.constraint(equalTo: mute.trailingAnchor, constant: 2),
+            slider.trailingAnchor.constraint(equalTo: trailingAnchor),
+            slider.widthAnchor.constraint(equalToConstant: 76),
+            slider.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ] + [previous, next, mute].flatMap { button in [
+            button.widthAnchor.constraint(equalToConstant: 26),
+            button.heightAnchor.constraint(equalToConstant: 22),
+            button.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ] })
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    private static func button(_ symbol: String, label: String) -> NSButton {
+        let button = NSButton(image: image(symbol, label: label), target: nil, action: nil)
+        button.isBordered = false
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        button.contentTintColor = tint
+        button.refusesFirstResponder = true
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        return button
+    }
+
+    private static func image(_ symbol: String, variable: Double? = nil, label: String) -> NSImage {
+        let image = variable.flatMap { NSImage(systemSymbolName: symbol, variableValue: $0, accessibilityDescription: label) }
+            ?? NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage()
+        return image.withSymbolConfiguration(Self.symbol) ?? image
+    }
+
+    /// What the controls show: whether there is an item before / after, the volume (0…100) and mute.
+    func update(hasPrevious: Bool, hasNext: Bool, volume: Double, muted: Bool) {
+        let state = (previous: hasPrevious, next: hasNext, volume: Int(volume.rounded()), muted: muted)
+        if let shown, shown == state { return }
+        if shown?.previous != state.previous { Self.enable(previous, state.previous) }
+        if shown?.next != state.next { Self.enable(next, state.next) }
+        if shown?.volume != state.volume || shown?.muted != state.muted {
+            let label = muted ? "Unmute" : "Mute"
+            mute.image = muted ? Self.image("speaker.slash.fill", label: label)
+                : Self.image("speaker.wave.3.fill", variable: Double(state.volume) / 100, label: label)
+            mute.toolTip = label
+            mute.setAccessibilityLabel(label)
+            if slider.integerValue != state.volume { slider.doubleValue = Double(state.volume) }
+            slider.alphaValue = muted ? 0.45 : 1   // the level stays where it was, dimmed: moving it unmutes
+        }
+        shown = state
+    }
+
+    private static func enable(_ button: NSButton, _ on: Bool) {
+        button.isEnabled = on
+        button.contentTintColor = on ? tint : dimmed
+    }
+
+    @objc private func previousClicked() { onPrevious?() }
+    @objc private func nextClicked() { onNext?() }
+    @objc private func muteClicked() { onToggleMute?() }
+    @objc private func sliderMoved() { onVolume?(slider.doubleValue) }
+
+    // Between and around the controls: nothing reaches the bar under them (a seek) or the video.
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {}
+    override func rightMouseDown(with event: NSEvent) {}
+    override func otherMouseDown(with event: NSEvent) {}
+    override func scrollWheel(with event: NSEvent) {}
 }

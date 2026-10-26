@@ -57,6 +57,9 @@ public struct ExportSettings: Sendable {
 public struct SavedFrame: Sendable {
     public let url: URL
     public let usedFallbackDirectory: Bool
+    /// It went to a folder other than the configured one (the fallback, or a page's `frames`): say where.
+    public var namesFolder: Bool { usedFallbackDirectory || inPageFolder }
+    public var inPageFolder = false
     public let fallbackReason: String?
 }
 
@@ -92,14 +95,22 @@ public struct CopiedFrame: Sendable {
 /// neither blocks scrubbing. Callbacks are delivered on background threads.
 public final class FrameExporter: @unchecked Sendable {
     public let videoURL: URL
+    /// What saved frames are named after (`%{video-name}`, the fallback folder): `videoURL`, or a page's scene for a
+    /// stream (`SceneInfo.namingURL`).
+    public let nameURL: URL
+    /// A page's folder for this video's frames (`frames`), instead of `frame-dir`; the fallback when it cannot be written.
+    public let folder: URL?
     public let rotationClockwise: Int
     public let settings: ExportSettings
     private let readCache: ReadCache?
     private let renderer = FrameImageRenderer()
     private let saveQueue = DispatchQueue(label: "framescrub.save", qos: .userInitiated)
 
-    public init(videoURL: URL, rotationClockwise: Int, settings: ExportSettings, readCache: ReadCache? = nil) {
+    public init(videoURL: URL, nameURL: URL? = nil, folder: URL? = nil, rotationClockwise: Int, settings: ExportSettings,
+                readCache: ReadCache? = nil) {
         self.videoURL = videoURL
+        self.nameURL = nameURL ?? videoURL
+        self.folder = folder
         self.readCache = readCache
         self.rotationClockwise = rotationClockwise
         self.settings = settings
@@ -142,12 +153,12 @@ public final class FrameExporter: @unchecked Sendable {
     /// The configured directory, or `<fallbackRoot>/<video-name>` when it cannot be written.
     func outputDirectory() throws -> (URL, Bool) {
         let fm = FileManager.default
-        let primary = settings.naming.directory(forVideo: videoURL)
+        let primary = folder ?? settings.naming.directory(forVideo: nameURL)
         if (try? fm.createDirectory(at: primary, withIntermediateDirectories: true)) != nil,
            fm.isWritableFile(atPath: primary.path) {
             return (primary, false)
         }
-        let fallback = FrameNaming.fallbackDirectory(forVideo: videoURL, root: settings.fallbackRoot)
+        let fallback = FrameNaming.fallbackDirectory(forVideo: nameURL, root: settings.fallbackRoot)
         try fm.createDirectory(at: fallback, withIntermediateDirectories: true)
         return (fallback, true)
     }
@@ -155,13 +166,15 @@ public final class FrameExporter: @unchecked Sendable {
     private func write(_ frame: DecodedFrame, seconds: Double, into directory: URL, fallback: Bool, scale: OutputSize) throws -> SavedFrame {
         let source = settings.geometry.displaySize(of: FrameImageRenderer.uprightSize(of: frame, rotationClockwise: rotationClockwise))
         let target = scale.targetSize(source: source, screen: settings.screenPixels) ?? source
-        let name = settings.naming.fileName(forVideo: videoURL, frame: frame.number, seconds: seconds, format: settings.format,
+        let name = settings.naming.fileName(forVideo: nameURL, frame: frame.number, seconds: seconds, format: settings.format,
                                             suffix: scale.suffix(source: source, target: target))
         let url = directory.appendingPathComponent(name)
         let reason = try renderer.write(frame, rotationClockwise: rotationClockwise, format: settings.format,
                            quality: settings.quality, scale: scale, screen: settings.screenPixels, upscaler: settings.upscaler,
                            color: settings.color, geometry: settings.geometry, to: url)
-        return SavedFrame(url: url, usedFallbackDirectory: fallback, fallbackReason: reason)
+        var saved = SavedFrame(url: url, usedFallbackDirectory: fallback, fallbackReason: reason)
+        saved.inPageFolder = !fallback && folder != nil
+        return saved
     }
 
     /// Decodes the range once. Each window offers its first frame, or with `sharpest` every frame of it competes

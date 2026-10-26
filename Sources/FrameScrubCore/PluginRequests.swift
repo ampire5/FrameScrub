@@ -15,11 +15,14 @@ public struct PluginInfo: Codable, Equatable, Sendable {
     public var rotation: Int
     /// The video codec's name as the demuxer reports it ("h264", "hevc").
     public var codec: String?
-    /// Whether the file is read from disk or from Stash's stream (then `path` is the stream's URL).
+    /// Whether the file is read from disk or from a stream, Stash's or a page's (then `path` is the path part of the
+    /// stream's URL, percent-decoded).
     public var source: PluginSource
+    /// The stream's URL; null for a file.
+    public var url: String?
 
     public init(path: String, name: String, fps: Double, duration: Double, durationFrames: Int, width: Int, height: Int,
-                rotation: Int, codec: String?, source: PluginSource = .file) {
+                rotation: Int, codec: String?, source: PluginSource = .file, url: String? = nil) {
         self.path = path
         self.name = name
         self.fps = fps
@@ -30,6 +33,26 @@ public struct PluginInfo: Codable, Equatable, Sendable {
         self.rotation = rotation
         self.codec = codec
         self.source = source
+        self.url = url
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case path, name, fps, duration, durationFrames, width, height, rotation, codec, source, url
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(path, forKey: .path)
+        try c.encode(name, forKey: .name)
+        try c.encode(fps, forKey: .fps)
+        try c.encode(duration, forKey: .duration)
+        try c.encode(durationFrames, forKey: .durationFrames)
+        try c.encode(width, forKey: .width)
+        try c.encode(height, forKey: .height)
+        try c.encode(rotation, forKey: .rotation)
+        try c.encodeIfPresent(codec, forKey: .codec)
+        try c.encode(source, forKey: .source)
+        try c.encode(url, forKey: .url)   // nil as null, not an absent key
     }
 
     public var json: String? { PluginJSON.encode(self) }
@@ -101,12 +124,19 @@ public struct PluginPlaylist: Codable, Equatable, Sendable {
     /// The folder's videos before the filter.
     public var total: Int
     public var name: String
+    /// What the playlist is: the open file's folder, a list a page gave, or the Stash queue.
+    public var source: Source
 
-    public init(index: Int, count: Int, total: Int, name: String) {
+    public enum Source: String, Codable, Sendable {
+        case folder, list, stash
+    }
+
+    public init(index: Int, count: Int, total: Int, name: String, source: Source = .folder) {
         self.index = index
         self.count = count
         self.total = total
         self.name = name
+        self.source = source
     }
 
     public var json: String? { PluginJSON.encode(self) }
@@ -143,7 +173,7 @@ public struct PluginFrameRequest: Equatable, Sendable {
         }
         if let size = try args.optionalNumber("maxSize") {
             guard size >= Double(Self.smallestSize) else { throw PluginMessage.Failure("maxSize must be at least \(Self.smallestSize)") }
-            maxSize = min(Int(size), Self.largestSize)
+            maxSize = Int(min(size, Double(Self.largestSize)))
         } else {
             maxSize = Self.largestSize
         }

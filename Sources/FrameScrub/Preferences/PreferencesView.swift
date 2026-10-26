@@ -86,27 +86,45 @@ private struct SliderRow: View {
     }
 }
 
+/// One tab of the settings window. Each lives in its own hosting controller (`PreferencesWindowController`):
+/// a SwiftUI `TabView` rebuilt and laid out the heavy forms on every switch, which was a visible lag on slower Macs.
 struct PreferencesView: View {
-    @ObservedObject var model: PreferencesModel
+    enum Tab: CaseIterable, Hashable {
+        case general, scrolling, saving, display, mouse, stash
+        var title: String {
+            switch self {
+            case .general: return "General"
+            case .scrolling: return "Scrolling"
+            case .saving: return "Saving"
+            case .display: return "Display"
+            case .mouse: return "Mouse & Trackpad"
+            case .stash: return "Stash"
+            }
+        }
+    }
+
+    @ObservedObject var feed: PreferencesTabFeed
+    var tab: Tab
     var mouseTab: AnyView? = nil
+    private var model: PreferencesModel { feed.model }
     /// The wheel mode of the player (SmartShift's choice, remembered); missing means free spin.
     @AppStorage(PlayerWindowController.wheelFreeSpinKey) private var wheelFreeSpin = true
 
     var body: some View {
         VStack(spacing: 0) {
-            TabView {
-                general.tabItem { Text("General") }
-                scrolling.tabItem { Text("Scrolling") }
-                saving.tabItem { Text("Saving") }
-                display.tabItem { Text("Display") }
-                if let mouseTab { mouseTab.tabItem { Text("Mouse & Trackpad") } }
-                StashPreferencesView(model: model).tabItem { Text("Stash") }
+            switch tab {
+            case .general: general
+            case .scrolling: scrolling
+            case .saving: saving
+            case .display: display
+            case .mouse: mouseTab
+            case .stash: StashPreferencesView(feed: feed)
             }
             if let message = model.errorMessage {
                 Text(message).foregroundStyle(.red).font(.callout).fixedSize(horizontal: false, vertical: true).padding(8)
             }
         }
-        .frame(width: 560, height: 580)
+        .frame(width: PreferencesTabsController.contentSize.width, height: PreferencesTabsController.contentSize.height)
     }
 
     /// `scrub-audio-pitch` as an on/off toggle: on is `natural`.
@@ -126,6 +144,9 @@ struct PreferencesView: View {
         let inner = model.binding(\.sceneThreshold, ["scene-threshold"])
         return Binding(get: { Int(inner.wrappedValue.rounded()) }, set: { inner.wrappedValue = Double($0) })
     }
+
+    /// Read once: the bundle does not change while the app runs.
+    private static let buildLine = BuildInfo.line(of: .current)
 
     private var general: some View {
         Form {
@@ -161,6 +182,11 @@ struct PreferencesView: View {
                     Text("Hardware (VideoToolbox)").tag(HardwareDecoding.yes)
                     Text("Software").tag(HardwareDecoding.no)
                 }
+                Picker("Network volumes", selection: model.binding(\.networkMode, ["network-mode"])) {
+                    Text("Read gently (automatic)").tag(NetworkMode.auto)
+                    Text("Always read gently").tag(NetworkMode.yes)
+                    Text("Never").tag(NetworkMode.no)
+                }
                 Toggle("Resume where I left off", isOn: model.binding(\.resumePlayback, ["resume-playback"]))
                 Toggle("Play the next video in the folder at the end", isOn: model.binding(\.playlistAutoadvance, ["playlist-autoadvance"]))
                 Toggle("Start playing when a file opens", isOn: model.binding(\.autoplay, ["autoplay"]))
@@ -186,6 +212,9 @@ struct PreferencesView: View {
                 }
                 StepperRow(title: "Playlist text size (F8)", value: "\(model.config.playlistFontSize) pt",
                            number: model.binding(\.playlistFontSize, ["playlist-font-size"]), range: 9...32)
+                StepperRow(title: "Side slots come within", note: "How near the window's left or right edge the pointer brings a hidden slot",
+                           value: "\(model.config.slotRevealDistance) pt",
+                           number: model.binding(\.slotRevealDistance, ["slot-reveal-distance"]), range: 2...60, step: 2)
                 StepperRow(title: "Stats text size (i)", value: "\(model.config.statsFontSize) pt",
                            number: model.binding(\.statsFontSize, ["stats-font-size"]), range: 8...40)
                 SliderRow(title: "Start screen card size (largest)", value: "\(Int(model.config.startCardSize)) pt",
@@ -196,17 +225,16 @@ struct PreferencesView: View {
                     Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
                 }
             }
-            Section {
-                LabeledContent("Page") {
-                    CommitField(prompt: "http://host:8000/page/", value: model.binding(\.pluginURL, ["plugin-url"]))
+            Section("Build") {
+                // Which build this is, to quote when something is wrong (selectable, and a button copies it).
+                HStack {
+                    Text(Self.buildLine).textSelection(.enabled).font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Self.buildLine, forType: .string)
+                    }
                 }
-                StepperRow(title: "Width", value: "\(model.config.pluginWidth) pt",
-                           number: model.binding(\.pluginWidth, ["plugin-width"]), range: Config.pluginWidthRange, step: 20)
-            } header: {
-                Text("Plugin panel (⌥⌘P)")
-            } footer: {
-                Text("A web page beside the video that drives the player. Pages allowed to open local files: `plugin-open-allowed` in framescrub.conf.")
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -273,6 +301,15 @@ struct PreferencesView: View {
                 SliderRow(title: "Fast scrub", value: "×\(Int(model.config.scrub.fastMultiplier))",
                           number: model.binding(\.scrub.fastMultiplier, ["scrub-fast-multiplier"]), range: 1...100, step: 1)
                 Toggle("Invert scrub direction", isOn: model.binding(\.scrub.invert, ["scrub-invert"]))
+            }
+            Section("Mouse buttons") {
+                Picker("Profile", selection: model.binding(\.mouseProfile, ["mouse-profile"])) {
+                    ForEach(MouseProfile.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Text("Editing: the gesture button plays and pauses (hold: save a clip), the panel saves the frame (hold: export "
+                     + "the range), the middle button plays the marks. Press the SmartShift button twice to switch. Lines of "
+                     + "your own for a profile go to input-viewing.conf or input-editing.conf next to input.conf.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Logitech mouse") {
                 Toggle("Free spin and Precision Scroll in the player", isOn: model.binding(\.wheelPrecision, ["wheel-precision"]))

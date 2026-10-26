@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private static let openFileNotification = Notification.Name("com.framescrub.open-file")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        prebuildPreferencesWindow()
         StartupTrace.mark("launched")
         let (config, configWarnings) = Config.load()
         if config.singleInstance, let primary = Self.primaryInstance() {
@@ -53,16 +54,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return
         }
         NSApp.mainMenu = makeMainMenu()
-        let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout)
+        let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)
-        migratePluginDefaults()
-        gestureBindings = GesturePreferences(layout: config.keyLayout)
+        gestureBindings = GesturePreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
                                                 folderColors: folderColors)
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
-        preferences.addObserver { [weak self] in self?.gestureBindings.layout = $0.keyLayout }
+        preferences.addObserver { [weak self] in
+            self?.gestureBindings.layout = $0.keyLayout
+            self?.gestureBindings.profile = $0.mouseProfile
+        }
         preferences.addObserver { [weak self] in self?.appIcon.apply($0.appIcon) }
         appIcon.apply(config.appIcon)
         gestureBindings.addObserver { [weak controller] in controller?.applyInputMap($0) }
@@ -116,7 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
            let target = OpenLink.target(from: link) {
             controller.open(target)   // a link on the command line, as from another program
         } else if let path = paths.first {
-            controller.open(URL(fileURLWithPath: path))   // a failure stays on screen with its reason
+            controller.open(URL(filePath: path, directoryHint: .notDirectory))   // a failure stays on screen with its reason
         } else if let target = pendingTarget {
             controller.open(target)
         } else if let url = pendingURL {
@@ -128,33 +131,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
     }
 
-    /// The prototype kept `plugin-url` and `plugin-open-allowed` in the user defaults: once, they move to
-    /// framescrub.conf (the file's own values win), then the defaults are removed.
-    private func migratePluginDefaults() {
-        let defaults = UserDefaults.standard
-        let oldURL = defaults.string(forKey: "plugin-url") ?? ""
-        let oldAllowed = defaults.stringArray(forKey: "plugin-open-allowed") ?? []
-        guard !oldURL.isEmpty || !oldAllowed.isEmpty else { return }
-        do {
-            try preferences.update(["plugin-url", "plugin-open-allowed"]) { config in
-                if config.pluginURL.isEmpty { config.pluginURL = oldURL }
-                var policy = PluginPolicy(openAllowedText: config.pluginOpenAllowed)
-                for origin in oldAllowed.compactMap(PluginOrigin.init(string:)) { policy.allowOpening(from: origin) }
-                config.pluginOpenAllowed = policy.openAllowedText
-            }
-            defaults.removeObject(forKey: "plugin-url")
-            defaults.removeObject(forKey: "plugin-open-allowed")
-        } catch {
-            pendingNotice = "Cannot move the plugin settings to framescrub.conf: \(error.localizedDescription)"
-        }
-    }
-
     @objc private func togglePluginPanel(_ sender: Any?) {
         controller?.togglePluginPanel()
     }
 
+    /// The standard panel, with which build this is under the name (`BuildInfo`, baked by scripts/make-app.sh).
+    @objc private func showAbout(_ sender: Any?) {
+        let build = NSAttributedString(string: BuildInfo.line(of: .current), attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: build])
+    }
+
     @objc private func focusPluginPanel(_ sender: Any?) {
         controller?.focusPluginPanel()
+    }
+
+    @objc private func toggleSlot(_ sender: NSMenuItem) {
+        guard let edge = (sender.representedObject as? String).flatMap(SlotEdge.init(rawValue:)) else { return }
+        controller?.toggleSlot(edge)
+    }
+
+    @objc private func togglePinOfSlot(_ sender: Any?) { controller?.togglePinOfCurrentSlot() }
+    @objc private func cycleBackdropOfSlot(_ sender: Any?) { controller?.cycleBackdropOfCurrentSlot() }
+    @objc private func clearSlot(_ sender: Any?) { controller?.clearCurrentSlot() }
+
+    /// View › Slots: each slot by its chord (⌃⌘ and the arrow towards its edge), and what acts on the current slot.
+    private func makeSlotsMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Slots", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: "Slots")
+        let edges: [(SlotEdge, String, Int)] = [(.left, "Left Slot", NSLeftArrowFunctionKey),
+                                                (.right, "Right Slot", NSRightArrowFunctionKey),
+                                                (.bottom, "Bottom Slot", NSDownArrowFunctionKey)]
+        for (edge, title, key) in edges {
+            let slot = menu.addItem(withTitle: title, action: #selector(toggleSlot(_:)),
+                                    keyEquivalent: String(Character(UnicodeScalar(key)!)))
+            slot.keyEquivalentModifierMask = [.command, .control]
+            slot.representedObject = edge.rawValue
+            slot.target = self
+        }
+        menu.addItem(.separator())
+        for (title, action) in [("Pin / Float", #selector(togglePinOfSlot(_:))),
+                                ("Next Backdrop", #selector(cycleBackdropOfSlot(_:))),
+                                ("Clear Slot", #selector(clearSlot(_:)))] {
+            menu.addItem(withTitle: title, action: action, keyEquivalent: "").target = self
+        }
+        item.submenu = menu
+        return item
     }
 
     /// Finder "Open With", drops on the Dock icon and `framescrub://open?path=` links.
@@ -322,11 +345,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func showPreferences(_ sender: Any?) {
-        if preferencesWindow == nil {
-            let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
-            preferencesWindow = PreferencesWindowController(store: preferences, mouseTab: tab)
+        makePreferencesWindow().show()
+    }
+
+    @discardableResult
+    private func makePreferencesWindow() -> PreferencesWindowController {
+        if let preferencesWindow { return preferencesWindow }
+        let tab = AnyView(GestureTableView(model: GestureModel(preferences: gestureBindings)))
+        let window = PreferencesWindowController(store: preferences, mouseTab: tab)
+        preferencesWindow = window
+        return window
+    }
+
+    /// Builds the settings window while the app is idle after launch (~0.1 s of main thread), so ⌘, only shows it.
+    /// Not while a video is playing: a hitch there matters more than a slower first ⌘,.
+    private func prebuildPreferencesWindow() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, controller?.hasOpenFile != true else { return }
+            makePreferencesWindow()
         }
-        preferencesWindow?.show()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
@@ -484,6 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let box = item.representedObject as? CommandBox, box.command == .toggleUpscaler, let config = preferences?.config {
             item.state = config.srStill ? .on : .off
         }
+        if let box = item.representedObject as? CommandBox, box.command == .cycleMouseProfile, let config = preferences?.config {
+            item.state = config.mouseProfile == .editing ? .on : .off
+        }
         if let box = item.representedObject as? CommandBox, box.command == .toggleVibrance, let config = controller?.colorConfig {
             item.state = config.vibranceOn ? .on : .off
         }
@@ -558,7 +598,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About FrameScrub", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About FrameScrub", action: #selector(showAbout(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())
@@ -624,6 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let focusPlugin = viewMenu.addItem(withTitle: "Focus Plugin Panel", action: #selector(focusPluginPanel(_:)), keyEquivalent: "p")
         focusPlugin.keyEquivalentModifierMask = [.command, .option, .control]
         focusPlugin.target = self
+        viewMenu.addItem(makeSlotsMenu())
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
@@ -632,6 +673,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
         viewMenu.addItem(commandItem("Find in Folder…", .playlistFilter, key: "f"))
         viewMenu.addItem(commandItem("Next Folder Order", .cyclePlaylistSort, key: "", modifiers: []))   // F9 stays an input.conf binding
+        // Holding the SmartShift button switches it too (SmartShiftPress).
+        viewMenu.addItem(commandItem("Mouse Buttons for Editing", .cycleMouseProfile, key: "", modifiers: []))
         viewItem.submenu = viewMenu
         menu.addItem(viewItem)
 

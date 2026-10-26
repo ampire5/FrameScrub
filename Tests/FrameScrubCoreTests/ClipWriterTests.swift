@@ -64,6 +64,16 @@ import Testing
         #expect(rest.isEmpty && Set(numbers).count == numbers.count, sourceLocation: sourceLocation)
     }
 
+    @Test func aClipIsNamedAfterThePagesSceneWhenGiven() throws {
+        let plain = try job(Fixtures.h264, a: 300, b: 320)
+        let named = SceneInfo(title: "A scene", code: "7").namingURL(for: URL(string: "http://h/stream/7")!)!
+        let job = ClipJob(source: plain.source, nameSource: named, ranges: plain.ranges, directory: plain.directory,
+                          fallbackDirectory: plain.fallbackDirectory, template: plain.template, aFrame: plain.aFrame,
+                          aSeconds: plain.aSeconds, endSeconds: plain.endSeconds, readLimit: 0)
+        let result = try ClipWriter.write(job, isCancelled: { false })
+        #expect(result.url.lastPathComponent.hasPrefix("[7] A scene_"))
+    }
+
     @Test func joinsTwoRangesFromDifferentGOPs() throws {
         let result = try ClipWriter.write(try joinedJob(Fixtures.h264, ranges: [(300, 320), (510, 530)]), isCancelled: { false })
         let (index, numbers) = try inspect(result.url)
