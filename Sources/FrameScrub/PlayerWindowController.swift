@@ -31,8 +31,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var lastWheelTime: Double?
     /// `haptic-end` once per push against the first / last file of the playlist.
     private var playlistEndBump = EndBump()
-    /// The SmartShift button pressed twice in a row switches the mouse profile (`MouseProfile`).
-    private var smartShiftPresses = DoublePress()
+    /// The SmartShift button while FrameScrub takes it over: held, it switches the mouse profile (`SmartShiftPress`).
+    private var smartShift = SmartShiftPress()
+    private var smartShiftHold: DispatchWorkItem?
     private let videoView = VideoView()
     private let startScreen = HomeScreenView(background: nil)
     /// The recent files on the start screen, newest first; a card's id is the file's path.
@@ -2117,16 +2118,48 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard let self, byButton else { return }
             UserDefaults.standard.set(mode == .freeSpin, forKey: Self.wheelFreeSpinKey)
             updatePrecisionWheel()
-            // Pressed twice in a row: the mouse profile switches (and the wheel is back in its mode).
-            if smartShiftPresses.press(at: ProcessInfo.processInfo.systemUptime) {
-                switchMouseProfile()
-            } else if playerInFront {
-                showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet")
-            }
+            if playerInFront { showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet") }
         }
+        bridge.onSmartShift = { [weak self] pressed, time in self?.smartShiftButton(pressed: pressed, at: time) }
         wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
         playerWasInFront = false
         updatePrecisionWheel()
+    }
+
+    /// The SmartShift button, taken over while FrameScrub sets the wheel: held 0.6 s it switches the mouse profile with
+    /// a click felt at that moment; a shorter press switches the wheel between free spin and ratchet, as the mouse would.
+    private func smartShiftButton(pressed: Bool, at time: Double) {
+        smartShiftHold?.cancel()
+        smartShiftHold = nil
+        guard pressed else {
+            guard NSApp.isActive else { smartShift.cancel(); return }
+            switch smartShift.release(at: time) {
+            case .short: switchWheelMode()
+            case .long: smartShiftHeld()
+            case .none: break
+            }
+            return
+        }
+        smartShift.press(at: time)
+        let hold = DispatchWorkItem { [weak self] in
+            guard let self, smartShift.tick(at: ProcessInfo.processInfo.systemUptime) == .long else { return }
+            smartShiftHeld()
+        }
+        smartShiftHold = hold
+        DispatchQueue.main.asyncAfter(deadline: .now() + smartShift.threshold, execute: hold)
+    }
+
+    private func smartShiftHeld() {
+        haptics.play(.toggle)
+        switchMouseProfile()
+    }
+
+    /// What the mouse does with the button when nobody takes it: free spin ⇄ ratchet, kept as the user's choice.
+    private func switchWheelMode() {
+        let freeSpin = !(UserDefaults.standard.object(forKey: Self.wheelFreeSpinKey) as? Bool ?? true)
+        UserDefaults.standard.set(freeSpin, forKey: Self.wheelFreeSpinKey)
+        updatePrecisionWheel()
+        showMessage(freeSpin ? "Free spin · Precision Scroll" : "Ratchet")
     }
 
     /// A button the Logitech mouse reported. Presses count while the player window is key (like the keys); a watched
@@ -2245,6 +2278,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         wheelWants = wants
         precisionCheckedAt = ProcessInfo.processInfo.systemUptime
+        mouseBridge.takeSmartShift(wants.wheelMode != nil)
         mouseBridge.wantWheelMode(wants.wheelMode)
         mouseBridge.wantHighResolutionWheel(wants.highResolution)
     }

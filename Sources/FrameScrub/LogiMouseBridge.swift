@@ -17,11 +17,18 @@ import os
     /// The wheel's SmartShift mode changed: the mouse said so, and `byButton` when the user pressed the SmartShift
     /// button while a mode was wanted (the package has already adopted that mode as the wanted one).
     var onWheelMode: ((WheelMode, _ byButton: Bool) -> Void)?
+    /// The SmartShift button, while taken over (`takeSmartShift`): pressed (true) or released, at NSEvent's time. The
+    /// mouse then leaves the wheel mode alone: a short press is FrameScrub's to switch (`SmartShiftPress`).
+    var onSmartShift: ((_ pressed: Bool, TimeInterval) -> Void)?
 
     private let mouse: LogiMouse
     private static let log = Logger(subsystem: "local.framescrub", category: "Mouse")
     /// What `apply` last sent, so a reload that changes nothing writes nothing.
     private var applied: (divert: Set<UInt16>, watch: Set<UInt16>)?
+    /// What the layout and `mx-side-buttons` want (`apply`), before the SmartShift button is added.
+    private var wantedByConfig: (divert: Set<UInt16>, watch: Set<UInt16>) = ([], [])
+    /// The SmartShift button is diverted: FrameScrub sets the wheel mode now (`takeSmartShift`).
+    private var takesSmartShift = false
     private var appliedHapticStrength: Int?
     private var panelForce = PanelForceSetting.keep
 
@@ -54,14 +61,9 @@ import os
     /// `mx-panel-force` when they changed (Loupe's `applyMouseSettings`).
     func apply(config: Config, map: InputMap) {
         let side = config.mxSideButtons
-        let wanted = (divert: map.divertedCIDs.union(side == .take ? Self.sideCIDs : []),
-                      watch: side == .watch ? Self.sideCIDs : [])
-        if applied.map({ $0.divert != wanted.divert || $0.watch != wanted.watch }) ?? true {
-            applied = wanted
-            Self.log.info("divert \(Self.hex(wanted.divert), privacy: .public) watch \(Self.hex(wanted.watch), privacy: .public)")
-            mouse.divert(Set(wanted.divert.map(CID.init(rawValue:))))
-            mouse.watch(Set(wanted.watch.map(CID.init(rawValue:))))
-        }
+        wantedByConfig = (divert: map.divertedCIDs.union(side == .take ? Self.sideCIDs : []),
+                          watch: side == .watch ? Self.sideCIDs : [])
+        sendControls()
         if let strength = config.hapticStrength, strength != appliedHapticStrength {
             appliedHapticStrength = strength
             Self.log.info("haptic strength \(strength)")
@@ -69,6 +71,25 @@ import os
         }
         panelForce = config.mxPanelForce
         applyPanelForce()
+    }
+
+    /// While FrameScrub sets the wheel mode (the player in front, `wheel-precision=yes`) it takes the SmartShift button
+    /// too: a long press switches the mouse profile, a short one the wheel (`SmartShiftPress`). Elsewhere the button is
+    /// the mouse's own again.
+    func takeSmartShift(_ on: Bool) {
+        guard on != takesSmartShift else { return }
+        takesSmartShift = on
+        sendControls()
+    }
+
+    private func sendControls() {
+        let smartShift = CID.smartShift.rawValue
+        let wanted = (divert: wantedByConfig.divert.union(takesSmartShift ? [smartShift] : []), watch: wantedByConfig.watch)
+        guard applied.map({ $0.divert != wanted.divert || $0.watch != wanted.watch }) ?? true else { return }
+        applied = wanted
+        Self.log.info("divert \(Self.hex(wanted.divert), privacy: .public) watch \(Self.hex(wanted.watch), privacy: .public)")
+        mouse.divert(Set(wanted.divert.map(CID.init(rawValue:))))
+        mouse.watch(Set(wanted.watch.map(CID.init(rawValue:))))
     }
 
     /// Precision Scroll wanted (the pointer is over the video of the active key window, `wheel-precision=yes`).
@@ -105,9 +126,9 @@ import os
         let now = ProcessInfo.processInfo.systemUptime
         switch event {
         case let .pressed(cid, _):
-            if let button = MouseButton(cid: cid.rawValue) { onButton?(button, true, now) }
+            if cid == .smartShift { onSmartShift?(true, now) } else if let button = MouseButton(cid: cid.rawValue) { onButton?(button, true, now) }
         case let .released(cid, _):
-            if let button = MouseButton(cid: cid.rawValue) { onButton?(button, false, now) }
+            if cid == .smartShift { onSmartShift?(false, now) } else if let button = MouseButton(cid: cid.rawValue) { onButton?(button, false, now) }
         case .thumbWheel:
             break   // never diverted: the side wheel goes through macOS as WHEEL_LEFT / WHEEL_RIGHT
         case .connected:

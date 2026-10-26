@@ -673,7 +673,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
         viewMenu.addItem(commandItem("Find in Folder…", .playlistFilter, key: "f"))
         viewMenu.addItem(commandItem("Next Folder Order", .cyclePlaylistSort, key: "", modifiers: []))   // F9 stays an input.conf binding
-        // The SmartShift button pressed twice switches it too (MouseProfile).
+        // Holding the SmartShift button switches it too (SmartShiftPress).
         viewMenu.addItem(commandItem("Mouse Buttons for Editing", .cycleMouseProfile, key: "", modifiers: []))
         viewItem.submenu = viewMenu
         menu.addItem(viewItem)
