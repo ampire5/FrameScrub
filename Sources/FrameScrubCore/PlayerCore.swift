@@ -1764,7 +1764,8 @@ public final class PlayerCore {
         delegate?.playerStateDidChange(self)
     }
 
-    private func rememberPosition() {
+    /// Saves where the file is (and its A–B range, marks, length) now, as leaving it does: Home shows it over the video.
+    public func rememberPosition() {
         guard config.resumePlayback, let resumeStore, let url, let index else { return }
         resumeStore.save(ResumeEntry(position: index.seconds(forFrame: position),
                                      loopA: loopA.map(index.seconds(forFrame:)),

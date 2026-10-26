@@ -1,0 +1,502 @@
+import AppKit
+import FrameScrubCore
+import HomeScreenKit
+import HomeScreenModel
+
+/// Home's source (Home spec, Source): Recent's video cards, the places and folders, and Stash's page. Recent is read
+/// afresh on each listing, dimmed once its shares answer; a folder is read off the main thread, its last listing shown
+/// at once on the way back. Clicks and menus go back to the window.
+@MainActor final class FrameScrubHomeSource: HomeSource {
+    weak var view: HomeBrowserView?
+    /// A video card opened (any click: one window), from Recent or from a folder, with the sort it was shown in.
+    var onOpen: ((URL, BrowserLocation, BrowserSort) -> Void)?
+    /// A card's menu item: `finder`, `copy`, and Recent's `remove`.
+    var onMenu: ((URL, String) -> Void)?
+
+    private let recentURLs: () -> [URL]
+    private let stashPage: () -> NSView?
+    private let hasStash: () -> Bool
+    /// Recent's pictures: the last frame seen in each file (`ThumbnailStore`), a keyframe where it was left for those
+    /// without one. A folder's: a keyframe near a tenth of each video, kept apart (`posters`, more of them, smaller).
+    private let recentPictures: PictureQueue
+    private let folderPictures: PictureQueue
+    /// Lengths found while making pictures for files the position store has none for, by path; kept across runs.
+    private var durations: [String: Double] = [:]
+    private let durationStore = DurationStore()
+    private var durationSave: DispatchWorkItem?
+    private var sorts: [BrowserLocation: BrowserSort] = [:]
+    /// Each folder's last listing as read, for the way back and for re-listing with new lengths without a read.
+    private var listings: [URL: [BrowserEntry]] = [:]
+    /// Folder cards' facts and the videos their covers are made of, by folder, for this run; the run filling them.
+    private var folderFacts: [URL: (summary: CardSummary, cover: [URL])] = [:]
+    private var factsTask: Task<Void, Never>?
+    /// A video whose poster is being made for a folder's cover, and that folder card's id.
+    private var coverFor: [String: (id: String, folder: URL)] = [:]
+    /// Set while a folder is listed again only for its cards' lengths: the kept listing, no read.
+    private var relistOnly = false
+    private var relist: DispatchWorkItem?
+
+    init(recentURLs: @escaping () -> [URL], thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer,
+         stashPage: @escaping () -> NSView?, hasStash: @escaping () -> Bool) {
+        self.recentURLs = recentURLs
+        self.stashPage = stashPage
+        self.hasStash = hasStash
+        recentPictures = PictureQueue(store: thumbnails, thumbnailer: thumbnailer, prefix: "recent:", atPosition: true)
+        // A folder of a few hundred videos: ~40 KB each at 480 px; the newest 2 000 are kept.
+        let posters = ThumbnailStore(directory: ThumbnailStore.defaultDirectory.appendingPathComponent("posters"),
+                                     limit: 2000, maxSide: 480)
+        folderPictures = PictureQueue(store: posters, thumbnailer: RecentThumbnailer(store: posters), prefix: "",
+                                      atPosition: false)
+        let store = durationStore
+        Task { @MainActor [weak self] in   // the file is read off the main thread, once
+            let kept = await Task.detached(priority: .utility) { store.all() }.value
+            guard let self, !kept.isEmpty else { return }
+            self.durations.merge(kept) { now, _ in now }
+            if case .folder? = self.view?.location {   // a folder shown before they came: its cards get them
+                self.relistOnly = true
+                self.view?.reload()
+            }
+        }
+        folderPictures.onMade = { [weak self] url in self?.coverPosterMade(url) }
+        folderPictures.onHave = { [weak self] url in self?.posterIn(url) }
+        for queue in [recentPictures, folderPictures] {
+            queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
+            queue.onDuration = { [weak self] url, duration in self?.lengthFound(url, duration) }
+        }
+    }
+
+    // MARK: Places and folders
+
+    private var placeURLs: [URL] {
+        let volumes = FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil,
+                                                            options: .skipHiddenVolumes) ?? []
+        return HomeFolders.places(home: FileManager.default.homeDirectoryForCurrentUser, volumes: volumes).map(\.url)
+    }
+
+    func places() async -> [BrowserEntry] {
+        let volumes = await Task.detached(priority: .userInitiated) {
+            FileManager.default.mountedVolumeURLs(includingResourceValuesForKeys: nil, options: .skipHiddenVolumes) ?? []
+        }.value
+        return HomeFolders.places(home: FileManager.default.homeDirectoryForCurrentUser, volumes: volumes)
+    }
+
+    func list(_ location: BrowserLocation) -> AsyncThrowingStream<BrowserListing, Error> {
+        switch location {
+        case .source(HomeRecent.source): return listRecent()
+        case .source: return AsyncThrowingStream { $0.finish() }
+        case .places:
+            return AsyncThrowingStream { continuation in
+                let task = Task { @MainActor [weak self] in
+                    continuation.yield(BrowserListing(entries: await self?.places() ?? [], complete: true))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        case .folder(let folder): return listFolder(folder)
+        }
+    }
+
+    /// The kept listing at once (marked provisional), then the folder as read now, off the main thread; with
+    /// `relistOnly`, the kept one alone with the lengths found since.
+    private func listFolder(_ folder: URL) -> AsyncThrowingStream<BrowserListing, Error> {
+        let kept = listings[folder]
+        let onlyKept = relistOnly && kept != nil
+        relistOnly = false
+        return AsyncThrowingStream { continuation in
+            if let kept {
+                var listing = BrowserListing(entries: self.withFacts(kept), complete: onlyKept)
+                listing.isProvisional = !onlyKept
+                continuation.yield(listing)
+                if onlyKept { continuation.finish(); return }
+            }
+            let task = Task { @MainActor [weak self] in
+                do {
+                    let entries = try await Task.detached(priority: .userInitiated) {
+                        try HomeFolders.entries(in: folder)
+                    }.value
+                    guard let self, !Task.isCancelled else { return }
+                    self.listings[folder] = entries
+                    continuation.yield(BrowserListing(entries: self.withFacts(entries), complete: true))
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func withFacts(_ entries: [BrowserEntry]) -> [BrowserEntry] {
+        let resume = ResumeStore()
+        return HomeFolders.withFacts(entries, resume: { resume.entry(for: $0) }, durations: durations)
+    }
+
+    func lastListing(for location: BrowserLocation) -> BrowserListing? {
+        guard case .folder(let folder) = location, let kept = listings[folder] else { return nil }
+        return BrowserListing(entries: withFacts(kept), complete: true)
+    }
+
+    func folders(in folder: URL) async throws -> [BrowserEntry] {
+        try await Task.detached(priority: .userInitiated) { try HomeFolders.entries(in: folder) }.value
+            .filter(\.isContainer)
+    }
+
+    func parent(of folder: URL) -> BrowserLocation { HomeFolders.parent(of: folder, places: placeURLs) }
+
+    func symbol(for entry: BrowserEntry) -> String {
+        switch entry.kind {
+        case .place:   // the home folder, else a volume (shares are not always under /Volumes)
+            entry.url.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+                ? "house" : "externaldrive"
+        case .folder, .archive: "folder"
+        case .file, .collection: "film"
+        }
+    }
+
+    // MARK: Pictures
+
+    /// The cards' pictures, those in view first: saved ones read off the main thread, the others made in the
+    /// background one at a time.
+    func wantImages(_ ids: [String], width: CGFloat) {
+        if view?.location == .source(HomeRecent.source) {
+            recentPictures.want(ids)
+        } else {
+            guard case .folder(let folder)? = view?.location else { return }
+            let videos = (listings[folder] ?? []).filter(\.isFile).map(\.url)
+            let inView = ids.filter { $0.hasPrefix("/") }.map { URL(filePath: $0, directoryHint: .notDirectory) }
+                .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
+            if progressFolder != folder {
+                progressFolder = folder
+                havePosters = []
+            }
+            folderVideos = videos
+            inViewVideos = inView
+            folderPictures.want(ids.filter { $0.hasPrefix("/") }, rest: videos)
+            wantFolderCards(ids, in: folder)
+            showProgress()
+        }
+    }
+
+    // MARK: Progress (the toolbar's pill: "Posters 120 / 480")
+
+    private var progressFolder: URL?
+    private var folderVideos: [URL] = []
+    private var inViewVideos: [URL] = []
+    private var havePosters: Set<String> = []
+
+    private func posterIn(_ url: URL) {
+        guard havePosters.insert(url.path).inserted else { return }
+        showProgress()
+    }
+
+    /// The folder's posters: those in view first, then the rest; the pill lights only after a second of work.
+    private func showProgress(paused: Bool = false) {
+        guard let view, !folderVideos.isEmpty else { return }
+        let done = folderVideos.filter { havePosters.contains($0.path) }.count
+        let inViewDone = inViewVideos.filter { havePosters.contains($0.path) }.count
+        let total = folderVideos.count
+        let state = ThumbsProgressState(
+            fraction: Double(done) / Double(total),
+            text: paused ? "Paused · \(done) / \(total)" : "Posters \(done) / \(total)", paused: paused,
+            rows: [.init(title: "In view", done: inViewDone, total: inViewVideos.count),
+                   .init(title: "Rest of folder", done: done - inViewDone, total: total - inViewVideos.count)],
+            pauseNote: paused ? "Paused" : nil, pausedByUser: paused, working: done < total)
+        view.setProgress(state, delay: .seconds(1))
+    }
+
+    /// The pill's Pause / Resume: the folder's posters stop, or are asked for again.
+    func pauseThumbs(_ on: Bool, in location: BrowserLocation) {
+        if on {
+            folderPictures.stop()
+            showProgress(paused: true)
+        } else {
+            view?.reload()
+        }
+    }
+
+    /// Home hidden or left a place: no more pictures for it.
+    func stopImages() {
+        recentPictures.stop()
+        folderPictures.stop()
+        factsTask?.cancel()
+        factsTask = nil
+        coverFor = [:]
+    }
+
+    /// The folder cards among `ids`, in that order (those in view first): each folder's own listing read off the main
+    /// thread one at a time, its facts on the card, then its cover from posters already made; a folder whose videos
+    /// have none yet shows its symbol, and its first video's poster is queued (the cover follows when it is in).
+    private func wantFolderCards(_ ids: [String], in folder: URL) {
+        guard let entries = listings[folder] else { return }
+        let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder }
+        factsTask?.cancel()
+        factsTask = Task { @MainActor [weak self] in
+            for entry in folders {
+                guard let self, !Task.isCancelled else { return }
+                if self.folderFacts[entry.url] == nil {
+                    let url = entry.url
+                    let read = await Task.detached(priority: .utility) { try? HomeFolders.entries(in: url) }.value
+                    guard !Task.isCancelled else { return }
+                    guard let read else {
+                        self.view?.setSummary(CardSummary(problem: .broken), for: entry.id)
+                        continue
+                    }
+                    let resume = ResumeStore()
+                    self.folderFacts[url] = (HomeFolders.summary(of: read, resume: { resume.entry(for: $0) }),
+                                             HomeFolders.coverVideos(read))
+                }
+                guard let facts = self.folderFacts[entry.url] else { continue }
+                self.view?.setSummary(facts.summary, for: entry.id)
+                await self.makeCover(entry.id, folder: entry.url, from: facts.cover)
+            }
+        }
+    }
+
+    /// The cover from the posters there are (two by two, as Loupe's folders); none yet: the symbol, and the first
+    /// video's poster queued.
+    private func makeCover(_ id: String, folder: URL, from videos: [URL]) async {
+        guard let view else { return }
+        let store = folderPictures.store
+        let pictures = await Task.detached(priority: .utility) { videos.compactMap { store.image(for: $0) } }.value
+        guard !Task.isCancelled else { return }
+        guard !pictures.isEmpty else {
+            view.stopWaiting(for: [id])
+            if let first = videos.first, coverFor[first.path] == nil {
+                coverFor[first.path] = (id, folder)
+                folderPictures.enqueue(first)
+            }
+            return
+        }
+        let width = view.coverWidth, scale = view.window?.backingScaleFactor ?? 2
+        let mosaic = await Task.detached(priority: .utility) {
+            HomeMosaic.make(pictures, size: CGSize(width: width, height: width), layout: pictures.count > 1 ? .grid : .single,
+                            scale: scale)
+        }.value
+        guard !Task.isCancelled else { return }
+        if let mosaic { view.setImage(mosaic, for: id) } else { view.stopWaiting(for: [id]) }
+    }
+
+    private func coverPosterMade(_ url: URL) {
+        guard let card = coverFor.removeValue(forKey: url.path), let facts = folderFacts[card.folder] else { return }
+        Task { @MainActor [weak self] in await self?.makeCover(card.id, folder: card.folder, from: facts.cover) }
+    }
+
+    /// A length is new: the cards that show it are listed again from what is kept (no read), once for a burst.
+    private func lengthFound(_ url: URL, _ duration: Double) {
+        guard durations[url.path] == nil else { return }
+        durations[url.path] = duration
+        durationStore.set(duration, for: url.path)
+        durationSave?.cancel()
+        let store = durationStore
+        let save = DispatchWorkItem { store.save() }
+        durationSave = save
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: save)   // once for a burst
+        guard ResumeStore().entry(for: url)?.duration == nil else { return }
+        relist?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, let view = self.view else { return }
+            if case .folder = view.location { self.relistOnly = true }
+            view.reload()
+        }
+        relist = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    // MARK: Cards
+
+    func menu(for entry: BrowserEntry, in location: BrowserLocation) -> [HomeMenuItem] {
+        var items = [HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
+        if location == .source(HomeRecent.source) { items.append(HomeMenuItem(id: "remove", title: "Remove from Recent")) }
+        return items
+    }
+
+    func perform(_ item: String, on entry: BrowserEntry, in location: BrowserLocation) { onMenu?(entry.url, item) }
+
+    func open(_ entry: BrowserEntry, in location: BrowserLocation, sort: BrowserSort, how: HomeClick) {
+        guard entry.isFile else { return }
+        onOpen?(entry.url, location, sort)
+    }
+
+    func rename(_ entry: BrowserEntry, to name: String) async throws -> BrowserEntry {
+        let target = entry.url.deletingLastPathComponent().appendingPathComponent(name)
+        try await Task.detached(priority: .userInitiated) { try FileManager.default.moveItem(at: entry.url, to: target) }.value
+        listings[entry.url.deletingLastPathComponent()] = nil
+        var renamed = entry
+        renamed.url = target
+        renamed.name = name
+        return renamed
+    }
+
+    /// To the Trash; a volume without one (a share) refuses, and the browser says so.
+    func trash(_ entry: BrowserEntry) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.trashItem(at: entry.url, resultingItemURL: nil)
+        }.value
+        listings[entry.url.deletingLastPathComponent()] = nil
+    }
+
+    /// Recent: newest first; a folder: by name, or as the user last sorted it this run.
+    func sort(for location: BrowserLocation) -> BrowserSort {
+        sorts[location] ?? (location == .source(HomeRecent.source) ? BrowserSort(key: .date, ascending: false) : .standard)
+    }
+
+    func setSort(_ sort: BrowserSort, for location: BrowserLocation) { sorts[location] = sort }
+
+    func info(for source: String) -> HomeSourceInfo {
+        source == HomeRecent.stash
+            ? HomeSourceInfo(title: "Stash", page: stashPage())
+            : HomeSourceInfo(title: "Recent", sortKeys: [.date, .name], groupsByDate: true, noun: "video",
+                             emptyHint: "Drop a video here or press ⌘O")
+    }
+
+    /// Recent; the places, each opening as a tree; Stash's library when `stash-url` is set.
+    func sidebar() async -> [HomeSidebarSection] {
+        let places = await places().map {
+            HomeSidebarRow(id: $0.id, title: $0.name, symbol: symbol(for: $0), location: .folder($0.url), expandable: true)
+        }
+        var sections = [
+            HomeSidebarSection(id: "library", title: nil, rows: [
+                HomeSidebarRow(id: HomeRecent.source, title: "Recent", symbol: "clock", location: .source(HomeRecent.source)),
+            ]),
+            HomeSidebarSection(id: "places", title: "Places", rows: places),
+        ]
+        if hasStash() {
+            sections.append(HomeSidebarSection(id: "stash", title: "Stash", rows: [
+                HomeSidebarRow(id: HomeRecent.stash, title: "Library", symbol: "server.rack", location: .source(HomeRecent.stash)),
+            ]))
+        }
+        return sections
+    }
+
+    func pageFilterChosen(_ index: Int, in source: String) {}
+
+    /// Folder cards get their facts and covers from here: they wait, shimmering, until they come.
+    var sendsCardFacts: Bool { true }
+
+    func moved(from old: BrowserLocation?, to new: BrowserLocation) {
+        if old != new { stopImages() }
+    }
+
+    // MARK: Recent
+
+    /// Recent at once from the stores, then again with the files whose share does not answer in a second dimmed
+    /// (only when there are any).
+    private func listRecent() -> AsyncThrowingStream<BrowserListing, Error> {
+        let urls = recentURLs()
+        let resume = ResumeStore()
+        let entries = { [durations] (dimmed: Set<String>) in
+            HomeRecent.entries(urls, resume: { resume.entry(for: $0) }, durations: durations, dimmed: dimmed)
+        }
+        return AsyncThrowingStream { continuation in
+            continuation.yield(BrowserListing(entries: entries([]), complete: true))
+            let task = Task { @MainActor in
+                let reachable = await PathAvailability.check(urls.map(\.path), timeout: .seconds(1))
+                let gone = Set(urls.map(\.path).filter { reachable[$0] == .some(false) })
+                if !gone.isEmpty, !Task.isCancelled {
+                    continuation.yield(BrowserListing(entries: entries(gone), complete: true))
+                }
+                continuation.finish()
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+}
+
+/// One kind of card picture: saved ones read off the main thread in the order asked, the missing ones made by a
+/// thumbnailer (one file at a time, `.utility`), whose run is left going when an ask brings nothing new (a new start
+/// would cancel the file being made). Card ids are `prefix` + the file's path.
+@MainActor private final class PictureQueue {
+    var onPicture: ((String, CGImage) -> Void)?
+    var onDuration: ((URL, Double) -> Void)?
+    /// A picture was made (after `onPicture`), whoever asked for it.
+    var onMade: ((URL) -> Void)?
+    /// A file has its picture: found kept, or just made.
+    var onHave: ((URL) -> Void)?
+
+    let store: ThumbnailStore
+    private let thumbnailer: RecentThumbnailer
+    private let prefix: String
+    /// Recent's keyframe is where the file was left; a folder's, a tenth in.
+    private let atPosition: Bool
+    private var reading: Task<Void, Never>?
+    private var pending: [URL] = []
+
+    init(store: ThumbnailStore, thumbnailer: RecentThumbnailer, prefix: String, atPosition: Bool) {
+        self.store = store
+        self.thumbnailer = thumbnailer
+        self.prefix = prefix
+        self.atPosition = atPosition
+    }
+
+    /// The cards `ids` (in view first) get their pictures; then the files of `rest` (a folder's other videos) are
+    /// made ahead, after those, without being read.
+    func want(_ ids: [String], rest: [URL] = []) {
+        let store = store, idPrefix = prefix
+        let urls = ids.filter { $0.hasPrefix(idPrefix) }
+            .map { URL(filePath: String($0.dropFirst(idPrefix.count)), directoryHint: .notDirectory) }
+            .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
+        reading?.cancel()
+        reading = Task { @MainActor [weak self] in
+            var missing: [URL] = []
+            for url in urls {
+                let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
+                guard let self, !Task.isCancelled else { return }
+                if let image {
+                    self.onPicture?(idPrefix + url.path, image)
+                    self.onHave?(url)
+                } else {
+                    missing.append(url)
+                }
+            }
+            let asked = Set(urls)
+            let ahead = rest.filter { !asked.contains($0) }
+            let kept = await Task.detached(priority: .background) { Set(ahead.filter { store.has($0) }) }.value
+            guard let self, !Task.isCancelled else { return }
+            for url in kept { self.onHave?(url) }
+            missing += ahead.filter { !kept.contains($0) }
+            let waiting = Set(self.pending)   // a folder can hold thousands: sets, not array scans
+            let new = missing.filter { !waiting.contains($0) }
+            guard !new.isEmpty else { return }
+            let first = Set(new)
+            self.pending = new + self.pending.filter { !first.contains($0) }   // what is in view first
+            self.startPending()
+        }
+    }
+
+    private func startPending() {
+        let resume = atPosition ? ResumeStore() : nil
+        let jobs = pending.map {
+            RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil })
+        }
+        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers) { [weak self] url, duration in
+            MainActor.assumeIsolated { self?.made(url, duration: duration) }
+        }
+    }
+
+    /// One more file to make, after those waiting, without dropping the asks in progress.
+    func enqueue(_ url: URL) {
+        guard !pending.contains(url) else { return }
+        pending.append(url)
+        startPending()
+    }
+
+    func stop() {
+        reading?.cancel()
+        reading = nil
+        pending = []
+        thumbnailer.cancel()
+    }
+
+    private func made(_ url: URL, duration: Double) {
+        pending.removeAll { $0 == url }
+        onDuration?(url, duration)
+        let store = store, id = prefix + url.path
+        Task { @MainActor [weak self] in
+            let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
+            if let image { self?.onPicture?(id, image) }
+            self?.onHave?(url)
+            self?.onMade?(url)
+        }
+    }
+}

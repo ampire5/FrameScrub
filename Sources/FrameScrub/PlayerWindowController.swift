@@ -35,18 +35,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var smartShift = SmartShiftPress()
     private var smartShiftHold: DispatchWorkItem?
     private let videoView = VideoView()
-    private let startScreen = HomeScreenView(background: nil)
-    /// The recent files on the start screen, newest first; a card's id is the file's path.
-    private var recentItems: [RecentItem] = []
-    /// Bumped on every start screen: availability answers for an older one are dropped.
-    private var recentGeneration = 0
-    /// The Stash WebUI (Stash spec §2.1), created the first time the start screen shows the Stash tab.
+    /// Holds Home where the video is: over it and under the slots. Home goes in the first time it shows.
+    private let homeHost = NSView()
+    private var home: HomeView?
+    /// Home's source (the view holds it weakly).
+    private var homeSource: FrameScrubHomeSource?
+    /// The window's title while Home has the window, put back when it goes.
+    private var titleBeforeHome: String?
+    private var hasShownHome = false
+    /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
+    /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
+    private var folderReturn: (folder: URL, file: URL, order: (sort: PlaylistSort, ascending: Bool))?
+    /// Esc on Home (`makeHome`).
+    private var homeKeys: Any?
+    /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
+    private var movingForApp = false
+    /// Why a file did not open, in its place.
+    private let failureView = OpenFailureView()
+    /// The Stash WebUI (Stash spec §2.1), Home's Stash page, created the first time it is shown.
     private var stashLibrary: StashLibraryView?
     private var stashSession: StashSession?
     /// Where the file on screen came from; a Stash scene is reported back to Stash.
     private(set) var origin = FileOrigin.plain
     /// Where closing the file goes back to: Stash for a scene and the folder steps after it, else Recent.
-    private var returnTab = StartTab.recent
+    private var returnTab = HomeTab.recent
     /// The Stash scene of the file on screen (or of the failure on screen).
     private var stashScene: StashScene?
     /// A Stash scene whose file could not be found, while its reason is on screen: Return tries it again.
@@ -235,7 +247,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         super.init(window: window)
         restoreFrame(of: window)
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
-        applyStartScreenConfig(config)
+        applyHomeConfig(config)
         window.delegate = self
         core.delegate = self
         enhancer.delegate = self
@@ -280,9 +292,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
-    func open(_ url: URL, landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+    /// `homeFolder`: the folder it was opened from in Home and Home's order of it (closing goes back there).
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, (sort: PlaylistSort, ascending: Bool))? = nil,
+              then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
-        returnTab = .recent
+        returnTab = homeFolder == nil ? .recent : .folders
+        folderReturn = homeFolder.map { (folder: $0.0, file: url, order: $0.1) }
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -340,8 +355,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         indexingShownAt = nil
         // The previous file stops now; the window stays responsive while the file answers.
         closeCore()
-        startScreen.isHidden = true
-        stashLibrary?.isHidden = true
+        hideHome()
+        failureView.isHidden = true
         window?.representedURL = nil
         updateTitle(url)
         statsFileChanged()
@@ -424,8 +439,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         StartupTrace.mark("core opened")
         if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
         colorFileChanged()   // before anything below reads the colour
-        startScreen.isHidden = true
-        stashLibrary?.isHidden = true
+        hideHome()
+        failureView.isHidden = true
         updatePrecisionWheel()
         // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon and name:
         // 0.1–0.4 s on a NAS when asked cold, behind the file's own reads. `facts` has them from the preparation's
@@ -494,8 +509,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             failure = OpenFailure(reason: "File not found", detail: path)
         }
         showFailureMessage(failure, name: url.lastPathComponent)
-        startScreen.isHidden = false
-        stashLibrary?.isHidden = true
+        hideHome()
+        failureView.isHidden = false
         updatePrecisionWheel()
         videoView.onNextPicture = nil
         statsFileChanged()
@@ -529,7 +544,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         deletingScene = false   // a delete still running finishes without opening anything
         queueGate.cancel()
         origin = .plain
-        showStartScreen(tab: returnTab)
+        showHome(tab: returnTab)
     }
 
     private var failureHint: String? { returnTab == .stash ? "⌘W — back to Stash" : nil }
@@ -538,12 +553,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func showFailureMessage(_ failure: OpenFailure, name: String) {
         let keys = ["Return — try again", "PgUp / PgDn — another file in the folder", "⌘O — open"]
             + (failureHint.map { [$0] } ?? [])
-        startScreen.showMessage(title: "Cannot open \(name)", reason: failure.reason, detail: failure.detail, hints: keys)
+        failureView.show(title: "Cannot open \(name)", reason: failure.reason, detail: failure.detail, hints: keys)
     }
 
-    private func applyStartScreenConfig(_ config: Config) {
-        startScreen.cardSize = CGFloat(config.startCardSize)
-        startScreen.layoutMode = config.homeLayout
+    private func applyHomeConfig(_ config: Config) {
+        guard let home else { return }
+        home.browser.cardSize = CGFloat(config.homeCardSize)
+        if home.isSidebarVisible != config.homeSidebar { home.isSidebarVisible = config.homeSidebar }
     }
 
     // MARK: Stash
@@ -622,8 +638,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         origin = .stash(sceneID: scene.id, hasQueue: scene.hasQueue)
         let name = scene.paths.first.map { $0.split(whereSeparator: { $0 == "\\" || $0 == "/" }).last.map(String.init) ?? $0 }
         showFailureMessage(failure, name: name ?? "Stash scene \(scene.id)")
-        startScreen.isHidden = false
-        stashLibrary?.isHidden = true
+        hideHome()
+        failureView.isHidden = false
         updatePrecisionWheel()
         videoView.onNextPicture = nil
         statsFileChanged()
@@ -733,70 +749,179 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if window?.title != title { window?.title = title }
     }
 
-    /// Shows the recent files (or the hint when there are none), until a file opens; a file that cannot be reached
-    /// now shows faint. Files without a saved picture get their keyframe at the remembered position, made in the
-    /// background.
-    func showStartScreen(tab: StartTab? = nil) {
-        let resume = ResumeStore()
-        let urls = RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths)
-        recentItems = urls.map { url in
-            let entry = resume.entry(for: url)
-            return RecentItem(url: url, thumbnail: thumbnails.image(for: url), position: entry?.position, duration: entry?.duration)
-        }
+    /// Home (Home spec, Window): Recent or the Stash library (`tab`, else `home-tab`; Stash only with `stash-url`) in
+    /// place of the video. A file on screen is paused and stays open, so ⌘[ / Esc come back to it at once; with none,
+    /// the window is the start screen. Home is made the first time and only hidden after that.
+    func showHome(tab: HomeTab? = nil) {
+        guard let window else { return }
+        let cpu = StartupTrace.threadCPU(), wall = Date(), first = home == nil
+        let view = home ?? makeHome()
         cancelStashTitleWait()
-        startScreen.showGrid()
-        showRecentCards()
-        recentGeneration += 1
-        let generation = recentGeneration
-        Task { @MainActor [weak self] in
-            let reachable = await PathAvailability.check(urls.map(\.path), timeout: .seconds(1))
-            guard let self, self.recentGeneration == generation else { return }
-            var changed = false
-            for i in self.recentItems.indices where reachable[self.recentItems[i].url.path] == .some(false) {
-                self.recentItems[i].isDimmed = true
-                changed = true
-            }
-            if changed { self.showRecentCards() }
-        }
-        let jobs = recentItems.filter { $0.thumbnail == nil }.map {
-            RecentThumbnailer.Job(url: $0.url, seconds: $0.position.flatMap { $0 > 0 ? $0 : nil })
-        }
-        recentThumbnailer.start(jobs) {
-            [weak self] url, duration in
-            MainActor.assumeIsolated {
-                guard let self, let i = self.recentItems.firstIndex(where: { $0.url == url }) else { return }
-                self.recentItems[i].thumbnail = self.recentItems[i].thumbnail ?? self.thumbnails.image(for: url)
-                self.recentItems[i].duration = duration
-                self.showRecentCards()
+        if core.url != nil {
+            if !core.isPaused { core.pause() }
+            if homeHost.isHidden {   // Recent's card for it shows where it is now
+                core.rememberPosition()
+                saveThumbnail()
             }
         }
-        startScreen.isHidden = false
-        updatePrecisionWheel()
+        if homeHost.isHidden { titleBeforeHome = window.title }
         failedURL = nil
-        videoView.onNextPicture = nil
-        statsFileChanged()
-        window?.representedURL = nil
-        window?.title = "FrameScrub"
-        applyStartScreenFrame()
-        showStartTab(tab ?? core.config.startTab)
+        failedScene = nil
+        failureView.isHidden = true
+        homeHost.isHidden = false
+        view.isParked = false
+        // Home's toolbar lies over its content (the browser insets its grid by the toolbar's height), as in Loupe.
+        window.styleMask.insert(.fullSizeContentView)
+        window.titlebarAppearsTransparent = true
+        window.toolbar = view.browser.nsToolbar
+        window.titleVisibility = .hidden
+        hideSeekBarWork?.cancel()
+        seekBar.alphaValue = 0
+        showBackButton(false, duration: 0)
+        applyHomeConfig(core.config)
+        let config = core.config
+        // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
+        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0, order: r.order) : nil } ?? r }
+        let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
+        let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
+        var selecting: String?
+        let location: BrowserLocation
+        if let place = HomeRecent.location(of: shown) {
+            location = place
+        } else if let back {
+            location = .folder(back.folder)
+            selecting = back.file.path
+        } else {
+            location = view.browser.lastBrowsed
+        }
+        movingForApp = true
+        if view.browser.location == location, hasShownHome, selecting == nil {
+            view.browser.reload()
+        } else {
+            view.browser.show(location, selecting: selecting)
+        }
+        movingForApp = false
+        hasShownHome = true
+        updatePrecisionWheel()
+        if core.url == nil {
+            videoView.onNextPicture = nil
+            statsFileChanged()
+            window.representedURL = nil
+            applyStartScreenFrame()
+        }
+        if shown == .stash { stashLibrary?.focusPage() } else { window.makeFirstResponder(view.browser) }
+        if StartupTrace.enabled {   // the bench: the layout and drawing this pass would leave to the run loop, counted here
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            StartupTrace.cost(first ? "home shown (first)" : "home shown", cpu: cpu, wall: wall)
+        }
     }
 
-    /// The recent files as cards, with the pictures there are.
-    private func showRecentCards() {
-        let menu = [HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path"),
-                    HomeMenuItem(id: "remove", title: "Remove from Recent")]
-        startScreen.sections = [HomeSection(title: nil, items: recentItems.map { item in
-            HomeCardItem(id: item.url.path, title: item.url.lastPathComponent,
-                         subtitle: RecentFiles.timeText(position: item.position, duration: item.duration),
-                         tooltip: item.url.path, symbol: "film",
-                         progress: RecentFiles.progress(position: item.position, duration: item.duration),
-                         isDimmed: item.isDimmed, menu: menu)
-        })]
-        for item in recentItems { startScreen.setImage(item.thumbnail, for: item.url.path) }
+    /// Back to the video (or to the reason a file failed): Home stays in the window, hidden and parked.
+    func hideHome() {
+        guard let home, !homeHost.isHidden else { return }
+        let cpu = StartupTrace.threadCPU(), wall = Date()
+        homeHost.isHidden = true
+        home.isParked = true
+        homeSource?.stopImages()
+        window?.toolbar = nil
+        window?.titleVisibility = .visible
+        window?.titlebarAppearsTransparent = false
+        if !isFullScreen { window?.styleMask.remove(.fullSizeContentView) }
+        if let titleBeforeHome { window?.title = titleBeforeHome }
+        titleBeforeHome = nil
+        window?.makeFirstResponder(videoView)
+        updatePrecisionWheel()
+        if StartupTrace.enabled, let window {
+            window.layoutIfNeeded()
+            window.displayIfNeeded()
+            StartupTrace.cost("home hidden", cpu: cpu, wall: wall)
+        }
     }
 
-    /// A card size step on the start screen: from the width on screen, saved as `start-card-size` with the grid
-    /// scrolling (`home-layout=scroll`) so the size shows as asked; ⌘0 is the default size and `fit` again.
+    /// Home is in the window (Recent or Stash), not the video or why a file failed.
+    var showsHome: Bool { !homeHost.isHidden }
+
+    /// ⌘[ (the physical [ key, whatever the layout), Home's way back and forward's opposite.
+    private static func isGoBack(_ event: NSEvent) -> Bool {
+        event.keyCode == 33 && event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command
+    }
+
+    /// Esc on Home with a file open: back to it, paused where it was.
+    private func returnFromHome() -> Bool {
+        guard showsHome, core.url != nil else { return false }
+        hideHome()
+        return true
+    }
+
+    private func makeHome() -> HomeView {
+        let source = FrameScrubHomeSource(
+            recentURLs: { [weak self] in
+                RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths,
+                                  limit: self?.core.config.recentCount ?? 50)
+            },
+            thumbnails: thumbnails, thumbnailer: recentThumbnailer,
+            stashPage: { [weak self] in self?.makeStashLibrary() },
+            hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
+        let view = HomeView(source: source)
+        source.view = view.browser
+        source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
+            guard let self else { return }
+            if case .folder(let folder) = location {
+                self.open(url, homeFolder: (folder, HomeFolders.playlistOrder(sort)))   // the playlist in the grid's order
+            } else {
+                self.open(url)
+            }
+        }
+        source.onMenu = { [weak self] url, item in self?.recentMenuChosen(url, item) }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        homeHost.addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: homeHost.leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: homeHost.trailingAnchor),
+            view.topAnchor.constraint(equalTo: homeHost.topAnchor),
+            view.bottomAnchor.constraint(equalTo: homeHost.bottomAnchor),
+        ])
+        let browser = view.browser
+        browser.files = .videos   // 16:9 slots, "videos" in the counts, the length and progress on each picture
+        browser.names = .below
+        browser.cardSizeRange = 60...480   // home-card-size's
+        browser.onWindowText = { [weak self] title, _ in
+            guard let self, self.showsHome else { return }
+            self.window?.title = title
+        }
+        browser.onLocation = { [weak self] location in
+            guard let self, !self.movingForApp else { return }
+            let tab = HomeRecent.tab(of: location)
+            guard tab != self.core.config.homeTab else { return }
+            do { try self.preferences.update(["home-tab"]) { $0.homeTab = tab } } catch {
+                self.showMessage("Cannot save settings: \(error)", duration: 4)
+            }
+        }
+        browser.onResize = { [weak self] in self?.resizeHomeCards($0) }
+        view.onSidebarToggle = { [weak self] in self?.toggleHomeSidebar() }
+        view.onDrop = { [weak self] url in self?.open(url) }
+        // Esc on Home goes back to the open video, unless a field is being typed in (the filter, a rename): the browser
+        // and the window keep Esc to themselves, so it is taken here first.
+        homeKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.keyCode == 53, event.window === self.window,
+                  !(self.window?.firstResponder is NSText), self.returnFromHome() else { return event }
+            return nil
+        }
+        home = view
+        homeSource = source
+        return view
+    }
+
+    /// ⌃⌘S: Home's sidebar shown or hidden, saved as `home-sidebar`.
+    func toggleHomeSidebar() {
+        guard showsHome else { return }
+        let shown = !core.config.homeSidebar
+        do { try preferences.update(["home-sidebar"]) { $0.homeSidebar = shown } } catch {
+            showMessage("Cannot save settings: \(error)", duration: 4)
+        }
+    }
+
     /// File › Copy Path (⌥⌘C, as Finder's Copy as Pathname), and Recent's Copy Path.
     func copyPath(of url: URL? = nil) {
         guard let url = url ?? core.url else { return }
@@ -808,57 +933,35 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file on screen, for Copy Path.
     var currentURL: URL? { core.url }
 
-    /// The start screen shows the recent files (not Stash, not why a file failed): the card size items work.
-    var showsRecentCards: Bool { showsStartTabs && startScreen.selectedTab == 0 }
-
-    func resizeStartCards(_ resize: HomeResize) {
-        let defaults = Config()
-        let size = resize.size(from: startScreen.pictureWidth, range: 140...800).map(Double.init) ?? defaults.startCardSize
-        let layout = resize == .reset ? defaults.homeLayout : .scroll
-        do {
-            try preferences.update(["start-card-size", "home-layout"]) {
-                $0.startCardSize = size
-                $0.homeLayout = layout
-            }
-        } catch {
+    /// The card size on Home (`HomeResize`: ⌘= / ⌘− and the toolbar's − + by four sizes, ⌘ + wheel and a pinch by a
+    /// column, the toolbar's slider, ⌘0 the default), saved as `home-card-size`.
+    func resizeHomeCards(_ resize: HomeResize) {
+        guard let browser = home?.browser, showsHome else { return }
+        let size = browser.cardSize(after: resize, range: 60...480).map(Double.init) ?? Config().homeCardSize
+        do { try preferences.update(["home-card-size"]) { $0.homeCardSize = size } } catch {
             showMessage("Cannot save settings: \(error)", duration: 4)
-            return
         }
-        showMessage(resize == .reset ? "Cards: \(Int(size)) pt, fit" : "Cards: \(Int(size)) pt")
     }
 
-    private func recentMenuChosen(_ path: String, _ item: String) {
-        let url = URL(filePath: path, directoryHint: .notDirectory)
+    private func recentMenuChosen(_ url: URL, _ item: String) {
         switch item {
         case "finder": NSWorkspace.shared.activateFileViewerSelecting([url])
-        case "copy": copyPath(of: url)
+        case "copy":
+            copyPath(of: url)
+            home?.browser.showToast("Path copied")
         case "remove":
             var hidden = HiddenRecent()
             hidden.hide(url)
-            showStartScreen(tab: .recent)
+            home?.browser.reload()
         default: break
         }
     }
 
-    /// Recent or the Stash library on the start screen; without Stash set up, always Recent.
-    private func showStartTab(_ wanted: StartTab) {
-        let config = core.config
-        let tab = config.stashEnabled ? wanted : .recent
-        startScreen.tabs = config.stashEnabled ? ["Recent", "Stash"] : []
-        startScreen.selectedTab = tab == .stash ? 1 : 0
-        if tab == .stash, let library = makeStashLibrary() {
-            StartupTrace.mark("stash shown")
-            library.isHidden = false
-            library.focusPage()
-        } else {
-            stashLibrary?.isHidden = true
-            window?.makeFirstResponder(videoView)
-        }
-    }
-
+    /// The Stash WebUI, Home's Stash page (the browser puts it under its toolbar), made the first time it is shown or
+    /// a queue is stepped; nil without `stash-url`.
     private func makeStashLibrary() -> StashLibraryView? {
         if let stashLibrary { return stashLibrary }
-        guard let container = window?.contentView, let url = URL(string: core.config.stashURL) else { return nil }
+        guard let url = URL(string: core.config.stashURL), core.config.stashEnabled else { return nil }
         let library = StashLibraryView(url: url, interceptors: [
             .scenePlayer(
                 onOpen: { [weak self] scene in
@@ -871,14 +974,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         library.onPageLoaded = { StartupTrace.markOnce("stash page loaded") }
         _ = makeStashSession()
-        library.translatesAutoresizingMaskIntoConstraints = false
-        container.addSubview(library, positioned: .above, relativeTo: videoView)   // under the start screen's switch
-        NSLayoutConstraint.activate([
-            library.leadingAnchor.constraint(equalTo: container.leadingAnchor),
-            library.trailingAnchor.constraint(equalTo: container.trailingAnchor),
-            library.topAnchor.constraint(equalTo: startScreen.contentTop),
-            library.bottomAnchor.constraint(equalTo: container.bottomAnchor),
-        ])
         stashLibrary = library
         return library
     }
@@ -899,9 +994,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return session
     }
 
-    /// Refreshes the start screen after the recent list changed (Clear Menu); does nothing while a file is open.
-    func showStartScreenIfEmpty() {
-        if !startScreen.isHidden { showStartScreen() }
+    /// Lists Recent again after it changed (Clear Menu) while Home shows it.
+    func recentChanged() {
+        if showsHome, home?.browser.location == HomeRecent.location(of: .recent) { home?.browser.reload() }
     }
 
     /// Shows the window above other apps' windows, restoring it if minimized.
@@ -1003,14 +1098,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if config.autoColor, let lastFrame { checkSceneCut(lastFrame) }   // turned on in Settings: a first frame is a cut
         window?.level = config.ontop ? .floating : .normal
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
-        applyStartScreenConfig(config)
+        applyHomeConfig(config)
         if stashChanged, let library = stashLibrary {   // a new address, key or rules: a new page and session
             stashSession?.leave()
             library.removeFromSuperview()
             stashLibrary = nil
             stashSession = nil
         }
-        if showsStartTabs, stashChanged || (startScreen.tabs.count == 2) != config.stashEnabled { showStartTab(config.startTab) }
+        if stashChanged {
+            home?.reloadSidebar()   // Stash's row comes or goes
+            if showsHome, home?.browser.location == HomeRecent.location(of: .stash) { showHome() }
+        }
         statsPanel.fontSize = CGFloat(config.statsFontSize)
         refreshEnhancement()
         configurePreview()
@@ -1252,7 +1350,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
         window.contentView = container
-        for view in [videoView, startScreen, hud, osd, seekBar, backButton, previewView, keyHelp, goToField] as [NSView] {
+        for view in [videoView, homeHost, failureView, hud, osd, seekBar, backButton, previewView, keyHelp, goToField] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
@@ -1270,10 +1368,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             visibleArea.bottomAnchor.constraint(equalTo: container.bottomAnchor),
         ]
         NSLayoutConstraint.activate(videoEdges + visibleEdges + [
-            startScreen.leadingAnchor.constraint(equalTo: videoView.leadingAnchor),
-            startScreen.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
-            startScreen.topAnchor.constraint(equalTo: videoView.topAnchor),
-            startScreen.bottomAnchor.constraint(equalTo: videoView.bottomAnchor),
+            homeHost.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            homeHost.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            homeHost.topAnchor.constraint(equalTo: container.topAnchor),
+            homeHost.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            failureView.leadingAnchor.constraint(equalTo: videoView.leadingAnchor),
+            failureView.trailingAnchor.constraint(equalTo: videoView.trailingAnchor),
+            failureView.topAnchor.constraint(equalTo: videoView.topAnchor),
+            failureView.bottomAnchor.constraint(equalTo: videoView.bottomAnchor),
             hud.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor),
             hud.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor),
             hud.topAnchor.constraint(equalTo: visibleArea.topAnchor),
@@ -1326,25 +1428,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.alphaValue = 0
         backButton.alphaValue = 0
         backButton.onClick = { [weak self] in self?.closeFile() }
-        startScreen.isHidden = true   // shown by showStartScreen() when the app starts with nothing to open
-        startScreen.supportsTabs = false   // one window: ⌘ / ⇧ / the middle button open here too
-        startScreen.aspect = 9.0 / 16
-        startScreen.emptyHint = "Drop a video here or press ⌘O"
-        startScreen.onTab = { [weak self] index in
-            guard let self else { return }
-            let tab: StartTab = index == 1 ? .stash : .recent
-            do { try preferences.update(["start-tab"]) { $0.startTab = tab } } catch {
-                showMessage("Cannot save settings: \(error)", duration: 4)
-            }
-            showStartTab(tab)
-        }
-        startScreen.onCard = { [weak self] path, _ in
-            guard let self else { return }
-            open(URL(filePath: path, directoryHint: .notDirectory))   // not looked up: a share answers over the network
-            self.window?.makeFirstResponder(videoView)
-        }
-        startScreen.onMenu = { [weak self] path, item in self?.recentMenuChosen(path, item) }
-        startScreen.onResize = { [weak self] in self?.resizeStartCards($0) }
+        homeHost.isHidden = true   // shown by showHome() when the app starts with nothing to open
+        failureView.isHidden = true
         playlistPanel.onSelect = { [weak self] row in
             guard let self else { return }
             if listPlaylist != nil {
@@ -1539,9 +1624,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return nil
     }
 
-    /// The start screen is showing Recent or Stash (not why a file failed).
-    private var showsStartTabs: Bool { !startScreen.isHidden && failedURL == nil && failedScene == nil }
-
     /// Back on the start screen: the window keeps its size and place; only the video shape stops holding its aspect.
     private func applyStartScreenFrame() {
         guard let window, !isFullScreen else { return }
@@ -1581,7 +1663,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if keyHelp.isShown, event.keyCode == 53 { keyHelp.hide(); return }   // Esc closes the cheat sheet first
         if let failedURL, event.keyCode == 36 || event.keyCode == 76 { openFile(failedURL, origin: origin); return }   // Return / Enter: try again
         if let failedScene, event.keyCode == 36 || event.keyCode == 76 { openStashScene(failedScene); return }
-        if !startScreen.isHidden, failedURL == nil, startScreen.handleKey(event) { return }   // arrows, Return: recent files
+        if showsHome {
+            if event.keyCode == 53, returnFromHome() { return }   // Esc: back to the video
+            if home?.browser.handleKey(event) == true { return }   // arrows, Return, typing a name: Home's cards
+        } else if Self.isGoBack(event), core.url != nil {
+            showHome()   // ⌘[ on a video: Home over it
+            return
+        }
         guard let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode,
                                                 characters: KeyboardLayout.characters(for: event),
                                                 modifiers: Modifiers(event.modifierFlags)),
@@ -2185,17 +2273,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             case .drop: return
             case .pageBack: page.goBack(); return
             case .pageForward: page.goForward(); return
+            case .browserBack, .browserForward: break   // not given over a plugin page
             }
         }
-        if !startScreen.isHidden {
-            // No file to act on, and the Stash page keeps its own back / forward: a watched button reaches it through
-            // AppKit (its own monitor), a taken one only from here. A dropped press's release finds nothing held.
-            let page = stashLibrary.flatMap { $0.isHidden ? nil : $0 }
-            switch SideButtonFilter.startScreenPress(button, mode: core.config.mxSideButtons, stashPageShown: page != nil) {
+        if showsHome, let browser = home?.browser {
+            // Home's history (the Stash page keeps its own): a watched button reaches them through AppKit, a taken one
+            // only from here. A dropped press's release finds nothing held.
+            let page = browser.location == HomeRecent.location(of: .stash) ? stashLibrary : nil
+            switch SideButtonFilter.homePress(button, mode: core.config.mxSideButtons, stashPageShown: page != nil) {
             case .pass: break
             case .drop: return
             case .pageBack: page?.goBack(); return
             case .pageForward: page?.goForward(); return
+            case .browserBack: browser.goBack(); return
+            case .browserForward: browser.goForward(); return
             }
         }
         let rightHeld = NSEvent.pressedMouseButtons & 0b10 != 0
@@ -2211,9 +2302,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func revealSeekBar() {
         // No file: nothing to show, and over the Stash page the bar would take its clicks.
-        if !startScreen.isHidden { return }
+        if showsHome || !failureView.isHidden { return }
         updateSeekBar()
-        backButton.title = returnTab == .stash ? "Stash" : "Recent"
+        backButton.title = switch returnTab {
+        case .stash: "Stash"
+        case .folders: folderReturn?.folder.lastPathComponent ?? "Folders"
+        case .recent: "Recent"
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             seekBar.animator().alphaValue = 1
@@ -2293,7 +2388,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The app is active and this window is key, with no sheet and no start screen: the one definition of "in front"
     /// for the wheel (`updatePrecisionWheel`, the SmartShift button).
     private var playerInFront: Bool {
-        NSApp.isActive && window?.isKeyWindow == true && window?.attachedSheet == nil && startScreen.isHidden
+        NSApp.isActive && window?.isKeyWindow == true && window?.attachedSheet == nil && !showsHome && failureView.isHidden
     }
 
     private func isPointer(over view: NSView) -> Bool {
@@ -2375,7 +2470,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func rebuildPlaylist(around url: URL) {
         let folder = folder(of: url)
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
-        playlist = Playlist(current: url, sort: core.config.playlistSort, filter: playlistFilter, listing: listing)
+        // A folder opened from Home goes in Home's order; any other in `playlist-sort`'s.
+        let order = homeOrder(around: url)
+        playlist = Playlist(current: url, sort: order?.sort ?? core.config.playlistSort, ascending: order?.ascending,
+                            filter: playlistFilter, listing: listing)
         updatePlaylistPanel()
     }
 
@@ -2390,7 +2488,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         listRowIndices = []
-        playlistPanel.showSort(core.config.playlistSort)
+        playlistPanel.showSort(homeOrder(around: playlistAnchor)?.sort ?? core.config.playlistSort)
         guard let playlist else { return }
         playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
     }
@@ -2515,7 +2613,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file the playlist is built around (`FolderWait.anchor`).
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
+    /// Home's order of the folder `file` is in, while that folder is the one opened from Home.
+    private func homeOrder(around file: URL?) -> (sort: PlaylistSort, ascending: Bool)? {
+        guard let r = folderReturn, let file, folder(of: file) == r.folder.standardizedFileURL else { return nil }
+        return r.order
+    }
+
     private func setPlaylistSort(_ sort: PlaylistSort) {
+        if let anchor = playlistAnchor, homeOrder(around: anchor) != nil {   // the user's choice here replaces the order Home gave
+            folderReturn?.order = (sort, sort == .name)
+            rebuildPlaylist(around: anchor)
+        }
         guard sort != core.config.playlistSort else { return }
         do { try preferences.update(["playlist-sort"]) { $0.playlistSort = sort } } catch {   // applyConfig rebuilds the list
             showMessage("Cannot save settings: \(error)", duration: 4)
@@ -2580,7 +2688,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             } else {
                 closeCore()
                 videoView.clear(blank: true)
-                showStartScreen()
+                showHome()
             }
             showMessage(outcome == .trashed ? "Moved to Trash: \(url.lastPathComponent)" : "Deleted: \(url.lastPathComponent)")
         }
@@ -2646,7 +2754,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         failedURL = nil
         failedScene = nil
         origin = .plain
-        showStartScreen(tab: .stash)
+        showHome(tab: .stash)
     }
 
     private func confirmPermanentDelete(_ url: URL) -> Bool {
@@ -2772,7 +2880,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func buildSlots(in container: ContainerView) {
         pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
         for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
-        slots = SlotsController(container: container, above: startScreen, config: globalConfig, playlistView: playlistPanel)
+        slots = SlotsController(container: container, above: failureView, config: globalConfig, playlistView: playlistPanel)
         slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }

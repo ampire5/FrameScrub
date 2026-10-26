@@ -86,28 +86,31 @@ public struct SideButtonFilter: Sendable {
     }
 
     /// What a press from the mouse's own events does while the start screen is shown (no file to act on).
-    public enum StartScreenPress: Equatable, Sendable {
+    public enum HomePress: Equatable, Sendable {
         /// On to the filter and the recogniser, as over a video.
         case pass
-        /// Nothing: the Stash page gets the button through AppKit itself, or there is nothing to act on.
+        /// Nothing: the page or Home's browser gets the button through AppKit itself.
         case drop
-        /// Back / forward in the Stash page's history: a taken button never reaches the page through AppKit.
+        /// Back / forward in the Stash page's (or a plugin page's) history: a taken button never reaches it through AppKit.
         case pageBack, pageForward
+        /// Back / forward in Home's browser history, for the same reason.
+        case browserBack, browserForward
     }
 
-    /// Back and forward run no binding on the start screen; over the Stash page with `mx-side-buttons=take` they
-    /// navigate the page, as AppKit's buttons do there. Other buttons pass.
-    public static func startScreenPress(_ b: MouseButton, mode: SideButtonsMode,
-                                        stashPageShown: Bool) -> StartScreenPress {
+    /// Back and forward run no binding on Home: they go through its history (the browser's, or the Stash page's while
+    /// it shows). A watched button reaches them through AppKit, so the mouse's own copy is dropped; a taken one only
+    /// from here. Other buttons pass.
+    public static func homePress(_ b: MouseButton, mode: SideButtonsMode, stashPageShown: Bool) -> HomePress {
         guard b == .back || b == .forward else { return .pass }
-        guard mode == .take, stashPageShown else { return .drop }
-        return b == .back ? .pageBack : .pageForward
+        guard mode == .take else { return .drop }
+        if stashPageShown { return b == .back ? .pageBack : .pageForward }
+        return b == .back ? .browserBack : .browserForward
     }
 
     /// A press from the mouse's own events with the pointer over a plugin page: back and forward are the page's
     /// history, never the player's binding. Taken buttons navigate it from here; watched ones (and the system's) reach
     /// it through AppKit, so the mouse's own copy is dropped. Other buttons pass.
-    public static func pluginPagePress(_ b: MouseButton, mode: SideButtonsMode) -> StartScreenPress {
+    public static func pluginPagePress(_ b: MouseButton, mode: SideButtonsMode) -> HomePress {
         guard b == .back || b == .forward else { return .pass }
         guard mode == .take else { return .drop }
         return b == .back ? .pageBack : .pageForward

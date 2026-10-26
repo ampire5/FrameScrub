@@ -1,5 +1,4 @@
 import FrameScrubCore
-import HomeScreenKit
 import SwiftUI
 
 /// A text field that keeps its own draft, so it can be emptied while typing; a non-empty draft is committed
@@ -217,13 +216,11 @@ struct PreferencesView: View {
                            number: model.binding(\.slotRevealDistance, ["slot-reveal-distance"]), range: 2...60, step: 2)
                 StepperRow(title: "Stats text size (i)", value: "\(model.config.statsFontSize) pt",
                            number: model.binding(\.statsFontSize, ["stats-font-size"]), range: 8...40)
-                SliderRow(title: "Start screen card size (largest)", value: "\(Int(model.config.startCardSize)) pt",
-                          number: model.binding(\.startCardSize, ["start-card-size"], decimals: 0), range: 140...800, step: 20)
-                Picker("Start screen layout", selection: model.binding(\.homeLayout, ["home-layout"])) {
-                    Text("Fit (shrink, then scroll)").tag(HomeLayoutMode.fit)
-                    Text("Scroll").tag(HomeLayoutMode.scroll)
-                    Text("Fixed (no scrolling)").tag(HomeLayoutMode.fixed)
-                }
+                SliderRow(title: "Home card size (⌘= / ⌘−)", value: "\(Int(model.config.homeCardSize)) pt",
+                          number: model.binding(\.homeCardSize, ["home-card-size"], decimals: 0), range: 60...480, step: 20)
+                Toggle("Home sidebar (⌃⌘S)", isOn: model.binding(\.homeSidebar, ["home-sidebar"]))
+                StepperRow(title: "Recent videos on Home", value: "\(model.config.recentCount)",
+                           number: model.binding(\.recentCount, ["recent-count"]), range: 5...200, step: 5)
             }
             Section("Build") {
                 // Which build this is, to quote when something is wrong (selectable, and a button copies it).

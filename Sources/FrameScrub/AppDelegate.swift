@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         } else if let url = pendingURL {
             controller.open(url)
         } else {
-            controller.showStartScreen()
+            controller.showHome()
         }
         let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
@@ -397,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSDocumentController.shared.clearRecentDocuments(nil)
         var hidden = HiddenRecent()
         hidden.clear()
-        controller?.showStartScreenIfEmpty()
+        controller?.recentChanged()
     }
 
     private static let previewSizes: [(title: String, width: Int)] = [
@@ -499,14 +499,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func copyPath(_ sender: Any?) { controller?.copyPath() }
-    @objc func largerCards(_ sender: Any?) { controller?.resizeStartCards(.larger) }
-    @objc func smallerCards(_ sender: Any?) { controller?.resizeStartCards(.smaller) }
-    @objc func defaultCardSize(_ sender: Any?) { controller?.resizeStartCards(.reset) }
+    @objc func largerCards(_ sender: Any?) { controller?.resizeHomeCards(.largerSize) }
+    @objc func smallerCards(_ sender: Any?) { controller?.resizeHomeCards(.smallerSize) }
+    @objc func defaultCardSize(_ sender: Any?) { controller?.resizeHomeCards(.reset) }
+    @objc func showHome(_ sender: Any?) { controller?.showHome() }
+    @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(copyPath(_:)) { return controller?.currentURL != nil }
-        if [#selector(largerCards(_:)), #selector(smallerCards(_:)), #selector(defaultCardSize(_:))].contains(item.action) {
-            return controller?.showsRecentCards == true
+        if [#selector(largerCards(_:)), #selector(smallerCards(_:)), #selector(defaultCardSize(_:)),
+            #selector(toggleHomeSidebar(_:))].contains(item.action) {
+            return controller?.showsHome == true
         }
         if item.action == #selector(closeWindow(_:)) {
             let video = NSApp.keyWindow === controller?.window && controller?.hasOpenFile == true
@@ -614,7 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         recentMenu.delegate = self
         recentItem.submenu = recentMenu
         fileMenu.addItem(recentItem)
-        // The start screen's own keys (⌘= / ⌘− / ⌘0, ⌘ + wheel, pinch, the side wheel); listed here to be found in Help.
+        // Home's own keys (⌘= / ⌘− / ⌘0, ⌘ + wheel, pinch, the side wheel); listed here to be found in Help.
         // No key on the items: a menu key is taken even while its item is off, and ⌘= / ⌘− zoom a video.
         fileMenu.addItem(withTitle: "Larger Cards", action: #selector(largerCards(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Smaller Cards", action: #selector(smallerCards(_:)), keyEquivalent: "").target = self
@@ -649,6 +652,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let viewMenu = NSMenu(title: "View")
         let fullScreen = viewMenu.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fullScreen.keyEquivalentModifierMask = [.command, .control]
+        viewMenu.addItem(.separator())
+        let home = viewMenu.addItem(withTitle: "Home", action: #selector(showHome(_:)), keyEquivalent: "h")
+        home.keyEquivalentModifierMask = [.command, .shift]
+        home.target = self
+        let sidebar = viewMenu.addItem(withTitle: "Toggle Home Sidebar", action: #selector(toggleHomeSidebar(_:)), keyEquivalent: "s")
+        sidebar.keyEquivalentModifierMask = [.command, .control]
+        sidebar.target = self
         viewMenu.addItem(.separator())
         viewMenu.addItem(commandItem("Half Size", .windowScale(0.5), key: "1"))
         viewMenu.addItem(commandItem("Normal Size", .windowScale(1), key: "2"))
