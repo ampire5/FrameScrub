@@ -38,10 +38,20 @@ let package = Package(
                 .product(name: "StashKit", package: "StashKit"),
             ]
         ),
+        // The settings window's store, pages and binding tables (SettingsKit), apart from the app for tests and the bench.
+        .target(
+            name: "FrameScrubSettings",
+            dependencies: [
+                "FrameScrubCore",
+                .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "StashKit", package: "StashKit"),
+            ]
+        ),
         .executableTarget(
             name: "FrameScrub",
             dependencies: [
                 "FrameScrubCore",
+                "FrameScrubSettings",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelKit", package: "InfoPanelKit"),
                 .product(name: "StashKitUI", package: "StashKit"),
@@ -58,6 +68,15 @@ let package = Package(
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
+            ],
+            swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
+        ),
+        .testTarget(
+            name: "FrameScrubSettingsTests",
+            dependencies: [
+                "FrameScrubSettings",
+                "FrameScrubCore",
+                .product(name: "SettingsKit", package: "SettingsKit"),
             ],
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),
