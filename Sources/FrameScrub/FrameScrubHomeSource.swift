@@ -20,8 +20,10 @@ import HomeScreenModel
     /// without one. A folder's: a keyframe near a tenth of each video, kept apart (`posters`, more of them, smaller).
     private let recentPictures: PictureQueue
     private let folderPictures: PictureQueue
-    /// Lengths found while making pictures for files the position store has none for, by path, for this run.
+    /// Lengths found while making pictures for files the position store has none for, by path; kept across runs.
     private var durations: [String: Double] = [:]
+    private let durationStore = DurationStore()
+    private var durationSave: DispatchWorkItem?
     private var sorts: [BrowserLocation: BrowserSort] = [:]
     /// Each folder's last listing as read, for the way back and for re-listing with new lengths without a read.
     private var listings: [URL: [BrowserEntry]] = [:]
@@ -40,6 +42,16 @@ import HomeScreenModel
                                      limit: 2000, maxSide: 480)
         folderPictures = PictureQueue(store: posters, thumbnailer: RecentThumbnailer(store: posters), prefix: "",
                                       atPosition: false)
+        let store = durationStore
+        Task { @MainActor [weak self] in   // the file is read off the main thread, once
+            let kept = await Task.detached(priority: .utility) { store.all() }.value
+            guard let self, !kept.isEmpty else { return }
+            self.durations.merge(kept) { now, _ in now }
+            if case .folder? = self.view?.location {   // a folder shown before they came: its cards get them
+                self.relistOnly = true
+                self.view?.reload()
+            }
+        }
         for queue in [recentPictures, folderPictures] {
             queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
             queue.onDuration = { [weak self] url, duration in self?.lengthFound(url, duration) }
@@ -156,6 +168,12 @@ import HomeScreenModel
     private func lengthFound(_ url: URL, _ duration: Double) {
         guard durations[url.path] == nil else { return }
         durations[url.path] = duration
+        durationStore.set(duration, for: url.path)
+        durationSave?.cancel()
+        let store = durationStore
+        let save = DispatchWorkItem { store.save() }
+        durationSave = save
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: save)   // once for a burst
         guard ResumeStore().entry(for: url)?.duration == nil else { return }
         relist?.cancel()
         let work = DispatchWorkItem { [weak self] in

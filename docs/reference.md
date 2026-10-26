@@ -345,7 +345,8 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
   its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
   the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
-  `~/Library/Application Support/FrameScrub/thumbnails/posters` (480 pixels, the newest 2000). F2 renames,
+  `~/Library/Application Support/FrameScrub/thumbnails/posters` (480 pixels, the newest 2000), with the lengths found
+  while making them (`durations.json`). F2 renames,
   ⌘⌫ moves to the Trash, ⌘↑ goes up, ⌘[ / ⌘] go back and forward, typing a name selects it. A video opened from a
   folder goes back to that folder with it selected (⌘W, the ‹ button with the folder's name, ⇧⌘H); the folder's
   videos are the playlist, in `playlist-sort`'s order.
