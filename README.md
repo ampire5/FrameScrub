@@ -240,6 +240,10 @@ Requests that answer (they need a file open, else they reject):
 
 `playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?} | {path, title?} | {url, title?}, …]`, 1…2000 of them, and one bad item refuses the whole call. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
 
+An `open({path | url, …})` and each `{path | url}` item may also carry `frames: "/absolute/folder"`: where frames saved from it (S, the range export) and its clips go, instead of `frame-dir`, created when needed (the fallback folder when it cannot be written). Naming a folder writes on this Mac's disk, so it needs the same one-time consent as a page's local files (`plugin-open-allowed`). The "Saved to …" message then gives the whole path; a click on it shows the file in the Finder.
+
+In a slot, the mouse's back and forward buttons go through the page's history while the pointer is over it (elsewhere they keep their bindings), and **Reload Page** in the slot's ▾ menu, or ⌘R while the page has the keyboard, loads it again.
+
 An `open({path | url, …})` and each `{path | url}` item of `playlist` / `enqueue` may carry `info: {title?, studio?, performers?, date?, code?, url?}`: what the page knows about it (strings up to 500 characters, at most 50 performers, `date` as `YYYY-MM-DD`, an `http(s)` `url`; anything else refuses the call). The window title and the OSD then read `Title — Studio · date`, as for a Stash scene; a stream, which has no file name of its own, is also exported under it: `%{video-name}` of its frames and clips (and its fallback folder) becomes `<date> [<code>] <title> (<performers>)`, the parts given. A local file keeps its own name.
 
 `framescrub.stash` is `{url, apiKey}` for the Stash server in Settings, or `null` without one, so a page can ask Stash itself. Only the plugins in your list get it; a page a link brought gets `null`.
@@ -257,7 +261,7 @@ fs.hide();
 - A key already bound to anything in `input.conf` (even `ignore`) is `key taken`; ⌘ chords of the menu items (⌘O, ⌘W, ⌘G, ⌥⌘P…) are refused the same way.
 - Mouse buttons, the wheel, swipes and pinches are refused with `not a key`.
 - To choose the key yourself, bind the action's name in `input.conf`: `Alt+9 plugin-action mark`. That key wins over the page's own (`user binding`), and an action without a key is reachable this way only.
-- Keys are bound only while the panel is shown; the actions are dropped when a new page loads or the page's process dies.
+- Keys are bound while the page is in a slot, shown or hidden (an overlay slot hides while the video plays, and that is when such a key is wanted: the video has the keyboard), and work from the player's keyboard as its own keys do; taking the page out of its slot withdraws them, and the actions are dropped when a new page loads or the page's process dies.
 
 ## Under the hood
 

@@ -1173,8 +1173,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         rebuildInputMap()
     }
 
-    /// Sets the effective map from the base map and the declared actions (their keys count while the panel is shown),
-    /// and brings an open key help up to date.
+    /// Sets the effective map from the base map and the declared actions (their keys count while the page is in a slot,
+    /// shown or hidden), and brings an open key help up to date.
     private func rebuildInputMap() {
         inputMap = baseInputMap.merging(shownPluginActions).map
         gestures.inputMap = inputMap
@@ -1183,10 +1183,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         keyHelp.refresh(inputMap, pluginActions: shownPluginActions)
     }
 
-    /// The declared actions as the key help lists them: those of the pages whose slot is shown.
+    /// The declared actions as the key help lists them: those of the pages in a slot (`PluginActionPolicy`).
     private var shownPluginActions: [PluginAction] {
-        let shown = Set(slots?.shownPages.map(\.token) ?? [])
-        return pluginActions.filter { shown.contains($0.page) }.flatMap(\.actions)
+        let inSlot = Set(slots?.pages.map(\.token) ?? [])
+        return pluginActions.flatMap { PluginActionPolicy.bindable($0.actions, inSlot: inSlot.contains($0.page)) }
     }
 
     /// A page declared its actions (an empty list withdraws them). The reply says what the keys become; with the
@@ -1211,11 +1211,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         rebuildInputMap()
     }
 
-    /// A key bound to a page action: the first shown page that declared the name hears it.
+    /// A key bound to a page action: the first page in a slot that declared the name hears it, shown or hidden.
     private func runPluginAction(_ name: String) {
-        let shown = slots.shownPages
+        let inSlot = Set(slots.pages.map(\.token))
         guard let entry = pluginActions.first(where: { entry in
-                  entry.actions.contains { $0.name == name } && shown.contains { $0.token == entry.page }
+                  PluginActionPolicy.shouldDispatch(name, declared: entry.actions, inSlot: inSlot.contains(entry.page))
               }), let page = slots.page(withToken: entry.page) else {
             showMessage("No plugin action: \(name)")
             return
@@ -2695,7 +2695,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         slots.onMessage = { [weak self] in self?.showMessage($0) }
         slots.onPagesChanged = { [weak self] in
             guard let self else { return }
-            rebuildInputMap()   // a page's keys count only while its slot is shown
+            rebuildInputMap()   // a page's keys count while it is in a slot
             dispatchPanelInfo()
             pushPluginState(force: true)
             updatePrecisionWheel()

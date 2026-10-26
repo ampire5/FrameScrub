@@ -29,8 +29,8 @@ import WebKit
 ///                                     earlier list, [] withdraws them. A key is bound only where the user's keys leave it
 ///                                     free; a name the user bound to `plugin-action <name>` in input.conf keeps their key.
 ///                                     An unknown key name is accepted but may never be pressable. The actions are listed
-///                                     in the key help. They belong to the loaded page: they stay while the panel is hidden
-///                                     (keys are bound only while it is shown) and are dropped when a new page commits
+///                                     in the key help. They belong to the loaded page: keys are bound while it is in a slot,
+///                                     shown or hidden (the video has the keyboard then), and are dropped when a new page commits
 ///                                     (a link, a reload) or the page's process dies; a navigation that fails or is cancelled
 ///                                     leaves them. A reply sent while the panel is hidden says what the keys will become
 ///                                     once it is shown. Only keyboard chords bind: a mouse button, wheel, swipe or pinch
@@ -55,7 +55,10 @@ import WebKit
 ///                                     file on screen and the items begins. Past 2000 in all it is refused whole
 ///                                     An open({path|url}) and {path|url} items may carry info: {title?, studio?,
 ///                                     performers?, date?, code?, url?} (SceneInfo): the window and OSD read it as a
-///                                     Stash scene's details; a stream's frames and clips are named after it
+///                                     Stash scene's details; a stream's frames and clips are named after it.
+///                                     They may carry frames: "/absolute/folder" too: where the item's saved frames and
+///                                     clips go (the same consent as a local path). Back / forward mouse buttons over the
+///                                     page go through its history; Reload Page (slot menu) or ⌘R in the page reloads it
 ///     framescrub.request(cmd, args)   any of the above by name, with a reply: request("seek", {t: 12})
 ///
 /// Requests with an answer (they need a file open, else they reject):
