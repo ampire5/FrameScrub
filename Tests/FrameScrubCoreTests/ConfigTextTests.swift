@@ -39,4 +39,11 @@ import Testing
         #expect(stripComment("volume=5\t# loud") == "volume=5")
         #expect(stripComment("# all comment") == "")
     }
+
+    @Test func commentingOutKeepsTheLineForLater() {
+        let text = "SPACE frame-step  # mine\nF13 cycle pause\n# SPACE ignore\n"
+        let out = ConfigText.commentingOutBindings(for: [KeyChord(key: "SPACE")], in: text)
+        #expect(out == "# SPACE frame-step  # mine\nF13 cycle pause\n# SPACE ignore\n")
+        #expect(ConfigText.commentingOutBindings(for: [KeyChord(key: "F14")], in: text) == text)
+    }
 }

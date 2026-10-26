@@ -67,7 +67,7 @@ public enum KeyHelp {
     }
 
     /// Where a command goes in the cheat sheet and what it is called there; nil leaves it out.
-    static func describe(_ command: Command) -> (section: Section, rank: Int, action: String)? {
+    public static func describe(_ command: Command) -> (section: Section, rank: Int, action: String)? {
         func seconds(_ amount: Double) -> String { "\(amount < 0 ? "−" : "+")\(formatNumber(abs(amount))) s" }
         switch command {
         case .cyclePause: return (.playback, 0, "Play / pause")
