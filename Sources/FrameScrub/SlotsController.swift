@@ -66,10 +66,8 @@ import FrameScrubCore
     private var menuOpen = false
     /// The OSD said the window is too small for these pinned slots; said again only when the set changes.
     private var reportedDemotions: Set<SlotEdge> = []
-
-    private static let edgeMargin: CGFloat = 2
-    /// Corners belong to no edge: a pointer in the corner is not resting at either side.
-    private static let cornerZone: CGFloat = 24
+    /// `slot-reveal-distance`: how near a side edge the pointer brings a hidden slot.
+    private var revealBand = CGFloat(EdgeReveal.sideBand)
 
     /// Makes the slots; `start` fills them once the callbacks are set.
     init(container: NSView, above: NSView, config: Config, playlistView: PlaylistPanelView) {
@@ -77,6 +75,7 @@ import FrameScrubCore
         self.above = above
         self.playlistView = playlistView
         plugins = config.plugins
+        revealBand = CGFloat(config.slotRevealDistance)
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
@@ -380,9 +379,10 @@ import FrameScrubCore
         return plugins + [linkPlugin]
     }
 
-    /// Settings changed: the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
+    /// Settings changed: the reveal distance, the plugin list (a slot whose plugin moved to another URL loads it; one that vanished says so).
     func configChanged(_ config: Config) {
         plugins = config.plugins
+        revealBand = CGFloat(config.slotRevealDistance)
         for slot in orderedSlots { install(slot.setting.content, in: slot) }
     }
 
@@ -711,7 +711,7 @@ import FrameScrubCore
             switch slot.setting.reveal {
             case .atOnce:
                 hideTongue(slot)
-                if slot.reveal.pointer(atEdge: Self.isAt(slot.edge, point, in: bounds), buttonHeld: buttonHeld) == .revealSlot {
+                if slot.reveal.pointer(atEdge: EdgeReveal.isAt(slot.edge, point, in: bounds, band: revealBand), buttonHeld: buttonHeld) == .revealSlot {
                     show(slot, focus: false)
                 }
             case .tongue:
@@ -722,19 +722,6 @@ import FrameScrubCore
                 case .keep: break   // the press is on its way to the tongue's own mouseDown
                 }
             }
-        }
-    }
-
-    private static func isAt(_ edge: SlotEdge, _ p: CGPoint, in bounds: CGRect) -> Bool {
-        guard bounds.contains(p) || bounds.insetBy(dx: -1, dy: -1).contains(p) else { return false }
-        switch edge {
-        case .left:
-            return p.x <= bounds.minX + edgeMargin && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
-        case .right:
-            return p.x >= bounds.maxX - edgeMargin && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
-        case .bottom:
-            // The middle third only: the rest of the bottom edge is the seek bar's.
-            return p.y <= bounds.minY + edgeMargin && abs(p.x - bounds.midX) < bounds.width / 6
         }
     }
 

@@ -209,6 +209,9 @@ struct PreferencesView: View {
                 }
                 StepperRow(title: "Playlist text size (F8)", value: "\(model.config.playlistFontSize) pt",
                            number: model.binding(\.playlistFontSize, ["playlist-font-size"]), range: 9...32)
+                StepperRow(title: "Side slots come within", note: "How near the window's left or right edge the pointer brings a hidden slot",
+                           value: "\(model.config.slotRevealDistance) pt",
+                           number: model.binding(\.slotRevealDistance, ["slot-reveal-distance"]), range: 2...60, step: 2)
                 StepperRow(title: "Stats text size (i)", value: "\(model.config.statsFontSize) pt",
                            number: model.binding(\.statsFontSize, ["stats-font-size"]), range: 8...40)
                 SliderRow(title: "Start screen card size (largest)", value: "\(Int(model.config.startCardSize)) pt",

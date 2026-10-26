@@ -27,6 +27,28 @@ public struct EdgeReveal: Sendable {
 
     /// The edge forgets the pointer (the slot was shown or hidden some other way).
     public mutating func reset() { armed = true }
+
+    /// How near a side edge the pointer brings its slot, by default: a band, so the pointer need not hit the window's
+    /// last pixel (asked for 2026-10-26; it was 2 pt). `slot-reveal-distance` sets it.
+    public static let sideBand: CGFloat = 12
+    /// The bottom stays a thin line: right above it is the seek bar.
+    public static let bottomBand: CGFloat = 2
+    /// Corners belong to no edge: a pointer in the corner is not resting at either side.
+    public static let cornerZone: CGFloat = 24
+
+    /// Whether `p` (in the container, `bounds`) is at `edge` for its reveal; `band` is a side edge's.
+    public static func isAt(_ edge: SlotEdge, _ p: CGPoint, in bounds: CGRect, band: CGFloat = sideBand) -> Bool {
+        guard bounds.insetBy(dx: -1, dy: -1).contains(p) else { return false }
+        switch edge {
+        case .left:
+            return p.x <= bounds.minX + band && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
+        case .right:
+            return p.x >= bounds.maxX - band && p.y > bounds.minY + cornerZone && p.y < bounds.maxY - cornerZone
+        case .bottom:
+            // The middle third only: the rest of the bottom edge is the seek bar's.
+            return p.y <= bounds.minY + bottomBand && abs(p.x - bounds.midX) < bounds.width / 6
+        }
+    }
 }
 
 /// The tongue of a slot that is revealed by a click (`SlotReveal.tongue`): a short pill at the edge that fades in as

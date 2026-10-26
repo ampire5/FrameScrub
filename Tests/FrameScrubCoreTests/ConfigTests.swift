@@ -86,6 +86,17 @@ import Testing
         #expect(Config.parse("stash-url=not a url").0.stashEnabled == false)
     }
 
+    @Test func parsesSlotRevealDistance() {
+        #expect(Config().slotRevealDistance == 12)
+        let (c, warnings) = Config.parse("slot-reveal-distance=30")
+        #expect(warnings.isEmpty)
+        #expect(c.slotRevealDistance == 30)
+        #expect(c.text(forKey: "slot-reveal-distance") == "30")
+        #expect(Config.parse("slot-reveal-distance=1").0.slotRevealDistance == 12)
+        #expect(Config.parse("slot-reveal-distance=61").0.slotRevealDistance == 12)
+        #expect(Config.keys.contains("slot-reveal-distance"))
+    }
+
     @Test func parsesPlaylistFontSize() {
         #expect(Config().playlistFontSize == 14)
         let (c, warnings) = Config.parse("playlist-font-size=18")
