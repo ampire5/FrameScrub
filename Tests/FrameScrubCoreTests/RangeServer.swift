@@ -24,6 +24,8 @@ final class RangeServer: @unchecked Sendable {
     var requiredHeader: (field: String, value: String)?
     /// Sends each answer in pieces of `bytes`, `delay` seconds apart, like a slow link.
     var trickle: (bytes: Int, delay: Double)?
+    /// False: a 206 without `Content-Range` (some servers leave it out; the body's length is all there is).
+    var sendsContentRange = true
 
     init(file: URL) throws {
         data = try Data(contentsOf: file)
@@ -110,7 +112,8 @@ final class RangeServer: @unchecked Sendable {
         }
         let last = min(range.upperBound, Int64(data.count) - 1)
         let slice = data[Int(range.lowerBound)...Int(last)]
-        return response(206, body: Data(slice), headers: ["Accept-Ranges: bytes", "Content-Range: bytes \(range.lowerBound)-\(last)/\(data.count)"], head: isHead)
+        let contentRange = sendsContentRange ? ["Content-Range: bytes \(range.lowerBound)-\(last)/\(data.count)"] : []
+        return response(206, body: Data(slice), headers: ["Accept-Ranges: bytes"] + contentRange, head: isHead)
     }
 
     /// `bytes=a-b` or `bytes=a-`; nil for anything else (suffix ranges are not needed here).
