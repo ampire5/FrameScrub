@@ -580,4 +580,31 @@ import Testing
                                  .addAutoColorStrength(0.05), .scrubEdge(.start), .playMarks, .playlistNext]
         for command in others { #expect(!command.isToggle, "\(command.configText)") }
     }
+
+    // MARK: Layers
+
+    @Test func layersFollowTheirSource() {
+        let space = KeyChord(key: "SPACE"), back = KeyChord(key: "MBTN_BACK"), mid = KeyChord(key: "MBTN_MID")
+        #expect(InputMap(layout: .classic).layer(of: space) == .builtIn)
+        #expect(InputMap(layout: .classic).layer(of: KeyChord(key: "F13")) == nil)
+        #expect(InputMap.build(layout: .classic, userText: "SPACE ignore", profile: .editing).layer(of: space) == .file)
+        let viewing = InputMap.build(layout: .classic, profile: .viewing)
+        #expect(viewing.layer(of: back) == .profile(.viewing))
+        #expect(viewing.layer(of: mid) == .builtIn)
+        let own = InputMap.build(layout: .classic, userText: "MBTN_BACK seek 5", profile: .viewing,
+                                 profileText: "MBTN_BACK cycle pause")
+        #expect(own.layer(of: back) == .profileFile(.viewing))
+        let leftHand = InputMap(layout: .leftHand)
+        #expect(leftHand.layer(of: space) == .leftHand)
+        #expect(leftHand.layer(of: KeyChord(key: "LEFT")) == .leftHand)    // the secondary keys too
+        #expect(leftHand.layer(of: mid) == .builtIn)                        // the pointer lines are the default's
+    }
+
+    @Test func allBindingsKeepIgnore() {
+        let map = InputMap.build(layout: .classic, userText: "SPACE ignore", profile: .editing)
+        let all = map.allBindings
+        #expect(all.contains { $0.chord == KeyChord(key: "SPACE") && $0.command == .ignore })
+        #expect(all.count == map.bindings.count)
+        #expect(all.map(\.chord.description) == all.map(\.chord.description).sorted())
+    }
 }

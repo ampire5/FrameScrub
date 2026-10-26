@@ -6,11 +6,11 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 
 - **Light, dark or system theme everywhere.** The start screen, the playlist panel and the other dark-only windows follow the choice in Settings.
 - **Subtitles and audio tracks.** Embedded and external subtitles, switching between audio and subtitle tracks, remembered per file.
-- **The shared Settings window and Home** from [Loupe](https://github.com/ampire5/Loupe): the same Settings layout, and a Photos-style start screen with a sidebar, Recent and Stash.
 - **A filmstrip in the seek bar.** A continuous strip of keyframes along the timeline, as in QuickTime's trim view, alongside the existing hover preview.
 
 ## Recently shipped
 
+- The shared Settings window from [Loupe](https://github.com/ampire5/Loupe) (SettingsKit): search, every setting with its default, Key Bindings, the colour a video or folder sets; and Home, a Photos-style start screen with a sidebar, Recent, folders and Stash.
 - Go to a time or frame number (`⌘G`), and back to where you were before a seek (`Shift+Backspace`).
 - Previous / next keyframe, and the keyframe lens on the seek bar.
 - Hold a key for 2× speed; the frame type (`K`, `I`, `P`, `B`) on every frame step; float on top (`T`).

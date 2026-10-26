@@ -188,4 +188,34 @@ import Testing
         }
         #expect(checked > 500)
     }
+
+    // MARK: The nearest level (the settings window's note)
+
+    private let shoot = URL(fileURLWithPath: "/shoots/one", isDirectory: true)
+    private let shoots = URL(fileURLWithPath: "/shoots", isDirectory: true)
+
+    @Test func fileBeatsFolderBeatsAncestor() {
+        let chain = [ColorLayerSnapshot.Folder(url: shoot, values: ["vibrance": "0.3"]),
+                     ColorLayerSnapshot.Folder(url: shoots, values: ["vibrance": "0.2", "auto-color": "yes"])]
+        let snapshot = ColorLayerSnapshot(file: ["vibrance": "0.4"], chain: chain)
+        #expect(ColorLayers.nearest("vibrance", in: snapshot, global: Config())
+                == ColorLayerHit(level: .file, value: "0.4", isNearestFolder: false))
+        let noFile = ColorLayerSnapshot(file: nil, chain: chain)
+        #expect(ColorLayers.nearest("vibrance", in: noFile, global: Config())
+                == ColorLayerHit(level: .folder(shoot), value: "0.3", isNearestFolder: true))
+        #expect(ColorLayers.nearest("auto-color", in: noFile, global: Config())
+                == ColorLayerHit(level: .folder(shoots), value: "yes", isNearestFolder: false))
+        #expect(ColorLayers.nearest("vibrance-on", in: snapshot, global: Config()) == nil)
+    }
+
+    @Test func aRefusedValueShowsTheNextLevel() {
+        let snapshot = ColorLayerSnapshot(file: ["vibrance": "7"],
+                                          chain: [ColorLayerSnapshot.Folder(url: shoot, values: ["vibrance": "0.3"])])
+        #expect(ColorLayers.nearest("vibrance", in: snapshot, global: Config())?.level == .folder(shoot))
+    }
+
+    @Test func onlyColourKeysHaveLevels() {
+        let snapshot = ColorLayerSnapshot(file: ["volume": "30"], chain: [])
+        #expect(ColorLayers.nearest("volume", in: snapshot, global: Config()) == nil)
+    }
 }

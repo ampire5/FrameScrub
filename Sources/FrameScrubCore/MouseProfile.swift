@@ -87,8 +87,8 @@ extension InputMap {
                              profileText: String = "") -> InputMap {
         var map = InputMap(layout: layout)
         map.apply(userText)
-        map.apply(profile.defaultConfig, source: profile.rawValue)
-        map.apply(profileText, source: profile.fileName)
+        map.apply(profile.defaultConfig, source: profile.rawValue, layer: .profile(profile))
+        map.apply(profileText, source: profile.fileName, layer: .profileFile(profile))
         return map
     }
 
@@ -99,8 +99,8 @@ extension InputMap {
         }
         var map = InputMap(layout: layout)
         var warnings = map.apply(read("input.conf"))
-        map.apply(profile.defaultConfig, source: profile.rawValue)
-        warnings += map.apply(read(profile.fileName), source: profile.fileName)
+        map.apply(profile.defaultConfig, source: profile.rawValue, layer: .profile(profile))
+        warnings += map.apply(read(profile.fileName), source: profile.fileName, layer: .profileFile(profile))
         return (map, warnings)
     }
 }

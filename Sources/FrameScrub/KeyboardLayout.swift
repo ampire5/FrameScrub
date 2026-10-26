@@ -18,6 +18,12 @@ enum KeyboardLayout {
         return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(value).takeUnretainedValue())
     }
 
+    /// The character `keyCode` types on the ASCII-capable layout (with or without Shift), whatever the current input
+    /// language: the settings window's key recorder binds a letter by it, as the player reads it.
+    static func latin(keyCode: UInt16, shift: Bool) -> String? {
+        currentIsASCIICapable ? nil : translate(keyCode: keyCode, shift: shift)
+    }
+
     private static func translate(keyCode: UInt16, shift: Bool) -> String? {
         guard let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),
               let data = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }

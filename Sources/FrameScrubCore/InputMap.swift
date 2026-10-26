@@ -374,10 +374,26 @@ public enum Command: Equatable, Sendable {
     }
 }
 
+/// Where a binding of the map comes from: the layout, the mouse profile's own lines, or one of the user's files.
+public enum InputLayer: Equatable, Sendable {
+    /// The classic layout, and the pointer lines every layout shares.
+    case builtIn
+    /// The left-hand layout's keys (its second keys included).
+    case leftHand
+    /// `MouseProfile.defaultConfig`.
+    case profile(MouseProfile)
+    /// input.conf.
+    case file
+    /// The user's `input-<profile>.conf`.
+    case profileFile(MouseProfile)
+}
+
 /// Key bindings: a default layout (`key-layout`: left-hand, or the mpv-compatible classic one) plus
 /// ~/.config/framescrub/input.conf overrides.
-public struct InputMap {
+public struct InputMap: Equatable {
     public private(set) var bindings: [KeyChord: Command] = [:]
+    /// The layer that bound each chord last.
+    private var layers: [KeyChord: InputLayer] = [:]
 
     /// `key-layout=classic`: the mpv-style keys FrameScrub started with.
     public static let defaultConfig = """
@@ -633,11 +649,11 @@ public struct InputMap {
     public init(layout: KeyLayout = .classic) {
         switch layout {
         case .classic:
-            apply(Self.defaultConfig, source: "default")
+            apply(Self.defaultConfig, source: "default", layer: .builtIn)
         case .leftHand:
-            apply(Self.leftHandConfig, source: "left-hand")
-            apply(Self.leftHandSecondaryConfig, source: "left-hand", secondary: true)
-            apply(Self.pointerConfig, source: "default")
+            apply(Self.leftHandConfig, source: "left-hand", layer: .leftHand)
+            apply(Self.leftHandSecondaryConfig, source: "left-hand", secondary: true, layer: .leftHand)
+            apply(Self.pointerConfig, source: "default", layer: .builtIn)
         }
     }
 
@@ -645,9 +661,10 @@ public struct InputMap {
     public func isSecondary(_ chord: KeyChord) -> Bool { secondary.contains(chord) }
 
     /// Applies `KEY command` lines on top of the current bindings; returns warnings. `secondary` marks the chords as
-    /// second keys; any other apply that binds a chord unmarks it.
+    /// second keys; any other apply that binds a chord unmarks it. `layer` is recorded for each chord bound.
     @discardableResult
-    public mutating func apply(_ text: String, source: String = "input.conf", secondary: Bool = false) -> [String] {
+    public mutating func apply(_ text: String, source: String = "input.conf", secondary: Bool = false,
+                               layer: InputLayer = .file) -> [String] {
         var warnings: [String] = []
         for (number, raw) in text.components(separatedBy: .newlines).enumerated() {
             let line = stripComment(raw)
@@ -663,9 +680,18 @@ public struct InputMap {
                 continue
             }
             bindings[chord] = command
+            layers[chord] = layer
             if secondary { self.secondary.insert(chord) } else { self.secondary.remove(chord) }
         }
         return warnings
+    }
+
+    /// The layer that bound `chord` (an `ignore` included); nil for a chord nothing binds.
+    public func layer(of chord: KeyChord) -> InputLayer? { layers[chord] }
+
+    /// Every binding, `ignore` included, in the order of the chords' names.
+    public var allBindings: [(chord: KeyChord, command: Command)] {
+        bindings.map { (chord: $0.key, command: $0.value) }.sorted { $0.chord.description < $1.chord.description }
     }
 
     public func command(for chord: KeyChord) -> Command? {

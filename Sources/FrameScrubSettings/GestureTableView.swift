@@ -1,9 +1,9 @@
 import FrameScrubCore
 import SwiftUI
 
-/// Gesture bindings: one row per device, axis and modifier set.
+/// Gesture bindings: one row per device, axis and modifier set, in a card of the settings window.
 struct GestureTableView: View {
-    @ObservedObject var model: GestureModel
+    @ObservedObject var model: GestureTableModel
 
     private enum Kind: String, CaseIterable, Identifiable {
         case scrub = "Scrub frames", scrubFast = "Scrub frames fast", seek = "Seek (seconds)", volume = "Volume",
@@ -55,7 +55,11 @@ struct GestureTableView: View {
         }
     }
 
-    private func title(_ row: GestureBinding) -> String {
+    /// The action's name in the pop-up.
+    static func actionTitle(of action: GestureActionKind) -> String { kind(of: action).rawValue }
+
+    /// "⇧ Trackpad ↑↓", "RMB + Mouse wheel ←→".
+    static func title(of row: GestureBinding) -> String {
         var parts: [String] = []
         if row.modifiers.contains(.ctrl) { parts.append("⌃") }
         if row.modifiers.contains(.alt) { parts.append("⌥") }
@@ -69,11 +73,11 @@ struct GestureTableView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // A Form, not a List: a List fills its rows only once it is on screen, so the first show of the tab stalled.
-            Form {
-                Section { ForEach(model.rows, id: \.idString) { row in rowView(row) } }
+            // Plain rows, not a Form or a List: the card is the background, and a List fills its rows only once it is
+            // on screen.
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(model.rows, id: \.idString) { row in rowView(row) }
             }
-            .formStyle(.grouped)
             HStack {
                 Menu("Add binding") {
                     ForEach([GestureDevice.trackpad, .wheel], id: \.rawValue) { device in
@@ -92,7 +96,7 @@ struct GestureTableView: View {
                 Button("Reset to defaults") { model.reset() }
             }
             if let message = model.errorMessage { Text(message).foregroundColor(.red).font(.callout) }
-        }.padding(.horizontal, 8).padding(.vertical, 12)
+        }.padding(12)
     }
 
     /// The row as the model holds it now (same gesture), so an edit never builds on a stale captured copy.
@@ -102,10 +106,10 @@ struct GestureTableView: View {
 
     private func rowView(_ row: GestureBinding) -> some View {
         let isZoom = Self.kind(of: row.action) == .zoom
-        // Width budget (window 560): tab padding 2x8 + list insets ~2x10 = ~524 usable;
-        // 150 + 180 + 56 + Invert ~65 + 3 gaps x 6 = ~469, leaving ~55 spare.
+        // Width: 150 + 180 + 56 + Invert ~65 + 3 gaps x 6 = ~469, inside the card's content width.
         return HStack(spacing: 6) {
-            Text(title(row)).lineLimit(1).truncationMode(.tail).help(title(row)).frame(width: 150, alignment: .leading)
+            Text(Self.title(of: row)).lineLimit(1).truncationMode(.tail).help(Self.title(of: row))
+                .frame(width: 150, alignment: .leading)
             Picker("", selection: Binding(get: { Self.kind(of: row.action) }, set: { kind in
                 var new = current(of: row)
                 new.action = Self.action(for: kind, keeping: new.action)

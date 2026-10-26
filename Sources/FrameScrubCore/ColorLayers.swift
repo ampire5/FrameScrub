@@ -80,3 +80,61 @@ public enum ColorLayers {
         return (clearedFile, clearedFolder)
     }
 }
+
+/// The colour values below `framescrub.conf` for the open video: its own, and its folder's and each ancestor's
+/// (nearest first), as the settings window asks for them.
+public struct ColorLayerSnapshot: Equatable, Sendable {
+    /// One folder of the chain and the values it records itself.
+    public struct Folder: Equatable, Sendable {
+        public var url: URL
+        public var values: [String: String]
+        public init(url: URL, values: [String: String]) {
+            self.url = url
+            self.values = values
+        }
+    }
+
+    public var file: [String: String]?
+    public var chain: [Folder]
+
+    public init(file: [String: String]?, chain: [Folder]) {
+        self.file = file
+        self.chain = chain
+    }
+}
+
+/// The level whose value of a key draws for the open video.
+public struct ColorLayerHit: Equatable, Sendable {
+    public enum Level: Equatable, Sendable { case file, folder(URL) }
+    public let level: Level
+    /// As the file writes it.
+    public let value: String
+    /// The level is the video's own folder (not an ancestor).
+    public let isNearestFolder: Bool
+
+    public init(level: Level, value: String, isNearestFolder: Bool) {
+        self.level = level
+        self.value = value
+        self.isNearestFolder = isNearestFolder
+    }
+}
+
+extension ColorLayers {
+    /// The most specific level that sets `key` and draws, as `effective` lays them: the file, then the folder, then
+    /// the nearest ancestor with the key. A value `Config` refuses does not draw, so the next level shows. nil for a key
+    /// no file or folder overrides (`keys`) and when no level sets it.
+    public static func nearest(_ key: String, in snapshot: ColorLayerSnapshot, global: Config) -> ColorLayerHit? {
+        guard keys.contains(key) else { return nil }
+        func draws(_ values: [String: String]?) -> String? {
+            guard let value = values?[key], global.applyingColors([key: value]).accepted else { return nil }
+            return value
+        }
+        if let value = draws(snapshot.file) { return ColorLayerHit(level: .file, value: value, isNearestFolder: false) }
+        for (index, folder) in snapshot.chain.enumerated() {
+            if let value = draws(folder.values) {
+                return ColorLayerHit(level: .folder(folder.url), value: value, isNearestFolder: index == 0)
+            }
+        }
+        return nil
+    }
+}

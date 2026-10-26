@@ -54,6 +54,14 @@ public enum ConfigText {
         removingBindings(where: { chords.contains($0) }, in: text)
     }
 
+    /// Comments out every active line bound to one of `chords` (`# ` in front), so the line is still there to bring
+    /// back by hand; the binding below it (the layout's, the profile's) applies again.
+    public static func commentingOutBindings(for chords: Set<KeyChord>, in text: String) -> String {
+        text.components(separatedBy: "\n")
+            .map { line in boundChord(of: line).map(chords.contains) == true ? "# " + line : line }
+            .joined(separator: "\n")
+    }
+
     /// Removes every active line whose chord satisfies `matches` (Preferences → Reset to defaults).
     public static func removingBindings(where matches: (KeyChord) -> Bool, in text: String) -> String {
         text.components(separatedBy: "\n")

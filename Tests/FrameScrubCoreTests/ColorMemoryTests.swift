@@ -206,4 +206,31 @@ import Testing
         #expect(result.config.autoColorStrength == 0.6 && result.config.vibrance == 0.2)
         #expect(ColorMemory.loggedRejections.contains("auto-color-strength=lots"))
     }
+
+    // MARK: The settings window's levels
+
+    @Test func snapshotHasTheFileAndTheFolderChain() {
+        let r = rig()
+        #expect(r.memory.snapshot() == nil)
+        r.folders.set(["vibrance": "0.3"], for: folder)
+        r.memory.open(a, size: 10)
+        _ = r.memory.toggle(.vibrance, global: Config())
+        let snapshot = r.memory.snapshot()
+        #expect(snapshot?.file?["vibrance-on"] != nil)
+        #expect(snapshot?.chain.first?.url.path == folder.path)
+        #expect(snapshot?.chain.first?.values == ["vibrance": "0.3"])
+        #expect(snapshot?.chain.last?.url.path == "/")
+    }
+
+    @Test func clearDropsOneLevel() {
+        let r = rig()
+        r.folders.set(["vibrance": "0.3", "vibrance-on": "yes"], for: folder)
+        r.memory.open(a, size: 10)
+        _ = r.memory.toggle(.vibrance, global: Config())                 // the file pins vibrance-on
+        r.memory.clear("vibrance-on", on: .file)
+        #expect(r.memory.snapshot()?.file?["vibrance-on"] == nil)
+        #expect(r.folders.own(for: folder)["vibrance-on"] == "yes")
+        r.memory.clear("vibrance", on: .folder(folder))
+        #expect(r.folders.own(for: folder) == ["vibrance-on": "yes"])
+    }
 }
