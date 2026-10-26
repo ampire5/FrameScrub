@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// A JPEG of the last picture seen in each file (longest side at most `maxSide` pixels), for the start screen. Keyed
 /// like `ResumeStore` (path and size), so a different file saved under the same name has none; only the `limit`
 /// newest are kept. Pictures saved smaller by an older version stay as they are until the file is left again.
-public final class ThumbnailStore {
+public final class ThumbnailStore: @unchecked Sendable {   // only constants: each call reads or writes its own file
     public static let defaultDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/FrameScrub/thumbnails")
 

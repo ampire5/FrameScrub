@@ -40,18 +40,18 @@ import Testing
         stash-url=http://192.0.2.10:9999
         stash-api-key=abc
         stash-path-map=S:\Media=/Volumes/S$/Media;\\server.local\x=/Volumes/x
-        start-tab=stash
+        home-tab=stash
         """#)
         #expect(warnings.isEmpty)
         #expect(c.stashURL == "http://192.0.2.10:9999")
         #expect(c.stashAPIKey == "abc")
         #expect(c.stashPathMap == #"S:\Media=/Volumes/S$/Media;\\server.local\x=/Volumes/x"#)
-        #expect(c.startTab == .stash)
+        #expect(c.homeTab == .stash)
         #expect(c.stashEnabled)
         #expect(c.stashStream == .auto)
-        let (bad, badWarnings) = Config.parse("start-tab=other")
+        let (bad, badWarnings) = Config.parse("home-tab=other")
         #expect(badWarnings.count == 1)
-        #expect(bad.startTab == .recent)
+        #expect(bad.homeTab == .recent)
     }
 
     @Test func parsesStashStream() {
@@ -82,7 +82,7 @@ import Testing
 
     @Test func stashOffByDefault() {
         #expect(Config().stashEnabled == false)
-        #expect(Config().startTab == .recent)
+        #expect(Config().homeTab == .recent)
         #expect(Config.parse("stash-url=not a url").0.stashEnabled == false)
     }
 
@@ -106,26 +106,24 @@ import Testing
         #expect(Config.parse("playlist-font-size=60").0.playlistFontSize == 14)
     }
 
-    @Test func parsesStartCardSize() {
-        #expect(Config().startCardSize == 480)
-        let (c, warnings) = Config.parse("start-card-size=640")
+    @Test func parsesHomeKeys() {
+        let d = Config()
+        #expect(d.homeCardSize == 220 && d.recentCount == 50 && d.homeSidebar)
+        let (c, warnings) = Config.parse("home-card-size=300\nrecent-count=12\nhome-sidebar=no")
         #expect(warnings.isEmpty)
-        #expect(c.startCardSize == 640)
-        #expect(c.text(forKey: "start-card-size") == "640")
-        #expect(Config.parse("start-card-size=140").0.startCardSize == 140)
-        #expect(Config.parse("start-card-size=800").0.startCardSize == 800)
-        let (low, lowWarnings) = Config.parse("start-card-size=100")
-        #expect(low.startCardSize == 480 && !lowWarnings.isEmpty)
-        #expect(Config.parse("start-card-size=900").0.startCardSize == 480)
+        #expect(c.homeCardSize == 300 && c.recentCount == 12 && !c.homeSidebar)
+        #expect(c.text(forKey: "home-card-size") == "300" && c.text(forKey: "recent-count") == "12")
+        #expect(Config.parse("home-card-size=1000").0.homeCardSize == 220)
+        #expect(Config.parse("recent-count=0").0.recentCount == 50)
+        for key in ["home-tab", "home-card-size", "recent-count", "home-sidebar"] { #expect(Config.keys.contains(key)) }
     }
 
-    @Test func parsesHomeLayout() {
-        #expect(Config().homeLayout == .fit)
-        #expect(Config().text(forKey: "home-layout") == "fit")
-        let (c, warnings) = Config.parse("home-layout=scroll")
-        #expect(warnings.isEmpty && c.homeLayout == .scroll)
-        let (bad, badWarnings) = Config.parse("home-layout=grid")
-        #expect(bad.homeLayout == .fit && !badWarnings.isEmpty)
+    /// The start screen's keys went with it (no migration): they are unknown now.
+    @Test func startScreenKeysAreGone() {
+        for key in ["start-tab", "start-card-size", "home-layout"] {
+            #expect(!Config.keys.contains(key))
+            #expect(!Config.parse("\(key)=1").1.isEmpty)
+        }
     }
 
     @Test func parsesStatsFontSize() {

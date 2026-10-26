@@ -130,27 +130,28 @@ import Testing
         #expect(f.mouseRelease(.back) == true)
     }
 
-    // MARK: The start screen
+    // MARK: Home
 
-    @Test func backAndForwardRunNoBindingOnTheStartScreen() {
-        for mode in SideButtonsMode.allCases {
-            #expect(SideButtonFilter.startScreenPress(.back, mode: mode, stashPageShown: false) == .drop, "\(mode)")
-            #expect(SideButtonFilter.startScreenPress(.forward, mode: mode, stashPageShown: false) == .drop, "\(mode)")
+    /// Watched: AppKit's own event reaches Home (its browser's history or the Stash page), so the mouse's copy goes.
+    @Test func watchedBackAndForwardAreLeftToAppKitOnHome() {
+        for page in [false, true] {
+            #expect(SideButtonFilter.homePress(.back, mode: .watch, stashPageShown: page) == .drop)
+            #expect(SideButtonFilter.homePress(.forward, mode: .watch, stashPageShown: page) == .drop)
         }
-        // Watched: the Stash page gets AppKit's event itself.
-        #expect(SideButtonFilter.startScreenPress(.back, mode: .watch, stashPageShown: true) == .drop)
-        #expect(SideButtonFilter.startScreenPress(.forward, mode: .watch, stashPageShown: true) == .drop)
     }
 
-    @Test func takenBackAndForwardNavigateTheStashPage() {
-        #expect(SideButtonFilter.startScreenPress(.back, mode: .take, stashPageShown: true) == .pageBack)
-        #expect(SideButtonFilter.startScreenPress(.forward, mode: .take, stashPageShown: true) == .pageForward)
+    /// Taken: AppKit never sees them, so they go through the browser's history, or the Stash page's while it shows.
+    @Test func takenBackAndForwardNavigateHome() {
+        #expect(SideButtonFilter.homePress(.back, mode: .take, stashPageShown: false) == .browserBack)
+        #expect(SideButtonFilter.homePress(.forward, mode: .take, stashPageShown: false) == .browserForward)
+        #expect(SideButtonFilter.homePress(.back, mode: .take, stashPageShown: true) == .pageBack)
+        #expect(SideButtonFilter.homePress(.forward, mode: .take, stashPageShown: true) == .pageForward)
     }
 
-    @Test func otherButtonsPassOnTheStartScreen() {
+    @Test func otherButtonsPassOnHome() {
         for b in [MouseButton.mid, .panel, .gesture, .shift] {
-            #expect(SideButtonFilter.startScreenPress(b, mode: .take, stashPageShown: true) == .pass, "\(b)")
-            #expect(SideButtonFilter.startScreenPress(b, mode: .watch, stashPageShown: false) == .pass, "\(b)")
+            #expect(SideButtonFilter.homePress(b, mode: .take, stashPageShown: true) == .pass, "\(b)")
+            #expect(SideButtonFilter.homePress(b, mode: .watch, stashPageShown: false) == .pass, "\(b)")
         }
     }
 

@@ -93,7 +93,7 @@ modes and Play Marks Only work mirrored.
 | ⌘F | Filter the playlist by name (part of the name, any case); Return opens the first match, Esc clears it. While a filter is on, PgUp / PgDn move through the matches and the title shows `3 / 7 (48)` |
 | F9 | Folder order: name → newest first → largest first (also the menu at the top of the playlist; saved as `playlist-sort`) |
 | ⌘⌫ | Move the video to the Trash and open the next one. On a volume without a Trash (most SMB shares) it asks first, then deletes for good |
-| ⌘W | Close the video and go back to where it was opened from — the start screen's Recent or Stash (`close-file`; also the ‹ Recent / ‹ Stash button in the top left corner). With no video open it closes the window |
+| ⌘W | Close the video and go back to where it was opened from — Home's Recent or Stash (`close-file`; also the ‹ Recent / ‹ Stash button in the top left corner). With no video open it closes the window |
 | ⌘, | Settings |
 | `←` `→` / `↑` `↓` | Seek ∓5 s / ±60 s (keyframes when `seek-mode=keyframe`) |
 | `Shift+←` `Shift+→` | Exact seek ∓1 s |
@@ -247,8 +247,8 @@ them from the system, so Mac Mouse Fix keeps its own Back / Forward actions (a s
 still sees every tap; presses that the system reports as well (within 100 ms) are counted once, and a press while the
 pointer is not over a FrameScrub window is ignored. `take` diverts the buttons while FrameScrub is in front, so they are
 FrameScrub's alone. `system` reads AppKit's events only (no HID++ for those two buttons: with Mac Mouse Fix running,
-FrameScrub sees nothing). On the start screen back / forward run no binding: over the Stash page they go back and
-forward in its history (with `take` too).
+FrameScrub sees nothing). On Home back / forward run no binding: they go back and forward in Home's history, over the
+Stash page in its own (with `take` too).
 
 **Precision Scroll.** Logitech mice with a high-resolution wheel and SmartShift get free spin and Precision Scroll in
 FrameScrub only, as one choice: with `wheel-precision=yes` (Settings → Scrolling → Logitech mouse) FrameScrub follows
@@ -256,7 +256,7 @@ the wheel mode you pick while its window is in front. Free spin goes with Precis
 the SmartShift button switches between them (the OSD says `Free spin · Precision Scroll` or `Ratchet`). The choice is
 remembered between launches and starts as free spin; Settings has the same picker. The zones: the player window with a
 file open (no sheet) sets the mode, the video in it adds Precision Scroll on free spin; over the seek bar and playlist
-the wheel is free spin or ratchet without Precision Scroll. On the start screen, in other apps and after quit the mouse
+the wheel is free spin or ratchet without Precision Scroll. On Home, in other apps and after quit the mouse
 has its own mode back (a quit gives it back at once, so a mode you pick later in another app is kept at the next
 launch), and after a crash the next launch gives it back. Binding `MX_SHIFT` in `input.conf` diverts the
 SmartShift button, so the mouse no longer switches by itself: the button is yours then. `wheel-precision=no` turns both
@@ -328,22 +328,24 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   file are not added.
 - **View → Preview Size** (Off / Small 160 / Medium 240 / Large 360 / Extra Large 480 pt) sets `preview` /
   `preview-width`: a small picture above the seek bar while you point at it.
-- **File → Open Recent** and the start screen (shown when no video is open) list recently opened files. The start
-  screen shows each as a card with the last picture seen in it, a bar for how far it was watched and
-  "12:34 / 45:10"; with `home-layout=fit` (the default) the cards shrink with the window so that all of them stay
-  in view, down to 140 points, then the screen scrolls; `scroll` keeps them at `start-card-size` and scrolls,
-  `fixed` never scrolls (Settings → General). A file that cannot be reached now (a share not mounted) shows faint.
-  ← → ↑ ↓ move the selection (the newest file is selected) and Return opens it; a right click offers Show in Finder
-  and Remove from Recent (the file comes back when opened again; Open Recent → Clear Menu clears both). The start
-  screen is HomeScreenKit's view, shared with Loupe. The cards' size: ⌘= / ⌘− (also ⌘ + wheel, a pinch, or the MX
-  side wheel, right larger) step it by 20 points and save it as `start-card-size` with `home-layout=scroll`; ⌘0 goes
-  back to 480 and `fit` (File → Larger Cards / Smaller Cards / Default Card Size). File → Copy Path (⌥⌘C) copies the
-  open video's path; a card's right click has Copy Path too. The pictures are JPEGs of up to 1280 pixels in `~/Library/Application Support/FrameScrub/thumbnails` (the
+- **Home** (View → Home, ⇧⌘H) is HomeScreenKit's view, shared with Loupe: a sidebar (⌃⌘S hides it,
+  `home-sidebar`) with Recent and, with `stash-url` set, the Stash library. It is what the window shows when no
+  video is open; over an open video ⇧⌘H or ⌘[ shows it with the video paused, and Esc goes back to the video
+  where it was (⌘[ on Home is Home's own Back). **Recent** (also File → Open Recent) lists the last `recent-count` videos (50) by the day they were
+  last left (Today, Yesterday, This Week, Earlier; the toolbar sorts by name too), each with the last picture seen
+  in it, a bar for how far it was watched and "12:34 / 45:10". A file that cannot be reached now (a share not
+  mounted) shows faint. The arrows move the selection, typing a name selects it, Return opens it; a right click
+  offers Show in Finder, Copy Path and Remove from Recent (the file comes back when opened again; Open Recent →
+  Clear Menu clears both). The cards' size: ⌘= / ⌘− (also ⌘ + wheel, a pinch, or the MX side wheel) one column
+  more or fewer, ⌘0 the default, saved as `home-card-size` (File → Larger Cards / Smaller Cards / Default Card
+  Size). The mouse's back and forward go through Home's history. File → Copy Path (⌥⌘C) copies the open video's
+  path. The pictures are JPEGs of up to 1280 pixels in `~/Library/Application Support/FrameScrub/thumbnails` (the
   newest 200), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
-  the background while the start screen is up.
+  the background while Recent is up.
+- A file that does not open leaves its reason in the window (Return tries again, ⌘W goes to Home).
 - The window opens with the size and place it had when the app last ran; a file still sizes it on open. The start
   screen keeps a size of its own: closing a video (⌘W, File → Close Video, or the ‹ Recent / ‹ Stash button that
-  comes with the seek bar) gives the window back the start screen's size and place.
+  comes with the seek bar) gives the window back Home's size and place.
 - The window can be dragged by any point of the picture (not in full screen).
 - `i` also shows "Saved this session: N".
 
@@ -429,10 +431,11 @@ autoplay=no                     # yes: start playing every file as it opens
 activate-on-open=yes            # bring the window to the front when a file is opened from Finder or the Dock
 playlist-sort=name              # name | date | size — the folder's order (date: newest first, size: largest first)
 playlist-font-size=14           # 9…32 points, text size of the playlist panel (F8)
-start-card-size=480             # 140…800 points, largest width of a card on the start screen (smaller windows shrink them)
-home-layout=fit                 # start screen grid: fit (cards shrink so all show, then scroll) | scroll | fixed (never scrolls)
+home-card-size=220              # 60…480 points, width of Home's cards (⌘= / ⌘− / ⌘0 on Home)
+recent-count=50                 # 1…200, recent videos Home's Recent shows
+home-sidebar=yes                # Home's sidebar (⌃⌘S)
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
-start-tab=recent                # start screen without a file: recent | stash
+home-tab=recent                 # where Home opens: recent | stash (the last one chosen)
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
@@ -527,8 +530,8 @@ Seeking stays quick on high-bitrate files from network volumes (SMB/NFS/AFP):
 
 ### Stash
 
-With `stash-url` set (Settings → Stash), the start screen gets a **Recent | Stash** switch: Stash is the
-[Stash](https://github.com/stashapp/stash) WebUI in the window, made the first time you switch to it (a launch with a
+With `stash-url` set (Settings → Stash), Home's sidebar gets **Stash › Library**: the
+[Stash](https://github.com/stashapp/stash) WebUI in the window, made the first time you go to it (a launch with a
 file never loads it) and kept, so going back finds the same page.
 
 - On a scene's page the Stash player is replaced by the scene's cover with ▶ and the file's path; ▶ opens the file in

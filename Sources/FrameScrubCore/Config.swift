@@ -1,5 +1,4 @@
 import Foundation
-import HomeScreenModel
 import LogiHIDPP
 
 /// The event a `haptic-<event>` key belongs to.
@@ -83,8 +82,8 @@ public enum KeyLayout: String, CaseIterable, Sendable {
     }
 }
 
-/// What the start screen shows when there is no file to open (`start-tab`).
-public enum StartTab: String, CaseIterable, Sendable {
+/// Where Home opens (`home-tab`): Recent or the Stash library.
+public enum HomeTab: String, CaseIterable, Sendable {
     case recent
     case stash
 }
@@ -149,15 +148,16 @@ public struct Config: Equatable, Sendable {
     public var activateOnOpen = true
     public var playlistSort = PlaylistSort.name
     public var playlistFontSize = 14
-    /// Largest width of a start-screen card, in points; smaller windows shrink the cards below it.
-    public var startCardSize = 480.0
-    /// `home-layout`: how the start screen's grid fits the window — fit (cards shrink so all show, then the grid
-    /// scrolls), scroll (cards keep their size), fixed (never scrolls).
-    public var homeLayout = HomeLayoutMode.fit
+    /// `home-card-size`: the width of Home's cards in points (⌘= / ⌘− / ⌘0 on Home).
+    public var homeCardSize = 220.0
+    /// `recent-count`: how many recent videos Home's Recent shows.
+    public var recentCount = 50
+    /// `home-sidebar`: whether Home shows its sidebar (⌃⌘S).
+    public var homeSidebar = true
     public var singleInstance = false
-    /// `start-tab`: the start screen's last choice, Recent or the Stash library.
-    public var startTab = StartTab.recent
-    /// `stash-url`: the Stash server whose WebUI the start screen shows; empty = no Stash integration.
+    /// `home-tab`: where Home opens, the user's last choice of Recent or the Stash library.
+    public var homeTab = HomeTab.recent
+    /// `stash-url`: the Stash server whose WebUI Home shows; empty = no Stash integration.
     public var stashURL = ""
     /// `stash-api-key`: sent as `ApiKey` when Stash has a login.
     public var stashAPIKey = ""
@@ -262,7 +262,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "start-card-size", "home-layout", "single-instance", "start-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -287,10 +287,11 @@ public struct Config: Equatable, Sendable {
         case "activate-on-open": return yesNo(activateOnOpen)
         case "playlist-sort": return playlistSort.rawValue
         case "playlist-font-size": return String(playlistFontSize)
-        case "start-card-size": return formatNumber(startCardSize)
-        case "home-layout": return homeLayout.rawValue
+        case "home-card-size": return formatNumber(homeCardSize)
+        case "recent-count": return String(recentCount)
+        case "home-sidebar": return yesNo(homeSidebar)
         case "single-instance": return yesNo(singleInstance)
-        case "start-tab": return startTab.rawValue
+        case "home-tab": return homeTab.rawValue
         case "stash-url": return stashURL
         case "stash-api-key": return stashAPIKey
         case "stash-path-map": return stashPathMap
@@ -469,10 +470,11 @@ public struct Config: Equatable, Sendable {
         case "activate-on-open": guard let v = bool() else { return false }; activateOnOpen = v
         case "playlist-sort": guard let v = PlaylistSort(rawValue: value.lowercased()) else { return false }; playlistSort = v
         case "playlist-font-size": guard let v = int(9...32) else { return false }; playlistFontSize = v
-        case "start-card-size": guard let v = double(140...800) else { return false }; startCardSize = v
-        case "home-layout": guard let v = HomeLayoutMode(rawValue: value.lowercased()) else { return false }; homeLayout = v
+        case "home-card-size": guard let v = double(60...480) else { return false }; homeCardSize = v
+        case "recent-count": guard let v = int(1...200) else { return false }; recentCount = v
+        case "home-sidebar": guard let v = bool() else { return false }; homeSidebar = v
         case "single-instance": guard let v = bool() else { return false }; singleInstance = v
-        case "start-tab": guard let v = StartTab(rawValue: value.lowercased()) else { return false }; startTab = v
+        case "home-tab": guard let v = HomeTab(rawValue: value.lowercased()) else { return false }; homeTab = v
         case "stash-url": stashURL = value
         case "stash-api-key": stashAPIKey = value
         case "stash-path-map": stashPathMap = value
