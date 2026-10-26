@@ -103,4 +103,13 @@ public struct SideButtonFilter: Sendable {
         guard mode == .take, stashPageShown else { return .drop }
         return b == .back ? .pageBack : .pageForward
     }
+
+    /// A press from the mouse's own events with the pointer over a plugin page: back and forward are the page's
+    /// history, never the player's binding. Taken buttons navigate it from here; watched ones (and the system's) reach
+    /// it through AppKit, so the mouse's own copy is dropped. Other buttons pass.
+    public static func pluginPagePress(_ b: MouseButton, mode: SideButtonsMode) -> StartScreenPress {
+        guard b == .back || b == .forward else { return .pass }
+        guard mode == .take else { return .drop }
+        return b == .back ? .pageBack : .pageForward
+    }
 }

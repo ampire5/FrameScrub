@@ -127,3 +127,36 @@ extension PluginMessage {
         return found
     }
 }
+
+extension Arguments {
+    /// `frames`, when given: an absolute folder, where the item's saved frames and clips go.
+    func framesFolder() throws(Failure) -> URL? {
+        guard given("frames") else { return nil }
+        let path = try string("frames")
+        guard path.hasPrefix("/"), path.count <= 1024 else { throw Failure("frames must be an absolute folder") }
+        return URL(filePath: path, directoryHint: .isDirectory)
+    }
+}
+
+extension PluginMessage {
+    /// The `frames` folder of an `open`, or of each item of a `playlist` / `enqueue`, by the URL it opens; empty for
+    /// anything else. For a message `parse` accepted.
+    public static func frameFolders(_ json: [String: Any]) -> [URL: URL] {
+        var found: [URL: URL] = [:]
+        func note(_ object: [String: Any]) {
+            let args = Arguments(object)
+            guard let folder = try? args.framesFolder() else { return }
+            if let url = try? args.streamURL("url") {
+                found[url] = folder
+            } else if let path = object["path"] as? String {
+                found[URL(filePath: path, directoryHint: .notDirectory)] = folder
+            }
+        }
+        switch json["cmd"] as? String {
+        case "open": note(json)
+        case "setPlaylist", "enqueue": (json["items"] as? [[String: Any]])?.forEach(note)
+        default: break
+        }
+        return found
+    }
+}

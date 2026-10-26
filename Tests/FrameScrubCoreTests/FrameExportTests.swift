@@ -44,6 +44,19 @@ private final class FlagBox: @unchecked Sendable { var flag: CancellationFlag? }
         #expect(saved.url.lastPathComponent.hasPrefix("[7] A scene_f000012_"))
     }
 
+    @Test func aPagesFolderTakesTheFrames() async throws {
+        let (source, _, frame) = try decodeFrame(Fixtures.anamorphic, 12)
+        let root = makeTemporaryDirectory()
+        let folder = makeTemporaryDirectory().appendingPathComponent("Frames/A scene", isDirectory: true)
+        var config = Config()
+        config.frameDirectory = root.path + "/%{video-name}"
+        let saved = try await save(FrameExporter(videoURL: source.url, folder: folder, rotationClockwise: 0,
+                                                 settings: ExportSettings(config: config, fallbackRoot: root)),
+                                   frame, seconds: 0.48)
+        #expect(saved.url.deletingLastPathComponent().standardizedFileURL == folder.standardizedFileURL)
+        #expect(saved.namesFolder)   // the message says where it went
+    }
+
     @Test func copyFrameProducesAnSRGBPNGAtTheSaveSize() async throws {
         let (source, _, frame) = try decodeFrame(Fixtures.h264, 42)
         let copier = exporter(for: source.url, root: makeTemporaryDirectory()) { $0.saveScale = 2; $0.saveUpscaler = .lanczos }

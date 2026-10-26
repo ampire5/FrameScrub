@@ -102,6 +102,13 @@ public struct PluginPolicy: Equatable, Sendable {
         return .allowed
     }
 
+    /// Whether the page at `origin` may have frames saved in a folder it names (`frames`): the same answer as for
+    /// opening its local files, since both reach this Mac's disk.
+    public func decision(forSavingFrom origin: PluginOrigin) -> OpenDecision {
+        guard isTrusted(origin) else { return .untrusted }
+        return openAllowed.contains(origin) ? .allowed : .needsConsent
+    }
+
     public mutating func allowOpening(from origin: PluginOrigin) {
         openAllowed.insert(origin)
     }

@@ -57,6 +57,9 @@ public struct ExportSettings: Sendable {
 public struct SavedFrame: Sendable {
     public let url: URL
     public let usedFallbackDirectory: Bool
+    /// It went to a folder other than the configured one (the fallback, or a page's `frames`): say where.
+    public var namesFolder: Bool { usedFallbackDirectory || inPageFolder }
+    public var inPageFolder = false
     public let fallbackReason: String?
 }
 
@@ -95,16 +98,19 @@ public final class FrameExporter: @unchecked Sendable {
     /// What saved frames are named after (`%{video-name}`, the fallback folder): `videoURL`, or a page's scene for a
     /// stream (`SceneInfo.namingURL`).
     public let nameURL: URL
+    /// A page's folder for this video's frames (`frames`), instead of `frame-dir`; the fallback when it cannot be written.
+    public let folder: URL?
     public let rotationClockwise: Int
     public let settings: ExportSettings
     private let readCache: ReadCache?
     private let renderer = FrameImageRenderer()
     private let saveQueue = DispatchQueue(label: "framescrub.save", qos: .userInitiated)
 
-    public init(videoURL: URL, nameURL: URL? = nil, rotationClockwise: Int, settings: ExportSettings,
+    public init(videoURL: URL, nameURL: URL? = nil, folder: URL? = nil, rotationClockwise: Int, settings: ExportSettings,
                 readCache: ReadCache? = nil) {
         self.videoURL = videoURL
         self.nameURL = nameURL ?? videoURL
+        self.folder = folder
         self.readCache = readCache
         self.rotationClockwise = rotationClockwise
         self.settings = settings
@@ -147,7 +153,7 @@ public final class FrameExporter: @unchecked Sendable {
     /// The configured directory, or `<fallbackRoot>/<video-name>` when it cannot be written.
     func outputDirectory() throws -> (URL, Bool) {
         let fm = FileManager.default
-        let primary = settings.naming.directory(forVideo: nameURL)
+        let primary = folder ?? settings.naming.directory(forVideo: nameURL)
         if (try? fm.createDirectory(at: primary, withIntermediateDirectories: true)) != nil,
            fm.isWritableFile(atPath: primary.path) {
             return (primary, false)
@@ -166,7 +172,9 @@ public final class FrameExporter: @unchecked Sendable {
         let reason = try renderer.write(frame, rotationClockwise: rotationClockwise, format: settings.format,
                            quality: settings.quality, scale: scale, screen: settings.screenPixels, upscaler: settings.upscaler,
                            color: settings.color, geometry: settings.geometry, to: url)
-        return SavedFrame(url: url, usedFallbackDirectory: fallback, fallbackReason: reason)
+        var saved = SavedFrame(url: url, usedFallbackDirectory: fallback, fallbackReason: reason)
+        saved.inPageFolder = !fallback && folder != nil
+        return saved
     }
 
     /// Decodes the range once. Each window offers its first frame, or with `sharpest` every frame of it competes

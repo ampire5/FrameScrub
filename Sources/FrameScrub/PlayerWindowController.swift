@@ -417,6 +417,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
         openCore(prepared, fallbackPosition: fallbackPosition)
         core.sceneInfo = pageSceneInfos[url]   // a page's name for it: its frames and clips are named so
+        core.frameFolder = pageFrameFolders[url]
         StartupTrace.mark("core opened")
         if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
         colorFileChanged()   // before anything below reads the colour
@@ -631,10 +632,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// What pages said about what they open (`info`), by URL: a stream they name is shown and exported by that name.
     /// A page's playlist replaces them; at most `ListPlaylist.maxItems` are kept.
     private var pageSceneInfos: [URL: SceneInfo] = [:]
+    /// The folders pages gave for the frames and clips of what they open (`frames`), by URL; kept as `pageSceneInfos`.
+    private var pageFrameFolders: [URL: URL] = [:]
 
-    private func notePageSceneInfos(_ infos: [URL: SceneInfo], replacing: Bool) {
-        if replacing || pageSceneInfos.count + infos.count > ListPlaylist.maxItems { pageSceneInfos = [:] }
-        pageSceneInfos.merge(infos) { $1 }
+    private func notePageFacts(_ request: PluginRequest, replacing: Bool) {
+        if replacing || pageSceneInfos.count + request.infos.count > ListPlaylist.maxItems { pageSceneInfos = [:] }
+        pageSceneInfos.merge(request.infos) { $1 }
+        if replacing || pageFrameFolders.count + request.frames.count > ListPlaylist.maxItems { pageFrameFolders = [:] }
+        pageFrameFolders.merge(request.frames) { $1 }
+    }
+
+    /// A page that names folders for frames (`frames`) writes on this Mac's disk: allowed as its local files are, with
+    /// the same question the first time.
+    private func whenFramesAllowed(_ request: PluginRequest, origin: PluginOrigin, verb: String,
+                                   then apply: @escaping () -> Void) {
+        guard let folder = request.frames.values.first else { apply(); return }
+        switch pluginPolicy.decision(forSavingFrom: origin) {
+        case .allowed, .notMedia: apply()
+        case .untrusted: pluginFailed(request, "\(verb): the page is not trusted")
+        case .needsConsent:
+            let asked = request.frames.count == 1 ? "to save frames in \(folder.path)" : "to save frames in its folders"
+            askOpenConsent(origin, asked: asked, verb: verb, request: request, then: apply)
+        }
     }
 
     /// The name a file goes by on screen: a page's `Title — Studio · date` for it, else its file name.
@@ -2111,6 +2130,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         guard NSApp.isActive, window?.isKeyWindow == true else { return }
+        if let page = slots.pageUnderPointer {   // back / forward over a plugin page are its history
+            switch SideButtonFilter.pluginPagePress(button, mode: core.config.mxSideButtons) {
+            case .pass: break
+            case .drop: return
+            case .pageBack: page.goBack(); return
+            case .pageForward: page.goForward(); return
+            }
+        }
         if !startScreen.isHidden {
             // No file to act on, and the Stash page keeps its own back / forward: a watched button reaches it through
             // AppKit (its own monitor), a taken one only from here. A dropped press's release finds nothing held.
@@ -2834,9 +2861,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         case .focusPlayer: window?.makeFirstResponder(videoView)
         case let .open(.file(url, landing)):
-            notePageSceneInfos(request.infos, replacing: false)
-            page.map(slots.pageChosePlay)
-            openFromPlugin(url, landing: landing, origin: origin, request: request)
+            whenFramesAllowed(request, origin: origin, verb: "open") { [self] in
+                notePageFacts(request, replacing: false)
+                page.map(slots.pageChosePlay)
+                openFromPlugin(url, landing: landing, origin: origin, request: request)
+            }
             return
         case let .open(.stashScene(id, paths, landing)):
             page.map(slots.pageChosePlay)
@@ -2844,16 +2873,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             openStashScene(id: id, paths: paths, landing: landing)
         case let .open(.stream(url, landing)):   // nothing on this Mac is read: no consent to ask
             guard !isStashURL(url) else { pluginFailed(request, Self.stashURLRefusal("open")); return }
-            notePageSceneInfos(request.infos, replacing: false)
-            page.map(slots.pageChosePlay)
-            open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.absoluteString) }
+            whenFramesAllowed(request, origin: origin, verb: "open") { [self] in
+                notePageFacts(request, replacing: false)
+                page.map(slots.pageChosePlay)
+                open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.absoluteString) }
+            }
             return
         case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
         case .hide:
             if let page { slots.hide(page: page) }
         case let .setPlaylist(items, index, name):
             whenListAllowed(items, verb: "playlist", origin: origin, request: request) { [self] in
-                notePageSceneInfos(request.infos, replacing: true)
+                notePageFacts(request, replacing: true)
                 listPlaylist = ListPlaylist(items: items, index: index, name: name)   // the message checked the index
                 page.map(slots.pageChosePlay)
                 openListItem(at: index)
@@ -2862,7 +2893,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         case let .enqueue(items):
             whenListAllowed(items, verb: "enqueue", origin: origin, request: request) { [self] in
-                notePageSceneInfos(request.infos, replacing: false)
+                notePageFacts(request, replacing: false)
                 let opensFirst = listPlaylist == nil && currentPlaylistItem == nil
                 guard let list = ListPlaylist.enqueue(items, onto: listPlaylist, current: currentPlaylistItem) else {
                     pluginFailed(request, "enqueue: too many items")
@@ -2983,6 +3014,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A page's list with local files: allowed as `open({path})` would be for each of them, with one question for all.
     private func whenListAllowed(_ items: [PlaylistItem], verb: String, origin: PluginOrigin, request: PluginRequest,
                                  then apply: @escaping () -> Void) {
+        let apply = { [weak self] in self?.whenFramesAllowed(request, origin: origin, verb: verb, then: apply) ?? () }
         let streams = items.compactMap { item -> URL? in if case let .stream(url, _) = item { url } else { nil } }
         guard !streams.contains(where: isStashURL) else { pluginFailed(request, Self.stashURLRefusal(verb)); return }
         let files = items.compactMap { item -> URL? in if case let .file(url, _) = item { url } else { nil } }
