@@ -314,6 +314,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   `Sources/FrameScrub/PluginPanel.swift`), and may hand it a playlist. ⌥⌘P shows the first slot holding a page; **Focus
   Plugin Panel** (⌃⌥⌘P) gives the page the keyboard, and the page's `focusPlayer()` returns it. A page may open local
   videos only after you allow its origin once (`plugin-open-allowed`).
+  What the page knows about an item it opens or lists (`info: {title, studio, performers, date, code, url}`) titles the
+  window and the OSD as a Stash scene's details do, and names a stream's exported frames and clips:
+  `%{video-name}` becomes `<date> [<code>] <title> (<performers>)` (a local file keeps its own name).
 - **Settings** (⌘,) has six tabs: General, Scrolling, Saving, Display, Mouse & Trackpad, and Stash. Changes apply
   at once. Edits keep the comments in `framescrub.conf` / `input.conf`; default values that are not in the
   file are not added.

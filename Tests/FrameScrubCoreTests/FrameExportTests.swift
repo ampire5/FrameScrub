@@ -31,6 +31,19 @@ private final class FlagBox: @unchecked Sendable { var flag: CancellationFlag? }
         }
     }
 
+    @Test func aFrameIsNamedAfterThePagesSceneWhenGiven() async throws {
+        let (source, _, frame) = try decodeFrame(Fixtures.anamorphic, 12)
+        let root = makeTemporaryDirectory()
+        var config = Config()
+        config.frameDirectory = root.path + "/%{video-name}"
+        let named = SceneInfo(title: "A scene", code: "7").namingURL(for: URL(string: "http://h/stream/7")!)!
+        let saved = try await save(FrameExporter(videoURL: source.url, nameURL: named, rotationClockwise: 0,
+                                                 settings: ExportSettings(config: config, fallbackRoot: root)),
+                                   frame, seconds: 0.48)
+        #expect(saved.url.deletingLastPathComponent().lastPathComponent == "[7] A scene")
+        #expect(saved.url.lastPathComponent.hasPrefix("[7] A scene_f000012_"))
+    }
+
     @Test func copyFrameProducesAnSRGBPNGAtTheSaveSize() async throws {
         let (source, _, frame) = try decodeFrame(Fixtures.h264, 42)
         let copier = exporter(for: source.url, root: makeTemporaryDirectory()) { $0.saveScale = 2; $0.saveUpscaler = .lanczos }

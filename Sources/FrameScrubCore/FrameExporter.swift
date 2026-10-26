@@ -92,14 +92,19 @@ public struct CopiedFrame: Sendable {
 /// neither blocks scrubbing. Callbacks are delivered on background threads.
 public final class FrameExporter: @unchecked Sendable {
     public let videoURL: URL
+    /// What saved frames are named after (`%{video-name}`, the fallback folder): `videoURL`, or a page's scene for a
+    /// stream (`SceneInfo.namingURL`).
+    public let nameURL: URL
     public let rotationClockwise: Int
     public let settings: ExportSettings
     private let readCache: ReadCache?
     private let renderer = FrameImageRenderer()
     private let saveQueue = DispatchQueue(label: "framescrub.save", qos: .userInitiated)
 
-    public init(videoURL: URL, rotationClockwise: Int, settings: ExportSettings, readCache: ReadCache? = nil) {
+    public init(videoURL: URL, nameURL: URL? = nil, rotationClockwise: Int, settings: ExportSettings,
+                readCache: ReadCache? = nil) {
         self.videoURL = videoURL
+        self.nameURL = nameURL ?? videoURL
         self.readCache = readCache
         self.rotationClockwise = rotationClockwise
         self.settings = settings
@@ -142,12 +147,12 @@ public final class FrameExporter: @unchecked Sendable {
     /// The configured directory, or `<fallbackRoot>/<video-name>` when it cannot be written.
     func outputDirectory() throws -> (URL, Bool) {
         let fm = FileManager.default
-        let primary = settings.naming.directory(forVideo: videoURL)
+        let primary = settings.naming.directory(forVideo: nameURL)
         if (try? fm.createDirectory(at: primary, withIntermediateDirectories: true)) != nil,
            fm.isWritableFile(atPath: primary.path) {
             return (primary, false)
         }
-        let fallback = FrameNaming.fallbackDirectory(forVideo: videoURL, root: settings.fallbackRoot)
+        let fallback = FrameNaming.fallbackDirectory(forVideo: nameURL, root: settings.fallbackRoot)
         try fm.createDirectory(at: fallback, withIntermediateDirectories: true)
         return (fallback, true)
     }
@@ -155,7 +160,7 @@ public final class FrameExporter: @unchecked Sendable {
     private func write(_ frame: DecodedFrame, seconds: Double, into directory: URL, fallback: Bool, scale: OutputSize) throws -> SavedFrame {
         let source = settings.geometry.displaySize(of: FrameImageRenderer.uprightSize(of: frame, rotationClockwise: rotationClockwise))
         let target = scale.targetSize(source: source, screen: settings.screenPixels) ?? source
-        let name = settings.naming.fileName(forVideo: videoURL, frame: frame.number, seconds: seconds, format: settings.format,
+        let name = settings.naming.fileName(forVideo: nameURL, frame: frame.number, seconds: seconds, format: settings.format,
                                             suffix: scale.suffix(source: source, target: target))
         let url = directory.appendingPathComponent(name)
         let reason = try renderer.write(frame, rotationClockwise: rotationClockwise, format: settings.format,

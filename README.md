@@ -240,6 +240,8 @@ Requests that answer (they need a file open, else they reject):
 
 `playlist(items, {index?, name?})` puts a page's list in place of the folder: `items` is `[{scene, title?} | {path, title?} | {url, title?}, …]`, 1…2000 of them, and one bad item refuses the whole call. Previous/next, autoadvance and the playlist slot then follow the list, which the playlist slot shows under `name`; opening a file from elsewhere (Finder, the start screen, a link, `open()`) goes back to its folder. `{path}` items need what `open({path})` needs, asked once for the whole list. A scene's file is looked for when its turn comes; one that cannot be opened fires `error`, and at autoadvance the next item is tried once. `enqueue(items)` adds to the end (past 2000 in all it is refused); with the folder as the playlist it starts a list of the file on screen and the items.
 
+An `open({path | url, …})` and each `{path | url}` item of `playlist` / `enqueue` may carry `info: {title?, studio?, performers?, date?, code?, url?}`: what the page knows about it (strings up to 500 characters, at most 50 performers, `date` as `YYYY-MM-DD`, an `http(s)` `url`; anything else refuses the call). The window title and the OSD then read `Title — Studio · date`, as for a Stash scene; a stream, which has no file name of its own, is also exported under it: `%{video-name}` of its frames and clips (and its fallback folder) becomes `<date> [<code>] <title> (<performers>)`, the parts given. A local file keeps its own name.
+
 `framescrub.stash` is `{url, apiKey}` for the Stash server in Settings, or `null` without one, so a page can ask Stash itself. Only the plugins in your list get it; a page a link brought gets `null`.
 
 ```js

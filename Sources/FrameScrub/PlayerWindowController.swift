@@ -416,6 +416,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The rest of `openFile` once the file is read: the player takes it and the window follows.
     private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
         openCore(prepared, fallbackPosition: fallbackPosition)
+        core.sceneInfo = pageSceneInfos[url]   // a page's name for it: its frames and clips are named so
         StartupTrace.mark("core opened")
         if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
         colorFileChanged()   // before anything below reads the colour
@@ -627,6 +628,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window?.makeFirstResponder(videoView)
     }
 
+    /// What pages said about what they open (`info`), by URL: a stream they name is shown and exported by that name.
+    /// A page's playlist replaces them; at most `ListPlaylist.maxItems` are kept.
+    private var pageSceneInfos: [URL: SceneInfo] = [:]
+
+    private func notePageSceneInfos(_ infos: [URL: SceneInfo], replacing: Bool) {
+        if replacing || pageSceneInfos.count + infos.count > ListPlaylist.maxItems { pageSceneInfos = [:] }
+        pageSceneInfos.merge(infos) { $1 }
+    }
+
+    /// The name a file goes by on screen: a page's `Title — Studio · date` for it, else its file name.
+    private func displayName(_ url: URL) -> String {
+        pageSceneInfos[url]?.displayTitle(fallback: url.lastPathComponent) ?? url.lastPathComponent
+    }
+
     /// The window title, and an OSD line when the folder has other videos: "12 / 48 · name.mp4". A file from Stash
     /// reads `Title — Studio · date` instead; `opening` is the file just opened (a folder read must not flash it again).
     private func showPlaylistPosition(_ url: URL, opening: Bool = false) {
@@ -636,13 +651,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         guard let position = playlistPositionText else { return }
-        showMessage("\(position) · \(url.lastPathComponent)")
+        showMessage("\(position) · \(displayName(url))")
     }
 
     private func updateTitle(_ url: URL) {
         if case .stash = origin { window?.title = stashTitle(for: url); return }
-        guard let position = playlistPositionText else { window?.title = url.lastPathComponent; return }
-        window?.title = "\(url.lastPathComponent) — \(position)"
+        guard let position = playlistPositionText else { window?.title = displayName(url); return }
+        window?.title = "\(displayName(url)) — \(position)"
     }
 
     /// "12 / 48" in the folder, "3 / 10" in a page's list; nil when the file is alone in it.
@@ -2819,6 +2834,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         case .focusPlayer: window?.makeFirstResponder(videoView)
         case let .open(.file(url, landing)):
+            notePageSceneInfos(request.infos, replacing: false)
             page.map(slots.pageChosePlay)
             openFromPlugin(url, landing: landing, origin: origin, request: request)
             return
@@ -2828,6 +2844,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             openStashScene(id: id, paths: paths, landing: landing)
         case let .open(.stream(url, landing)):   // nothing on this Mac is read: no consent to ask
             guard !isStashURL(url) else { pluginFailed(request, Self.stashURLRefusal("open")); return }
+            notePageSceneInfos(request.infos, replacing: false)
             page.map(slots.pageChosePlay)
             open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.absoluteString) }
             return
@@ -2836,6 +2853,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let page { slots.hide(page: page) }
         case let .setPlaylist(items, index, name):
             whenListAllowed(items, verb: "playlist", origin: origin, request: request) { [self] in
+                notePageSceneInfos(request.infos, replacing: true)
                 listPlaylist = ListPlaylist(items: items, index: index, name: name)   // the message checked the index
                 page.map(slots.pageChosePlay)
                 openListItem(at: index)
@@ -2844,6 +2862,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         case let .enqueue(items):
             whenListAllowed(items, verb: "enqueue", origin: origin, request: request) { [self] in
+                notePageSceneInfos(request.infos, replacing: false)
                 let opensFirst = listPlaylist == nil && currentPlaylistItem == nil
                 guard let list = ListPlaylist.enqueue(items, onto: listPlaylist, current: currentPlaylistItem) else {
                     pluginFailed(request, "enqueue: too many items")

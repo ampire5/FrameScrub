@@ -273,6 +273,7 @@ extension PlaylistItem {
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         var title: String?
         if args.given("title") { title = try args.string("title") }
+        _ = try args.sceneInfo()   // checked here; `PluginMessage.sceneInfos` hands it over
         switch try args.source() {
         case "scene":
             self = .scene(id: try args.sceneID("scene"), title: title)
@@ -309,6 +310,7 @@ extension PluginOpen {
         let landing = LinkTarget(time: try args.optionalTime("t"), segments: try args.segmentList("segments") ?? [],
                                  lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
+        _ = try args.sceneInfo()   // checked here; `PluginMessage.sceneInfos` hands it over
         switch try args.source() {
         case "scene":
             let id = try args.sceneID("scene")
@@ -336,11 +338,14 @@ public struct PluginRequest: Equatable, Sendable {
     /// Which page posted it, when several are open (one per slot); the reply goes back to that page.
     public var page: Int?
     public var message: PluginMessage
+    /// What the page says about what it opens (`info`), by URL (`PluginMessage.sceneInfos`).
+    public var infos: [URL: SceneInfo]
 
-    public init(id: Int? = nil, page: Int? = nil, message: PluginMessage) {
+    public init(id: Int? = nil, page: Int? = nil, message: PluginMessage, infos: [URL: SceneInfo] = [:]) {
         self.id = id
         self.page = page
         self.message = message
+        self.infos = infos
     }
 
     /// The id of a posted object, when it carries one (`id` as a number).

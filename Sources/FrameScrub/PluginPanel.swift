@@ -247,7 +247,8 @@ import WebKit
                   let origin = trustedOrigin(of: message.frameInfo) else { return }
             let id = PluginRequest.id(of: body)
             switch PluginMessage.parse(body) {
-            case let .success(command): onMessage?(PluginRequest(id: id, page: token, message: command), origin)
+            case let .success(command):
+                onMessage?(PluginRequest(id: id, page: token, message: command, infos: PluginMessage.sceneInfos(body)), origin)
             case let .failure(failure): fail(id: id, failure.reason)
             }
         }

@@ -71,6 +71,9 @@ public final class PlayerCore {
     public let clock: PlaybackClock
 
     public private(set) var url: URL?
+    /// What the page that opened the file says about it (`SceneInfo`): a stream's frames and clips are named after it.
+    /// Set after an open; an open or a close clears it.
+    public var sceneInfo: SceneInfo? { didSet { if sceneInfo != oldValue { rebuildExporter() } } }
     public private(set) var info: MediaSource?
     /// The open file's shared reads (spec §4).
     public private(set) var readCache: ReadCache?
@@ -158,7 +161,7 @@ public final class PlayerCore {
     public var revealTarget: URL? {
         if let lastSavedURL { return lastSavedURL }
         guard let exporter else { return nil }
-        let folder = exporter.settings.naming.directory(forVideo: exporter.videoURL)
+        let folder = exporter.settings.naming.directory(forVideo: exporter.nameURL)
         return FileManager.default.fileExists(atPath: folder.path) ? folder : nil
     }
     private var frameOSDPending = false
@@ -335,6 +338,7 @@ public final class PlayerCore {
         readCache?.close()
         readCache = nil
         url = nil
+        sceneInfo = nil
         info = nil
         index = nil
         exporter = nil
@@ -382,7 +386,7 @@ public final class PlayerCore {
 
     private func rebuildExporter() {
         guard let url, let info else { return }
-        exporter = FrameExporter(videoURL: url, rotationClockwise: info.rotationClockwise,
+        exporter = FrameExporter(videoURL: url, nameURL: sceneInfo?.namingURL(for: url), rotationClockwise: info.rotationClockwise,
                                  settings: ExportSettings(config: config, fallbackRoot: fallbackRoot,
                                                           screenPixels: screenPixelSize, color: colorCorrection,
                                                           geometry: displayGeometry),
@@ -1592,15 +1596,16 @@ public final class PlayerCore {
         }
         guard !ranges.isEmpty else { osd("Nothing left outside the marks"); return }
         let naming = FrameNaming(directoryTemplate: config.frameDirectory, fileTemplate: config.frameTemplate)
+        let named = sceneInfo?.namingURL(for: url) ?? url
         let busy = clipQueue.isBusy   // an idle queue starts the first job at once; do not count it while the worker wakes
         for job in ranges {
             let first = job[0].lowerBound, last = job[job.count - 1].upperBound
             clipQueue.enqueue(ClipJob(
-                source: url,
+                source: url, nameSource: sceneInfo?.namingURL(for: url),
                 ranges: job.map { ClipRange(startPTS: index.pts(forFrame: $0.lowerBound), endPTS: index.pts(forFrame: $0.upperBound),
                                             keyframePTS: index.isExact ? index.pts(forFrame: index.keyframe(atOrBefore: $0.lowerBound)) : nil) },
-                directory: naming.directory(forVideo: url),
-                fallbackDirectory: FrameNaming.fallbackDirectory(forVideo: url, root: fallbackRoot),
+                directory: naming.directory(forVideo: named),
+                fallbackDirectory: FrameNaming.fallbackDirectory(forVideo: named, root: fallbackRoot),
                 template: config.clipTemplate + mode.nameSuffix, aFrame: first, aSeconds: index.seconds(forFrame: first),
                 endSeconds: index.seconds(forFrame: last), readLimit: config.clipReadLimitMB * 1_000_000))
         }
