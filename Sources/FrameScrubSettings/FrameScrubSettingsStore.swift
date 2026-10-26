@@ -9,11 +9,13 @@ import SettingsKit
 @MainActor
 public final class FrameScrubSettingsStore: SettingsStore {
     /// `Config.keys` the window does not show: Home's open tab is state, the slots are set by View › Slots.
-    public static let excludedKeys: Set<String> = ["home-tab", "slot-left", "slot-right", "slot-bottom"]
+    public nonisolated static let excludedKeys: Set<String> = ["home-tab", "slot-left", "slot-right", "slot-bottom"]
     /// The player's wheel mode (free spin or ratchet), a key of the window only: it lives in `UserDefaults`.
-    public static let wheelFreeSpinKey = "wheel-free-spin"
+    public nonisolated static let wheelFreeSpinKey = "wheel-free-spin"
     /// Its `UserDefaults` key; missing means free spin.
-    public static let wheelFreeSpinDefaultsKey = "wheelFreeSpin"
+    public nonisolated static let wheelFreeSpinDefaultsKey = "wheelFreeSpin"
+    /// The window wrote the wheel mode: the player sets the wheel to it.
+    public var onWheelFreeSpinWrite: (() -> Void)?
 
     private let preferences: PreferencesStore
     private let defaults: UserDefaults
@@ -101,6 +103,7 @@ public final class FrameScrubSettingsStore: SettingsStore {
         if key == Self.wheelFreeSpinKey {
             defaults.set(value == "yes", forKey: Self.wheelFreeSpinDefaultsKey)
             announce([key])
+            onWheelFreeSpinWrite?()
             return
         }
         try preferences.update([key]) { _ = $0.set(key, Self.written(value, forKey: key)) }

@@ -40,8 +40,55 @@ public struct SettingsPanelContext {
     /// The Key Bindings tables' source, made on the first `show` over the context's bindings.
     static var bindingSource: InputBindingSource?
 
+    /// Frame autosave name of the window.
+    static let autosaveName = "FrameScrubSettings"
+    /// `UserDefaults` key of the open page.
+    static let lastPageDefaultsKey = "settingsLastPage"
+
+    private static var controller: SettingsWindowController?
+    private static var model: SettingsModel?
+    private static var terminateObserver: NSObjectProtocol?
+
     /// The pages in the sidebar's order.
     public static func pages() -> [SettingsPage] {
         [general, speed, home, scrolling, mouse, keyBindings, saving, display, colour, performance, stash, advanced]
+    }
+
+    /// Brings the window to the front, making it on the first call (on the page it was last on). Later calls keep
+    /// the first store and context.
+    /// - Parameter page: a page id to open, or nil for the page the window is on.
+    public static func show(store: FrameScrubSettingsStore, context: SettingsPanelContext, page: String? = nil) {
+        if controller == nil {
+            self.store = store
+            self.context = context
+            bindingSource = InputBindingSource(preferences: context.inputPreferences, translateKey: context.translateKey,
+                                               menuRows: context.menuRows)
+            gestureModel = GestureTableModel(preferences: context.inputPreferences)
+            let model = SettingsModel(store: store)
+            self.model = model
+            controller = SettingsWindowController(pages: pages(), model: model, autosaveName: autosaveName,
+                                                  lastPageDefaultsKey: lastPageDefaultsKey, style: .glass)
+            // No tab bar, + or Window menu tab items.
+            controller?.window?.tabbingMode = .disallowed
+            // ⌘Q while a field is being edited: its text is written first, as on ⌘W.
+            terminateObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.willTerminateNotification, object: nil, queue: nil
+            ) { _ in
+                MainActor.assumeIsolated { controller?.endEditing() }
+            }
+        }
+        model?.refreshFolderOverrides()
+        controller?.show(page: page)
+    }
+
+    /// The colour notes ask the store again: the app calls it when a video opened or closed, or a file's or folder's
+    /// colour changed. Nothing before the window was first shown.
+    public static func refreshFolderOverrides() {
+        model?.refreshFolderOverrides()
+    }
+
+    /// The player switched the wheel mode (SmartShift): the row follows. Nothing before the window was first shown.
+    public static func wheelFreeSpinDidChange() {
+        store?.wheelFreeSpinDidChange()
     }
 }
