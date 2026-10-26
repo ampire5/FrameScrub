@@ -32,19 +32,21 @@ public enum HomeRecent {
         wanted == .stash && !stashEnabled ? .recent : wanted
     }
 
-    public static func location(of tab: HomeTab) -> BrowserLocation {
+    /// Where a Home tab is; the folders have no place of their own (the last folder browsed).
+    public static func location(of tab: HomeTab) -> BrowserLocation? {
         switch tab {
         case .recent: .source(source)
         case .stash: .source(stash)
+        case .folders: nil
         }
     }
 
-    /// The Home tab a location is; nil for the places and the folders.
-    public static func tab(of location: BrowserLocation) -> HomeTab? {
+    /// The Home tab a location belongs to: the places and every folder are the folders.
+    public static func tab(of location: BrowserLocation) -> HomeTab {
         switch location {
         case .source(stash): .stash
         case .source: .recent
-        case .places, .folder: nil
+        case .places, .folder: .folders
         }
     }
 }

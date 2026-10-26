@@ -43,6 +43,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The window's title while Home has the window, put back when it goes.
     private var titleBeforeHome: String?
     private var hasShownHome = false
+    /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
+    private var folderReturn: (folder: URL, file: URL)?
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
     /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
@@ -292,6 +294,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func open(_ url: URL, landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
         returnTab = .recent
+        folderReturn = nil
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -774,10 +777,26 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showBackButton(false, duration: 0)
         applyHomeConfig(core.config)
         let config = core.config
-        let shown = HomeRecent.shownTab(tab ?? config.homeTab, stashEnabled: config.stashEnabled)
-        let location = HomeRecent.location(of: shown)
+        // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
+        let back = folderReturn.map { r in core.url.flatMap { $0.deletingLastPathComponent() == r.folder ? (folder: r.folder, file: $0) : nil } ?? r }
+        let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
+        let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
+        var selecting: String?
+        let location: BrowserLocation
+        if let place = HomeRecent.location(of: shown) {
+            location = place
+        } else if let back {
+            location = .folder(back.folder)
+            selecting = back.file.path
+        } else {
+            location = view.browser.lastBrowsed
+        }
         movingForApp = true
-        if view.browser.location == location, hasShownHome { view.browser.reload() } else { view.browser.show(location, selecting: nil) }
+        if view.browser.location == location, hasShownHome, selecting == nil {
+            view.browser.reload()
+        } else {
+            view.browser.show(location, selecting: selecting)
+        }
         movingForApp = false
         hasShownHome = true
         updatePrecisionWheel()
@@ -843,7 +862,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
         let view = HomeView(source: source)
         source.view = view.browser
-        source.onOpen = { [weak self] url in self?.open(url) }   // not looked up: a share answers over the network
+        source.onOpen = { [weak self] url, location in   // not looked up: a share answers over the network
+            guard let self else { return }
+            self.open(url)
+            if case .folder(let folder) = location {
+                self.returnTab = .folders
+                self.folderReturn = (folder, url)
+            }
+        }
         source.onMenu = { [weak self] url, item in self?.recentMenuChosen(url, item) }
         view.translatesAutoresizingMaskIntoConstraints = false
         homeHost.addSubview(view)
@@ -862,7 +888,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self.window?.title = title
         }
         browser.onLocation = { [weak self] location in
-            guard let self, !self.movingForApp, let tab = HomeRecent.tab(of: location), tab != self.core.config.homeTab else { return }
+            guard let self, !self.movingForApp else { return }
+            let tab = HomeRecent.tab(of: location)
+            guard tab != self.core.config.homeTab else { return }
             do { try self.preferences.update(["home-tab"]) { $0.homeTab = tab } } catch {
                 self.showMessage("Cannot save settings: \(error)", duration: 4)
             }
@@ -2273,7 +2301,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // No file: nothing to show, and over the Stash page the bar would take its clicks.
         if showsHome || !failureView.isHidden { return }
         updateSeekBar()
-        backButton.title = returnTab == .stash ? "Stash" : "Recent"
+        backButton.title = switch returnTab {
+        case .stash: "Stash"
+        case .folders: folderReturn?.folder.lastPathComponent ?? "Folders"
+        case .recent: "Recent"
+        }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.15
             seekBar.animator().alphaValue = 1

@@ -45,7 +45,9 @@ import Testing
         #expect(HomeRecent.location(of: .stash) == .source("stash"))
         #expect(HomeRecent.tab(of: .source("stash")) == .stash)
         #expect(HomeRecent.tab(of: .source("recent")) == .recent)
-        #expect(HomeRecent.tab(of: .places) == nil)
+        #expect(HomeRecent.location(of: .folders) == nil)
+        #expect(HomeRecent.tab(of: .places) == .folders)
+        #expect(HomeRecent.tab(of: .folder(URL(filePath: "/v"))) == .folders)
     }
 
     @Test func pathOfID() {

@@ -342,6 +342,13 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   path. The pictures are JPEGs of up to 1280 pixels in `~/Library/Application Support/FrameScrub/thumbnails` (the
   newest 200), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
   the background while Recent is up.
+- **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
+  its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
+  the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
+  `~/Library/Application Support/FrameScrub/thumbnails/posters` (480 pixels, the newest 2000). F2 renames,
+  ⌘⌫ moves to the Trash, ⌘↑ goes up, ⌘[ / ⌘] go back and forward, typing a name selects it. A video opened from a
+  folder goes back to that folder with it selected (⌘W, the ‹ button with the folder's name, ⇧⌘H); the folder's
+  videos are the playlist, in `playlist-sort`'s order.
 - A file that does not open leaves its reason in the window (Return tries again, ⌘W goes to Home).
 - The window opens with the size and place it had when the app last ran; a file still sizes it on open. The start
   screen keeps a size of its own: closing a video (⌘W, File → Close Video, or the ‹ Recent / ‹ Stash button that
@@ -435,7 +442,7 @@ home-card-size=220              # 60…480 points, width of Home's cards (⌘= /
 recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
-home-tab=recent                 # where Home opens: recent | stash (the last one chosen)
+home-tab=recent                 # where Home opens: recent | folders | stash (the last one chosen)
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares

@@ -82,9 +82,10 @@ public enum KeyLayout: String, CaseIterable, Sendable {
     }
 }
 
-/// Where Home opens (`home-tab`): Recent or the Stash library.
+/// Where Home opens (`home-tab`): Recent, the folders (where they were last browsed) or the Stash library.
 public enum HomeTab: String, CaseIterable, Sendable {
     case recent
+    case folders
     case stash
 }
 
