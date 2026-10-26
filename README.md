@@ -352,6 +352,9 @@ scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homeb
 
 A plain `swift build` or `swift run` finds Homebrew's FFmpeg instead, if any: the scripts point SwiftPM at FrameScrub's.
 
+`make-app.sh` writes which build it is into the app (branch, commit, its date, uncommitted changes, build date):
+About FrameScrub and the bottom of Settings › General show it, with a button that copies it.
+
 ### Uninstall
 
 ```sh

@@ -132,6 +132,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller?.togglePluginPanel()
     }
 
+    /// The standard panel, with which build this is under the name (`BuildInfo`, baked by scripts/make-app.sh).
+    @objc private func showAbout(_ sender: Any?) {
+        let build = NSAttributedString(string: BuildInfo.line(of: .current), attributes: [
+            .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize), .foregroundColor: NSColor.secondaryLabelColor,
+        ])
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: build])
+    }
+
     @objc private func focusPluginPanel(_ sender: Any?) {
         controller?.focusPluginPanel()
     }
@@ -584,7 +592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About FrameScrub", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "About FrameScrub", action: #selector(showAbout(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(showPreferences(_:)), keyEquivalent: ",")
         appMenu.addItem(.separator())
