@@ -302,6 +302,15 @@ struct PreferencesView: View {
                           number: model.binding(\.scrub.fastMultiplier, ["scrub-fast-multiplier"]), range: 1...100, step: 1)
                 Toggle("Invert scrub direction", isOn: model.binding(\.scrub.invert, ["scrub-invert"]))
             }
+            Section("Mouse buttons") {
+                Picker("Profile", selection: model.binding(\.mouseProfile, ["mouse-profile"])) {
+                    ForEach(MouseProfile.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                Text("Editing: the gesture button plays and pauses (hold: save a clip), the panel saves the frame (hold: export "
+                     + "the range), the middle button plays the marks. Press the SmartShift button twice to switch. Lines of "
+                     + "your own for a profile go to input-viewing.conf or input-editing.conf next to input.conf.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Logitech mouse") {
                 Toggle("Free spin and Precision Scroll in the player", isOn: model.binding(\.wheelPrecision, ["wheel-precision"]))
                 Group {

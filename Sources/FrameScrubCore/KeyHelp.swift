@@ -128,6 +128,7 @@ public enum KeyHelp {
         case .showProgress: return (.window, 103, "Progress")
         case .stats: return (.window, 104, "Stats")
         case .showKeys: return (.window, 105, "These keys")
+        case .cycleMouseProfile: return (.window, 106, "Mouse buttons: Viewing / Editing")
         case .closeFile: return (.window, 106, "Close the video: back to Recent or Stash")
         case .quit: return (.window, 107, "Quit")
         case let .addVolume(delta): return (.audio, delta < 0 ? 0 : 1, delta < 0 ? "Volume down" : "Volume up")
