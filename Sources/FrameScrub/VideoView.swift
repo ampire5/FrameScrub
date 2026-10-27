@@ -209,6 +209,12 @@ final class VideoView: NSView {
         needsRender = true
     }
 
+    private static func threadCPUTime() -> Double {
+        var t = timespec()
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t)
+        return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
+    }
+
     /// Mask: RVM or Vision. The masks start over (the one on screen stays until the first new one is in).
     func setSubjectMatting(_ rvm: Bool) {
         guard rvm != Self.usesMatting else { return }
@@ -403,7 +409,7 @@ final class VideoView: NSView {
             if now - frameShownAt < Self.maskWait { return }   // its own mask is on the way; keeps needsRender set
             waited = true
         }
-        let cpuStart = Self.focusLog ? CACurrentMediaTime() : 0
+        let cpuStart = Self.focusLog ? Self.threadCPUTime() : 0   // the main thread's own CPU time, not the wall clock
         guard
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
@@ -483,7 +489,7 @@ final class VideoView: NSView {
         if Self.focusLog {
             focusStats.frames += 1
             if waited { focusStats.waited += 1 }
-            focusStats.cpuMs += (CACurrentMediaTime() - cpuStart) * 1000
+            focusStats.cpuMs += (Self.threadCPUTime() - cpuStart) * 1000
             commandBuffer.addCompletedHandler { [weak self] cb in
                 let ms = (cb.gpuEndTime - cb.gpuStartTime) * 1000
                 DispatchQueue.main.async { self?.focusStats.gpuMs += ms; self?.focusStats.gpuFrames += 1 }

@@ -34,14 +34,16 @@ neural engine and the GPU and takes 20 ms a frame. The edge is refined in the ap
 ## How it works
 
 - Playback: each frame scaled to 512×288 (288×512 for portrait video; other shapes stretched to the nearer one), one
-  pass, the recurrent state carried from frame to frame. A seek or a jump of more than 4 frames starts it over (the
-  state settles again within ~1 s, and starts close: 1–1.6/255 from the settled alpha).
+  pass, the recurrent state carried from frame to frame. A seek, a jump of more than 4 frames or a cut starts it over
+  (a cut: the frame's luma on a 32×18 grid changed by more than 20/255 on average; walking, zooms and pans reach 12, hard
+  cuts 28–61; the state settles again within ~1 s, and starts close: 1–1.6/255 from the settled alpha).
 - A still frame (after 250 ms on pause): 768×432, 4 passes from a fresh state.
 - The edge: a fast guided filter (He & Sun 2015) in Core Image. On the matte's grid every 5×5 window fits the matte as
   a·luma + b of the picture; a and b, smoothed and scaled up, are applied to the full frame's luma, so the edge follows
   the picture's own edges at the frame's resolution. No erosion or feathering as for Vision's masks.
 - View › Subject Focus › Mask: RVM / Mask: Vision switches live, for every window. RVM is the default when the models are
-  there; `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision.
+  there; `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision; `FRAMESCRUB_FOCUS_REFINE=0`
+  shows the matte only scaled up (benches).
 
 ## Measurements
 
@@ -73,7 +75,9 @@ In the app (`FRAMESCRUB_FOCUS_LOG=1`, White, 18 s runs):
 | | RVM | 24 | 5.5 ms | 11 ms | 5.6 / 5.6 ms | 27 % |
 | Runway 9:16 608×1080 | RVM | 24 | 7.9 ms | 11 ms | 3.3 / 1.5 ms | 32 % |
 
-Every frame was drawn with its own mask in all runs. The still frame's 4 passes: 41–63 ms (the first use of the
+Every frame was drawn with its own mask in all runs. The draw times in this table are wall clock (the bench line measured
+so then): the main thread's own CPU time (`CLOCK_THREAD_CPUTIME_ID`, measured since) is the same for both, 1080p: Vision
+3.1–3.3 ms, RVM 3.1–3.4 ms without the edge refinement and 3.3–3.4 ms with it (~0.1–0.2 ms for the guided filter). The still frame's 4 passes: 41–63 ms (the first use of the
 768 model on a machine also compiles it: ~0.8 s once).
 
 What it looks like: the audience at the runway's edge is no longer in the mask (Vision includes it); hair is whole; a
@@ -81,7 +85,5 @@ model far down the runway can come out half transparent, and once in a while a s
 
 ## Open
 
-- Draw CPU: the guided filter's Core Image graph costs ~2.5 ms of the main thread a frame; a Metal pass would cost less.
-- Scene cuts: the state should start over at a cut (luma histogram jump), not only at a seek.
 - One model with enumerated sizes instead of four files (the weights are the same).
 - "The main person only": RVM's matte times Vision's person-instance mask of the chosen person.

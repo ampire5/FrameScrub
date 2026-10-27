@@ -301,6 +301,8 @@ enum SubjectFocusEffect {
     /// Window radius on the matte's grid (2 of 512 px: ~8 px of a 1080p frame) and the regulariser: a smaller one
     /// follows weaker edges of the picture (and its noise).
     private static let guideRadius = 2.0, guideEps = 0.0004
+    /// Benches: `FRAMESCRUB_FOCUS_REFINE=0` shows RVM's matte only scaled up.
+    private static let refines = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_REFINE"] != "0"
 
     /// RVM's small `matte` refined along the edges of `image` (the frame it was made of), at the frame's size.
     static func refined(_ matte: CIImage, guide image: CIImage) -> CIImage {
@@ -336,7 +338,7 @@ enum SubjectFocusEffect {
             .concatenating(.init(translationX: ext.minX, y: ext.minY))
         // feathered, the edge pulled in a little, on the small mask; then scaled to the frame
         let sigma = 0.3 * raw.extent.width * 0.008
-        let m = matte ? refined(raw, guide: image) : raw.clampedToExtent()
+        let m = matte && refines ? refined(raw, guide: image) : matte ? raw.transformed(by: toFrame).cropped(to: ext) : raw.clampedToExtent()
             .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: sigma * 1.5])
             .applyingGaussianBlur(sigma: sigma)
             .transformed(by: toFrame).cropped(to: ext)

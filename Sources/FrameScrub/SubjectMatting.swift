@@ -42,6 +42,12 @@ final class SubjectMatting {
     private var models: [String: Loaded] = [:]
     private var state: [String: MLFeatureValue] = [:]
     private var stateModel = ""
+    /// The previous playback frame's luma on a coarse grid, to see a cut.
+    private var signature: [UInt8] = []
+    /// A cut: the coarse luma changed by more than this on average (of 255). Measured (`FRAMESCRUB_FOCUS_LOG=1`): a
+    /// runway's walking, zooms and pans up to 12.1, hard cuts between scenes 28.5, 48.4 and 60.8.
+    private static let cutThreshold = 20.0
+    private static let cutLog = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_LOG"] == "1"
     private let context = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull(),
                                               .name: "subject-matting"])
     private let log = Logger(subsystem: "FrameScrub", category: "subject-matting")
@@ -93,6 +99,21 @@ final class SubjectMatting {
     func reset() {
         state = [:]
         stateModel = ""
+        signature = []
+    }
+
+    /// The model input's luma on a 32×18 grid (a sample each, the input is already small).
+    private static func signature(of pb: CVPixelBuffer) -> [UInt8] {
+        CVPixelBufferLockBaseAddress(pb, .readOnly); defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb)?.assumingMemoryBound(to: UInt8.self) else { return [] }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), rb = CVPixelBufferGetBytesPerRow(pb)
+        let gw = w >= h ? 32 : 18, gh = w >= h ? 18 : 32
+        var out = [UInt8](repeating: 0, count: gw * gh)
+        for gy in 0..<gh { for gx in 0..<gw {
+            let p = base + ((gy * h + h / (2 * gh)) / gh) * rb + ((gx * w + w / (2 * gw)) / gw) * 4
+            out[gy * gw + gx] = UInt8((Int(p[2]) * 77 + Int(p[1]) * 150 + Int(p[0]) * 29) >> 8)
+        } }
+        return out
     }
 
     /// The alpha of `picture` (upright, any size) at the model's size, 8-bit rows top first; nil without the models.
@@ -107,7 +128,20 @@ final class SubjectMatting {
             .transformed(by: .init(scaleX: Double(m.width) / picture.extent.width, y: Double(m.height) / picture.extent.height))
         context.render(fitted, to: m.input)
 
-        if still || !continuous || stateModel != key {
+        // A cut starts the state over too: the new scene's people are not where the old one's were.
+        var cut = false
+        if !still {
+            let sig = Self.signature(of: m.input)
+            if continuous, sig.count == signature.count, !sig.isEmpty {
+                var d = 0
+                for i in 0..<sig.count { d += abs(Int(sig[i]) - Int(signature[i])) }
+                let mean = Double(d) / Double(sig.count)
+                cut = mean > Self.cutThreshold
+                if Self.cutLog, cut { NSLog("subject matting: cut (luma change %.1f), the state starts over", mean) }
+            }
+            signature = sig
+        }
+        if still || !continuous || cut || stateModel != key {
             state = freshState(m)
             stateModel = key
         }
@@ -119,7 +153,7 @@ final class SubjectMatting {
             for i in 1...4 { if let v = r.featureValue(for: "r\(i)o") { state["r\(i)i"] = v } }
             pha = r.featureValue(for: "pha")?.multiArrayValue
         }
-        if still { reset() }   // the passes over one frame are no history for the playback after it
+        if still { state = [:]; stateModel = "" }   // the passes over one frame are no history for the playback after it
         guard let a = pha, a.shape.count == 4 else { return nil }
         let h = a.shape[2].intValue, w = a.shape[3].intValue, ys = a.strides[2].intValue, xs = a.strides[3].intValue
         var out = Data(count: w * h)
