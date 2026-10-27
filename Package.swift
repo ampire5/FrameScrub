@@ -58,6 +58,10 @@ let package = Package(
                 "FrameScrubCore",
                 "FrameScrubSettings",
                 .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "Filmstrip", package: "HomeScreenKit"),
+                .product(name: "FilmstripModel", package: "HomeScreenKit"),
+                .product(name: "HomeChrome", package: "HomeScreenKit"),
+                .product(name: "HomeScreenModel", package: "HomeScreenKit"),
             ]
         ),
         .executableTarget(

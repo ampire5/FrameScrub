@@ -4,7 +4,9 @@ import Foundation
 let arguments = Array(CommandLine.arguments.dropFirst())
 switch arguments.first {
 case "settings": SettingsBench.main(Array(arguments.dropFirst()))
-default: fail("usage: FrameScrubBench settings [--rounds N] [--settle MS] [--shots DIR] [--start ID]")
+case "playlist-strip": PlaylistStripBench.main(Array(arguments.dropFirst()))
+default: fail("usage: FrameScrubBench settings [--rounds N] [--settle MS] [--shots DIR] [--start ID]\n"
+            + "       FrameScrubBench playlist-strip [--rows N] [--rounds N]")
 }
 
 func fail(_ message: String) -> Never {
