@@ -126,6 +126,16 @@ Home and the strip share them.
 - `PlaylistPosters` (FrameScrubCore): the dwell queue in front of a `RecentThumbnailer` — `visible(_ urls:)`,
   `cancelAll()`, a completion on the main actor with the picture and the facts.
 
+### Decided in the plan
+
+- No `FilmstripAxis.vertical`: `FilmstripScroll` is axis-free already (`fingerDelta` along the strip, `crossDelta`
+  across); the vertical view passes the vertical delta as `fingerDelta`. Only `FilmstripTrack` is added.
+- `FilmstripView` and `FilmstripRowsView` share only the edge fade (`FilmstripFade`); what a cell holds differs, so
+  each keeps its own pool.
+- Posters: Home's `PictureQueue` moves to its own file and is reused on the `posters` store, with the strip's own
+  one-worker `RecentThumbnailer`.
+- `PlaylistRow` gains `url: URL?` (the local file; nil for scenes and streams) so the strip can find pictures.
+
 ## Budgets and bench
 
 `FrameScrubBench playlist-strip` on a generated folder of 500 videos (copies of the test fixtures, files of 3
