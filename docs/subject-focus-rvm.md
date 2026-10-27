@@ -55,7 +55,13 @@ mockup "Subject Focus panel": on/off (H) and the style for its window (⇧H step
 background's brightness, blur and colour; the edge's softness, shrink or grow (points of a 1080-line frame), falloff near
 the people, the people's contrast and the clean edge colour; and, for every window, the mask (RVM or Vision, Vision's
 quality while playing and its steadiness, the sharper mask when paused), who (all or the main people) and the mask tinted
-over the people. A slider makes the style Custom, starting from the style on screen. Everything is kept in
+over the people. A slider makes the style Custom, starting from the style on screen.
+
+User presets: + after the buttons saves the look on screen under a name typed in place (Return saves, Esc gives up); the
+preset is a button after Custom with a faint × on its corner (it deletes it; a right click also replaces it with the look
+on screen). A preset is shown as the custom style; a slider moved on it makes that the custom look again. Hide standard
+presets leaves Custom and the user's presets; ⇧ with the style key steps through the buttons shown. Kept in
+`UserDefaults` with the rest; Reset to Defaults keeps the presets. Everything is kept in
 `UserDefaults` (`SubjectFocus.*`), not in framescrub.conf, while this is a spike; Reset to Defaults puts it back.
 
 It is a second tab of a slot (the right one), so two panels never fight over one edge: the header switches between the

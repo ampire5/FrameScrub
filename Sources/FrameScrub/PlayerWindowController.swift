@@ -1887,7 +1887,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .toggleSubjectFocus:
             setSubjectFocus(videoView.subjectFocus == nil ? Self.subjectFocusStyle : nil)
         case .cycleSubjectFocus:
-            setSubjectFocus((videoView.subjectFocus ?? Self.subjectFocusStyle).next)
+            let settings = SubjectFocusSettings.shared
+            setSubjectFocus(settings.select(settings.next(after: videoView.subjectFocus ?? Self.subjectFocusStyle)))
         case .toggleSubjectFocusPanel:
             slots.toggleSubjectFocusPanel()
         case .cycleUpscaler:
@@ -3545,7 +3546,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let style { Self.subjectFocusStyle = style }
         videoView.setSubjectFocus(style)
         subjectFocusPanel?.refresh()
-        showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
+        let settings = SubjectFocusSettings.shared
+        showMessage(style.map { "Subject Focus: \(settings.title(of: settings.choice(for: $0)))" } ?? "Subject Focus: off")
     }
 
     /// View › Subject Focus › Subject: All People / Main People, for every window.

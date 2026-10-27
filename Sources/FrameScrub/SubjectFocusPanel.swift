@@ -18,7 +18,7 @@ import FrameScrubCore
     private static let secondary = NSColor(srgbRed: 0x9a / 255, green: 0x9a / 255, blue: 0xa2 / 255, alpha: 1)
 
     private let onSwitch = NSSwitch()
-    private var styleButtons: [SubjectFocusStyle: NSButton] = [:]
+    private let presetRow = PresetRowView()
     private var sliders: [Slider] = []
     private let cleanEdge = NSSwitch()
     private let mask = NSSegmentedControl(labels: ["RVM", "Vision"], trackingMode: .selectOne, target: nil, action: nil)
@@ -79,25 +79,28 @@ import FrameScrubCore
         onSwitch.action = #selector(toggleOn)
         stack.addArrangedSubview(row(label("On  (H)"), onSwitch, under: subtitle))
 
-        // the styles, 3 × 2
-        let grid = NSGridView(numberOfColumns: 3, rows: 0)
-        grid.columnSpacing = 6
-        grid.rowSpacing = 6
-        let styles = SubjectFocusStyle.allCases
-        for start in stride(from: 0, to: styles.count, by: 3) {
-            grid.addRow(with: styles[start..<min(styles.count, start + 3)].map { style in
-                let b = NSButton(title: style.title, target: self, action: #selector(pickStyle(_:)))
-                b.setButtonType(.pushOnPushOff)
-                b.bezelStyle = .push
-                b.controlSize = .regular
-                b.tag = styles.firstIndex(of: style)!
-                b.translatesAutoresizingMaskIntoConstraints = false
-                b.widthAnchor.constraint(equalToConstant: 96).isActive = true
-                styleButtons[style] = b
-                return b
-            })
+        // the styles and the user's presets
+        presetRow.onPick = { [weak self] id in self?.pick(id) }
+        presetRow.onDelete = { id in
+            guard case let .preset(uuid)? = Self.choice(id) else { return }
+            SubjectFocusSettings.shared.presets.removeAll { $0.id == uuid }
         }
-        stack.addArrangedSubview(section("STYLE  ·  ⇧H NEXT", [grid]))
+        presetRow.onReplace = { [weak self] id in
+            guard let self, case let .preset(uuid)? = Self.choice(id) else { return }
+            let settings = SubjectFocusSettings.shared
+            let look = settings.look(currentStyle() ?? lastStyle())
+            if let i = settings.presets.firstIndex(where: { $0.id == uuid }) { settings.presets[i].look = look }
+        }
+        presetRow.onSave = { [weak self] name in
+            guard let self else { return }
+            let settings = SubjectFocusSettings.shared
+            settings.addPreset(named: name, look: settings.look(currentStyle() ?? lastStyle()))
+            setStyle(.custom)
+            refresh()
+        }
+        presetRow.onHideStandard = { SubjectFocusSettings.shared.hideStandard = $0 }
+        presetRow.suggestedName = { SubjectFocusSettings.shared.newPresetName }
+        stack.addArrangedSubview(section("STYLE  ·  ⇧H NEXT", [presetRow]))
 
         // the look
         func pct(_ v: Double) -> String { "\(Int((v * 100).rounded())) %" }
@@ -245,7 +248,9 @@ import FrameScrubCore
         let settings = SubjectFocusSettings.shared
         let style = currentStyle()
         onSwitch.state = style != nil ? .on : .off
-        for (s, b) in styleButtons { b.state = s == style ? .on : .off }
+        presetRow.update(settings.choices.map { c in
+            PresetRowView.Item(id: Self.id(c), title: settings.title(of: c), user: { if case .preset = c { true } else { false } }())
+        }, selected: style.map { Self.id(settings.choice(for: $0)) }, hideStandard: settings.hideStandard)
         let look = settings.look(style ?? lastStyle())
         for s in sliders {
             let v = s.get(look)
@@ -294,9 +299,22 @@ import FrameScrubCore
         refresh()
     }
 
-    @objc private func pickStyle(_ sender: NSButton) {
-        setStyle(SubjectFocusStyle.allCases[sender.tag])
+    private func pick(_ id: String) {
+        guard let choice = Self.choice(id) else { return }
+        setStyle(SubjectFocusSettings.shared.select(choice))
         refresh()
+    }
+
+    private static func id(_ choice: SubjectFocusSettings.Choice) -> String {
+        switch choice {
+        case let .style(style): "style:" + style.rawValue
+        case let .preset(uuid): "preset:" + uuid.uuidString
+        }
+    }
+
+    private static func choice(_ id: String) -> SubjectFocusSettings.Choice? {
+        if id.hasPrefix("style:") { return SubjectFocusStyle(rawValue: String(id.dropFirst(6))).map { .style($0) } }
+        return UUID(uuidString: String(id.dropFirst(7))).map { .preset($0) }
     }
 
     /// A slider: the look becomes the custom style's (starting from the style on screen), and the window shows it.
@@ -307,6 +325,7 @@ import FrameScrubCore
         var look = settings.look(style)
         s.set(&look, sender.doubleValue)
         settings.custom = look
+        settings.activePreset = nil   // a preset changed on screen is the custom look now (save it again with +)
         if currentStyle() != .custom { setStyle(.custom) }
         refresh()
     }
