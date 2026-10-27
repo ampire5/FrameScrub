@@ -709,7 +709,10 @@ import FrameScrubCore
     /// `point` in the container: edges and tongues of the hidden overlay slots. A window that is not the key one still
     /// answers (another of the app's windows may be in front of the keyboard): only a sheet on it keeps the edges quiet.
     private func reveal(at point: CGPoint) {
-        let buttonHeld = NSEvent.pressedMouseButtons != 0
+        // Left, right, middle, back and forward only: a mouse or its driver can leave a higher button down in the HID
+        // state for good (button 6 seen stuck system-wide, Mac Mouse Fix off or on, 2026-10-27), and the edges
+        // would stay quiet until a reboot.
+        let buttonHeld = NSEvent.pressedMouseButtons & 0b11111 != 0
         let bounds = container.bounds
         let quiet = container.window?.attachedSheet != nil
         for slot in orderedSlots {
