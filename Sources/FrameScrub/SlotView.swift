@@ -29,7 +29,14 @@ import QuartzCore
             applyTextShadow(mode == .overlay && backdrop == .clear)
         }
     }
-    var title = "" { didSet { titleButton.title = title + " ▾" } }
+    var title = "" { didSet { titleButton.title = title + (showsSlotMenu ? " ▾" : "") } }
+    /// False for a card that is not a slot (Subject Focus's panel): no ▾ menu, no pin.
+    var showsSlotMenu = true {
+        didSet {
+            pinButton.isHidden = !showsSlotMenu
+            titleButton.title = title + (showsSlotMenu ? " ▾" : "")
+        }
+    }
     /// Shown in the middle of a slot without a view (a plugin that is not in the config any more).
     var note: String? { didSet { updateEmptyState() } }
     var mode = SlotMode.overlay { didSet { applyLook() } }

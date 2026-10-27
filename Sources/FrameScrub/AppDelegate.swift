@@ -509,6 +509,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let item = NSMenuItem(title: "Subject Focus", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "Subject Focus")
         submenu.addItem(commandItem("Subject Focus", .toggleSubjectFocus, key: "", modifiers: []))   // h stays an input.conf binding
+        submenu.addItem(commandItem("Subject Focus Panel", .toggleSubjectFocusPanel, key: "", modifiers: []))   // ⌥H too
         submenu.addItem(.separator())
         for (tag, style) in SubjectFocusStyle.allCases.enumerated() {
             let entry = NSMenuItem(title: style.title, action: #selector(setSubjectFocusStyle(_:)), keyEquivalent: "")
@@ -611,10 +612,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return controller?.hasOpenFile == true && controller?.showsHome != true
         }
         if item.action == #selector(setSubjectMainPeople(_:)) {
-            item.state = (item.tag == 1) == VideoView.mainPeopleOnly ? .on : .off
+            item.state = (item.tag == 1) == SubjectFocusSettings.shared.mainPeople ? .on : .off
         }
         if item.action == #selector(setSubjectMatting(_:)) {
-            item.state = (item.tag == 1) == VideoView.usesMatting ? .on : .off
+            item.state = (item.tag == 1) == SubjectFocusSettings.shared.matting ? .on : .off
             return item.tag == 0 || SubjectMatting.isAvailable
         }
         if let box = item.representedObject as? CommandBox, box.command == .toggleSubjectFocus {

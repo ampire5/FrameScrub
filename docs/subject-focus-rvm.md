@@ -48,6 +48,28 @@ neural engine and the GPU and takes 20 ms a frame. The edge is refined in the ap
   there; `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision; `FRAMESCRUB_FOCUS_REFINE=0`
   shows the matte only scaled up (benches).
 
+## The panel
+
+⌥H (`toggle-subject-focus-panel`, View › Subject Focus › Subject Focus Panel) shows Subject Focus's panel over the
+video's right side, made after the mockup "Subject Focus panel": on/off (H) and the style for its window (⇧H steps
+through them, Custom last); the background's brightness, blur and colour; the edge's softness, shrink or grow (points of
+a 1080-line frame), falloff near the people, the people's contrast and the clean edge colour; and, for every window, the
+mask (RVM or Vision, Vision's quality while playing and its steadiness, the sharper mask when paused), who (all or the
+main people) and the mask tinted over the people. A slider makes the style Custom, starting from the style on screen.
+Everything is kept in `UserDefaults` (`SubjectFocus.*`), not in framescrub.conf, while this is a spike; Reset to
+Defaults puts it back.
+
+It is an overlay card apart from the slots (they may all hold plugins), with the slots' card, backdrops (the ◐ button,
+glass by default) and motion; it goes 150 ms after the pointer left it (past the window's right edge by up to 200 pt
+still counts as in), with ⌥H, ✕ or a click on the video. Built the first time it shows, kept after.
+
+The mockup's "Applies to: this folder / everywhere" and Save as Default are left out (one set for everything, kept as
+it changes); "Largest person" and "Person under pointer" too (All / Main people is what the masks can do now).
+
+Main thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`, `FRAMESCRUB_FOCUS_PANEL=bench`, 5 rounds, M4 Max): the first show
+15.5 ms (building it), then 0.3–1.1 ms; a slider step 0.14–0.25 ms (max 0.65); hiding 0.03 ms; no round slower than
+the one before. Layout and drawing after the action are not in these numbers.
+
 ## Measurements
 
 M4 Max, macOS 26, 2026-10-27, the machine busy with other work (idle ~15 % CPU).

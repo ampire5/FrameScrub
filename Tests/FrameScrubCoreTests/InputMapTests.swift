@@ -356,7 +356,8 @@ import Testing
         #expect(map.command(for: KeyChord(key: "h")) == .toggleSubjectFocus)
         #expect(map.command(for: KeyChord(key: "h", modifiers: .shift)) == .cycleSubjectFocus)
         #expect(Command.parse("cycle-subject-focus") == .cycleSubjectFocus)
-        #expect(map.bindings.count == 134)   // h ⇧H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
+        #expect(map.command(for: KeyChord.parse("Alt+h")!) == .toggleSubjectFocusPanel)
+        #expect(map.bindings.count == 135)   // h ⇧H ⌥H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)

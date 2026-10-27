@@ -9,10 +9,9 @@ import Vision
 // frame's own pixels before scaling. Ported from the PersonVideo prototype (scratchpad), where the numbers come from:
 // M4 Max, Vision balanced 9.6 ms a 1080p frame on the ANE (14.6 on the GPU), accurate 34 ms.
 
-/// The looks, in `H`'s order. Brightness −1 … +1 reaches pure black / white; blur 0…1 (sigma ∝ blur²); falloff: less
-/// effect close to the people, full far away.
+/// The looks, in `H`'s order; `custom` is the user's own (the panel's sliders, `SubjectFocusSettings`).
 enum SubjectFocusStyle: String, CaseIterable {
-    case studio, lens, black, white, accent
+    case studio, lens, black, white, accent, custom
 
     var title: String {
         switch self {
@@ -21,18 +20,26 @@ enum SubjectFocusStyle: String, CaseIterable {
         case .black: "Black"
         case .white: "White"
         case .accent: "Accent"
+        case .custom: "Custom"
         }
     }
 
-    struct Look { var brightness = 0.0, desaturate = 0.0, blur = 0.0, falloff = 0.0 }
+    /// Brightness −1 … +1 reaches pure black / white; desaturate, blur 0…1 (sigma ∝ blur²); falloff 0…1: less effect
+    /// close to the people, full far away; boost 0…1: local contrast on the people; feather 0…1: a softer edge; grow
+    /// −10…10: the edge moved out (in), in points of a 1080-line frame.
+    struct Look: Equatable, Codable {
+        var brightness = 0.0, desaturate = 0.0, blur = 0.0, falloff = 0.0, boost = 0.0, feather = 0.0, grow = 0.0
+    }
 
-    var look: Look {
+    /// The presets (the custom style's look is the user's). Boost as in Loupe's styles.
+    var preset: Look {
         switch self {
-        case .studio: Look(brightness: -0.45, desaturate: 0.6, blur: 0.35, falloff: 0.2)
-        case .lens: Look(blur: 0.75, falloff: 0.3)
-        case .black: Look(brightness: -1)
-        case .white: Look(brightness: 1)
-        case .accent: Look(brightness: -0.2, desaturate: 1, blur: 0.15)
+        case .studio: Look(brightness: -0.45, desaturate: 0.6, blur: 0.35, falloff: 0.2, boost: 0.3)
+        case .lens: Look(blur: 0.75, falloff: 0.3, boost: 0.15)
+        case .black: Look(brightness: -1, boost: 0.2)
+        case .white: Look(brightness: 1, boost: 0.1)
+        case .accent: Look(brightness: -0.2, desaturate: 1, blur: 0.15, falloff: 0.3, boost: 0.5)
+        case .custom: Look()
         }
     }
 
@@ -64,6 +71,8 @@ final class SubjectMasker: @unchecked Sendable {
         let image: CIImage?             // the upright picture, when the frame is turned (Vision then takes the image)
         let frame: Int
         let accurate: Bool
+        var vision = SubjectFocusSettings.VisionQuality.balanced   // playback masks' quality with Vision
+        var steadiness = SubjectFocusSettings.defaultSteadiness   // Vision's smoothing over time, 0…1
         var scrub = false               // stepped to while paused: RVM's finer model (`SubjectMatting`)
         var rvm = false                 // RVM's matte (when its models are there), else Vision's mask
         var mainPeople = false          // only the big people (`SubjectSelection`)
@@ -76,6 +85,7 @@ final class SubjectMasker: @unchecked Sendable {
     private var generation = 0          // main: `reset` drops results of before
 
     // queue only
+    private let fast = VNGeneratePersonSegmentationRequest()
     private let balanced = VNGeneratePersonSegmentationRequest()
     private let accurate = VNGeneratePersonSegmentationRequest()
     private let sequence = VNSequenceRequestHandler()
@@ -91,15 +101,7 @@ final class SubjectMasker: @unchecked Sendable {
     /// picture stands still is flicker and is smoothed hard (`stillKeep`); where the picture moved it follows at once.
     private static let lumaMotion: Float = 10, stillKeep: Float = 0.85
 
-    /// Benches (spike): `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate`, the playback masks' Vision quality (balanced
-    /// by default); `FRAMESCRUB_FOCUS_SMOOTH=0` shows Vision's raw masks (no smoothing, no hysteresis).
-    private static let liveQuality: VNGeneratePersonSegmentationRequest.QualityLevel = {
-        switch ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_QUALITY"] {
-        case "fast": .fast
-        case "accurate": .accurate
-        default: .balanced
-        }
-    }()
+    /// Benches (spike): `FRAMESCRUB_FOCUS_SMOOTH=0` shows Vision's raw masks (no smoothing, no hysteresis).
     private static let smoothing = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SMOOTH"] != "0"
 
     /// How much of the past a quiet pixel keeps, and the change (of 255) taken as motion at once (no ghost behind a
@@ -107,7 +109,8 @@ final class SubjectMasker: @unchecked Sendable {
     private static let keep: Float = 0.5, motion: Float = 48
 
     init() {
-        for (request, quality) in [(balanced, Self.liveQuality), (accurate, .accurate)] {
+        for (request, quality) in [(fast, VNGeneratePersonSegmentationRequest.QualityLevel.fast), (balanced, .balanced),
+                                   (accurate, .accurate)] {
             request.qualityLevel = quality
             request.outputPixelFormat = kCVPixelFormatType_OneComponent8
             // The neural engine: 3× faster than the GPU for balanced here, and it leaves the GPU to the picture.
@@ -166,7 +169,12 @@ final class SubjectMasker: @unchecked Sendable {
 
     private func make(_ job: Job) -> SubjectMask? {
         if job.rvm, let mask = makeMatte(job) { return mask }
-        let request = job.accurate ? accurate : balanced
+        let live = switch job.vision {
+        case .fast: fast
+        case .balanced: balanced
+        case .accurate: accurate
+        }
+        let request = job.accurate ? accurate : live
         do {
             if let image = job.image {
                 try sequence.perform([request], on: image)
@@ -195,6 +203,9 @@ final class SubjectMasker: @unchecked Sendable {
         CVPixelBufferUnlockBaseAddress(pb, .readOnly)
 
         let luma = job.image == nil ? Self.luma(job.pixelBuffer, w, h) : nil
+        // the panel's steadiness scales both: its default (0.6) gives the measured values, 0 no smoothing
+        let scale = Float(job.steadiness / SubjectFocusSettings.defaultSteadiness)
+        let stillKeep = min(0.95, Self.stillKeep * scale), keep = min(0.9, Self.keep * scale)
         // Playback: motion-adaptive smoothing over time, then hysteresis (on above 0.6, off below 0.4). A still frame:
         // its own accurate mask, only stretched. A jump (seek, loop) or another size starts the smoothing over.
         let continuous = !job.accurate && size == (w, h) && !smooth.isEmpty && lastFrame != .min
@@ -220,9 +231,9 @@ final class SubjectMasker: @unchecked Sendable {
                     if !continuous {
                         k = 0
                     } else if let luma, previousLuma.count == luma.count {
-                        k = Self.stillKeep * max(0, 1 - abs(Float(luma[i]) - Float(previousLuma[i])) / Self.lumaMotion)
+                        k = stillKeep * max(0, 1 - abs(Float(luma[i]) - Float(previousLuma[i])) / Self.lumaMotion)
                     } else {
-                        k = Self.keep * max(0, 1 - abs(n - s) / Self.motion)
+                        k = keep * max(0, 1 - abs(n - s) / Self.motion)
                     }
                     let e = s * k + n * (1 - k)
                     smooth[i] = e
@@ -341,24 +352,41 @@ enum SubjectFocusEffect {
         return guideApply.apply(extent: ext, arguments: [up, image])!
     }
 
+    private static let localContrast = CIColorKernel(source: """
+    kernel vec4 localContrast(__sample c, __sample b, float k) {
+        return vec4(clamp(c.rgb + k * (c.rgb - b.rgb), 0.0, 1.0), c.a);
+    }
+    """)!
+
     private static func scaled(_ img: CIImage, by f: Double, bias: Double = 0) -> CIImage {
         img.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": CIVector(x: f, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: f, z: 0, w: 0),
             "inputBVector": CIVector(x: 0, y: 0, z: f, w: 0), "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0)])
     }
 
+    /// `cleanEdge`: the edge band takes the person's own colours (no rim of the old background); `overlay`: the mask
+    /// tinted over the people (the panel's Show Mask).
     static func apply(to image: CIImage, mask raw: CIImage, matte: Bool = false, look: SubjectFocusStyle.Look,
-                      amount: Double) -> CIImage {
+                      amount: Double, cleanEdge: Bool = true, overlay: Bool = false) -> CIImage {
         let ext = image.extent
         guard amount > 0, ext.width >= 8, ext.height >= 8 else { return image }
         let toFrame = CGAffineTransform(scaleX: ext.width / raw.extent.width, y: ext.height / raw.extent.height)
             .concatenating(.init(translationX: ext.minX, y: ext.minY))
         // feathered, the edge pulled in a little, on the small mask; then scaled to the frame
         let sigma = 0.3 * raw.extent.width * 0.008
-        let m = matte && refines ? refined(raw, guide: image) : matte ? raw.transformed(by: toFrame).cropped(to: ext) : raw.clampedToExtent()
+        var m = matte && refines ? refined(raw, guide: image) : matte ? raw.transformed(by: toFrame).cropped(to: ext) : raw.clampedToExtent()
             .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: sigma * 1.5])
             .applyingGaussianBlur(sigma: sigma)
             .transformed(by: toFrame).cropped(to: ext)
+        // the panel's edge: moved out or in (points of a 1080-line frame), then softened (up to 1 % of the height)
+        let lines = ext.height / 1080
+        if abs(look.grow) >= 0.5 {
+            m = m.clampedToExtent().applyingFilter(look.grow > 0 ? "CIMorphologyMaximum" : "CIMorphologyMinimum",
+                                                   parameters: [kCIInputRadiusKey: abs(look.grow) * lines]).cropped(to: ext)
+        }
+        if look.feather > 0.01 {
+            m = m.clampedToExtent().applyingGaussianBlur(sigma: look.feather * ext.height * 0.01).cropped(to: ext)
+        }
         // w: how much of the effect a pixel gets (1 − mask), less near the people with falloff, times the fade
         var w = m.applyingFilter("CIColorInvert")
         if look.falloff > 0 {
@@ -391,16 +419,31 @@ enum SubjectFocusEffect {
             let f = pow(1 - min(1, abs(look.brightness)), 2.2)
             bg = scaled(bg, by: f, bias: look.brightness < 0 ? 0 : 1 - f).cropped(to: ext)
         }
-        // the edge band takes the person's own colours carried outwards: no rim of the old background around the hair
-        let core = raw.clampedToExtent()
-            .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: max(1.5, raw.extent.width * 0.004)])
-            .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 3]).applyingFilter("CIColorClamp")
-            .transformed(by: toFrame).cropped(to: ext)
-        let carried = normalizedBlur(quarter(image), weight: quarter(core), sigma: max(1, sr.width * 0.005))
+        // the people's local contrast: the frame against its blur at a quarter (~1 % of the width), times boost
+        var people = image
+        if look.boost > 0.01 {
+            let base = quarter(image).clampedToExtent().applyingGaussianBlur(sigma: max(1, sr.width * 0.01))
+                .transformed(by: .init(scaleX: 1 / q, y: 1 / q)).cropped(to: ext)
+            people = localContrast.apply(extent: ext, arguments: [image, base, look.boost * amount])!
+        }
+        var person = people
+        if cleanEdge {
+            // the edge band takes the person's own colours carried outwards: no rim of the old background around the hair
+            let core = raw.clampedToExtent()
+                .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: max(1.5, raw.extent.width * 0.004)])
+                .applyingFilter("CIColorControls", parameters: [kCIInputContrastKey: 3]).applyingFilter("CIColorClamp")
+                .transformed(by: toFrame).cropped(to: ext)
+            let carried = normalizedBlur(quarter(image), weight: quarter(core), sigma: max(1, sr.width * 0.005))
+            person = people.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: carried, kCIInputMaskImageKey: core])
+        }
         // only under the mask: where it is 0 the frame stays itself (the fades and falloff mix the background with it)
-        let person = image.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: carried, kCIInputMaskImageKey: core])
-            .applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: m])
-        return bg.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: person, kCIInputMaskImageKey: w])
+        person = person.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: image, kCIInputMaskImageKey: m])
+        let out = bg.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: person, kCIInputMaskImageKey: w])
+            .cropped(to: ext)
+        guard overlay else { return out }
+        let tint = out.applyingFilter("CIDissolveTransition", parameters: [
+            kCIInputTargetImageKey: CIImage(color: CIColor(red: 0.2, green: 0.55, blue: 1)).cropped(to: ext), kCIInputTimeKey: 0.45 * amount])
+        return tint.applyingFilter("CIBlendWithMask", parameters: [kCIInputBackgroundImageKey: out, kCIInputMaskImageKey: m])
             .cropped(to: ext)
     }
 }

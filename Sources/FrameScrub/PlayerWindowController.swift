@@ -1551,7 +1551,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.canRedo = { [weak self] in self?.core.canRedoMarks ?? false }
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
-        videoView.onLeftClick = { [weak self] in self?.slots.hideOverlays() }
+        videoView.onLeftClick = { [weak self] in
+            guard let self else { return }
+            if subjectFocusPanelMade { subjectFocusPanel.hide() }
+            slots.hideOverlays()
+        }
         videoView.zoomAllowed = { [weak self] in self.map { !$0.showsHome && $0.core.info != nil } ?? false }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
@@ -1886,6 +1890,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             setSubjectFocus(videoView.subjectFocus == nil ? Self.subjectFocusStyle : nil)
         case .cycleSubjectFocus:
             setSubjectFocus((videoView.subjectFocus ?? Self.subjectFocusStyle).next)
+        case .toggleSubjectFocusPanel:
+            subjectFocusPanel.toggle()
         case .cycleUpscaler:
             let next: Upscaler = core.config.saveUpscaler == .ml ? .lanczos : .ml
             do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = next } } catch {
@@ -3479,8 +3485,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Subject Focus (spike)
 
-    /// The style `H` and the menu last chose, shared by the windows (in memory only).
-    private static var subjectFocusStyle = SubjectFocusStyle.studio
+    /// The style `H` and the menu last chose, shared by the windows (kept, as the panel's settings are).
+    private static var subjectFocusStyle = UserDefaults.standard.string(forKey: "SubjectFocus.style")
+        .flatMap(SubjectFocusStyle.init(rawValue:)) ?? .studio {
+        didSet { UserDefaults.standard.set(subjectFocusStyle.rawValue, forKey: "SubjectFocus.style") }
+    }
+    /// The panel over the video's right side (⌥H), made the first time it shows.
+    private lazy var subjectFocusPanel: SubjectFocusPanelHost = {
+        let host = SubjectFocusPanelHost(container: window!.contentView!)
+        host.topInset = { [weak self] in self?.slots.topInset ?? 0 }
+        host.panel.currentStyle = { [weak self] in self?.videoView.subjectFocus }
+        host.panel.setStyle = { [weak self] in self?.setSubjectFocus($0) }
+        host.panel.lastStyle = { Self.subjectFocusStyle }
+        subjectFocusPanelMade = true
+        return host
+    }()
+    private var subjectFocusPanelMade = false
     private static var focusFromEnvironmentDone = false
 
     /// Bench: `FRAMESCRUB_FOCUS_SCRUB=<frames a step>,<steps a second>` pauses and scrubs like the wheel, 40 steps
@@ -3507,18 +3527,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func setSubjectFocus(_ style: SubjectFocusStyle?) {
         if let style { Self.subjectFocusStyle = style }
         videoView.setSubjectFocus(style)
+        if subjectFocusPanelMade { subjectFocusPanel.panel.refresh() }
         showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
     }
 
     /// View › Subject Focus › Subject: All People / Main People, for every window.
     func setSubjectMainPeople(_ on: Bool) {
-        videoView.setSubjectMainPeople(on)
+        SubjectFocusSettings.shared.mainPeople = on
         showMessage(on ? "Subject Focus: main people" : "Subject Focus: all people")
     }
 
     /// View › Subject Focus › Mask: RVM (the user's models) or Vision, for every window.
     func setSubjectMatting(_ rvm: Bool) {
-        videoView.setSubjectMatting(rvm)
+        SubjectFocusSettings.shared.matting = rvm
         showMessage(rvm ? "Subject Focus mask: RVM" : "Subject Focus mask: Vision")
     }
 
@@ -3586,6 +3607,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             Self.focusFromEnvironmentDone = true
             if let style = SubjectFocusStyle(rawValue: name) { setSubjectFocus(style) }
             startScrubBench()
+            switch ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_PANEL"] {   // benches, screenshots
+            case "1": subjectFocusPanel.show()
+            case "bench": DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.subjectFocusPanel.bench() }
+            default: break
+            }
         }
         videoView.show(frame, playing: !core.isPaused)
         lastFrame = frame

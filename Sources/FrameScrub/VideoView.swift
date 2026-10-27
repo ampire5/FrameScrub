@@ -86,11 +86,8 @@ final class VideoView: NSView {
     private var focusFadeStart: CFTimeInterval?     // nil: no fade running (or waiting for the first mask)
     private var focusFadeIn = true
     private let masker = SubjectMasker()
-    /// The masks from RVM (`SubjectMatting`, when the user prepared its models) or from Vision; shared by the windows.
-    /// `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision (benches).
-    /// Subject: All People / Main People (`SubjectSelection`), shared by the windows.
-    static var mainPeopleOnly = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_MAIN"] == "1"   // benches
-    static var usesMatting = SubjectMatting.isAvailable && ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_QUALITY"] == nil
+    /// The custom look, the mask's settings and the overlay (`SubjectFocusSettings`), shared by the windows.
+    private var settingsObserver: NSObjectProtocol?
     private var focusMask: SubjectMask?
     private var frameShownAt: CFTimeInterval = 0
     private var stillToken = 0
@@ -99,7 +96,8 @@ final class VideoView: NSView {
     /// How long a new frame waits for its own mask before it is drawn with the newest one: Vision balanced takes
     /// ~10 ms a 1080p frame on the ANE (M4 Max), so at 30–60 fps the frame's own mask is normally in.
     private static let maskWait = 0.02
-    /// A frame on screen this long with no next one (paused, stepped, scrubbed to) gets Vision's accurate mask.
+    /// A frame on screen this long with no next one (paused, stepped, scrubbed to) gets its accurate mask (Vision's
+    /// accurate, or RVM's still passes), unless the panel's Sharper Mask When Paused is off.
     private static let stillDelay = 0.25
     private static let focusLog = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_LOG"] != nil
     private var focusStats = (masks: 0, visionMs: 0.0, own: 0, latencyMs: 0.0, frames: 0, waited: 0, cpuMs: 0.0, gpuMs: 0.0, gpuFrames: 0)
@@ -129,6 +127,11 @@ final class VideoView: NSView {
         metalLayer.addSublayer(flashLayer)
         registerForDraggedTypes([.fileURL])
         masker.onMask = { [weak self] mask, ms in self?.maskArrived(mask, visionMs: ms) }
+        settingsObserver = NotificationCenter.default.addObserver(forName: SubjectFocusSettings.changed, object: nil,
+                                                                  queue: .main) { [weak self] note in
+            let masks = note.userInfo?["masks"] as? Bool ?? false
+            MainActor.assumeIsolated { self?.subjectFocusSettingsChanged(masks: masks) }
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -140,6 +143,8 @@ final class VideoView: NSView {
         frameLink?.invalidate()
         frameLink = nil
         NotificationCenter.default.removeObserver(self)
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        settingsObserver = nil
     }
 
     /// The scaler in use, for the stats: "MetalFX", "Lanczos".
@@ -220,20 +225,14 @@ final class VideoView: NSView {
         return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
     }
 
-    /// Subject: all people, or only the main ones. The masks start over.
-    func setSubjectMainPeople(_ on: Bool) {
-        guard on != Self.mainPeopleOnly else { return }
-        Self.mainPeopleOnly = on
+    /// The panel or the menu changed a setting: a redraw, or the masks start over (the one on screen stays until the
+    /// first new one is in) when the mask's settings changed.
+    private func subjectFocusSettingsChanged(masks: Bool) {
+        guard subjectFocus != nil || focusDrawn != nil else { return }
+        needsRender = true
+        guard masks, subjectFocus != nil else { return }
         masker.reset()
-        if subjectFocus != nil, let frame = currentFrame { requestMask(for: frame, accurate: false) }
-    }
-
-    /// Mask: RVM or Vision. The masks start over (the one on screen stays until the first new one is in).
-    func setSubjectMatting(_ rvm: Bool) {
-        guard rvm != Self.usesMatting else { return }
-        Self.usesMatting = rvm
-        masker.reset()
-        if subjectFocus != nil, let frame = currentFrame { requestMask(for: frame, accurate: false) }
+        if let frame = currentFrame { requestMask(for: frame, accurate: false) }
     }
 
     /// 0…1: how much of the effect is drawn at `now`.
@@ -247,10 +246,12 @@ final class VideoView: NSView {
 
     private func requestMask(for frame: DecodedFrame, accurate: Bool) {
         if !accurate { frameShownAt = CACurrentMediaTime() }
+        let settings = SubjectFocusSettings.shared
         masker.submit(.init(pixelBuffer: frame.pixelBuffer, image: rotationClockwise == 0 ? nil : image,
-                            frame: frame.number, accurate: accurate, scrub: !framePlaying, rvm: Self.usesMatting,
-                            mainPeople: Self.mainPeopleOnly))
-        guard !accurate else { return }
+                            frame: frame.number, accurate: accurate, vision: settings.visionQuality,
+                            steadiness: settings.steadiness, scrub: !framePlaying, rvm: settings.matting,
+                            mainPeople: settings.mainPeople))
+        guard !accurate, settings.stillAccurate else { return }
         // a frame that stays: its accurate mask (one-shot per frame, dropped when the next frame comes)
         stillToken += 1
         let token = stillToken, number = frame.number
@@ -457,9 +458,13 @@ final class VideoView: NSView {
             guard let style = focusDrawn, let focusMask, amount > 0 else { return full }
             let mask = focusMask.image, matte = focusMask.matte
             let crossFade = focusFrom != nil && focusFadeStart != nil
-            let out = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: style.look, amount: crossFade ? 1 : amount)
+            let settings = SubjectFocusSettings.shared
+            let out = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: settings.look(style),
+                                               amount: crossFade ? 1 : amount, cleanEdge: settings.cleanEdge,
+                                               overlay: settings.showMask)
             guard crossFade, let from = focusFrom else { return out }
-            let before = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: from.look, amount: 1)
+            let before = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: settings.look(from), amount: 1,
+                                                  cleanEdge: settings.cleanEdge, overlay: settings.showMask)
             return before.applyingFilter("CIDissolveTransition", parameters: [kCIInputTargetImageKey: out, kCIInputTimeKey: amount])
                 .cropped(to: full.extent)
         }

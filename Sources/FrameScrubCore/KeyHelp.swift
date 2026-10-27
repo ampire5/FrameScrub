@@ -117,6 +117,7 @@ public enum KeyHelp {
         case .cycleUpscaler: return (.picture, 3, "Upscaler for saved frames")
         case .toggleSubjectFocus: return (.picture, 5, "Subject Focus on/off (background around the people)")
         case .cycleSubjectFocus: return (.picture, 6, "Subject Focus: next style")
+        case .toggleSubjectFocusPanel: return (.picture, 13, "Subject Focus panel")
         case .cycleAspect: return (.picture, 4, "Aspect: auto, no crop, 16:9, 4:3, 2.35:1, square pixels")
         case .cycleFullscreen: return (.window, 0, "Full screen")
         case .setFullscreen(false): return (.window, 1, "Leave full screen")
