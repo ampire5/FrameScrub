@@ -1882,6 +1882,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage(core.hasAudio ? "Scrub pitch: \(next.rawValue)" : "No audio")
         case .cycleAspect:
             cycleAspect()
+        case .toggleSubjectFocus:
+            setSubjectFocus(videoView.subjectFocus == nil ? Self.subjectFocusStyle : nil)
+        case .cycleSubjectFocus:
+            setSubjectFocus((videoView.subjectFocus ?? Self.subjectFocusStyle).next)
         case .cycleUpscaler:
             let next: Upscaler = core.config.saveUpscaler == .ml ? .lanczos : .ml
             do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = next } } catch {
@@ -3473,6 +3477,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// For the ticks of Playback › Colour: the open file's colour over framescrub.conf.
     var colorConfig: Config { core.config }
 
+    // MARK: Subject Focus (spike)
+
+    /// The style `H` and the menu last chose, shared by the windows (in memory only).
+    private static var subjectFocusStyle = SubjectFocusStyle.studio
+    private static var focusFromEnvironmentDone = false
+    /// The style on screen; nil: off.
+    var subjectFocus: SubjectFocusStyle? { videoView.subjectFocus }
+
+    /// On in `style`, or off (nil), with its OSD line.
+    func setSubjectFocus(_ style: SubjectFocusStyle?) {
+        if let style { Self.subjectFocusStyle = style }
+        videoView.setSubjectFocus(style)
+        showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
+    }
+
     /// For Playback › Colour › Reset File / Folder Colour: whether there is anything to reset.
     func hasOwnColor(_ level: ColorLevel) -> Bool { colorMemory.hasOwn(level) }
 
@@ -3532,6 +3551,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     // MARK: PlayerCoreDelegate
 
     func player(_ player: PlayerCore, display frame: DecodedFrame) {
+        // FRAMESCRUB_FOCUS=<style>: Subject Focus on with the first frame (self-tests and benches)
+        if !Self.focusFromEnvironmentDone, let name = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS"] {
+            Self.focusFromEnvironmentDone = true
+            if let style = SubjectFocusStyle(rawValue: name) { setSubjectFocus(style) }
+        }
         videoView.show(frame)
         lastFrame = frame
         checkSceneCut(frame)

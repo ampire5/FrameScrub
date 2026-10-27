@@ -78,6 +78,26 @@ final class VideoView: NSView {
     private var rightUsedAsModifier = false
     private let flashLayer = CALayer()
 
+    // Subject Focus (SubjectFocus.swift)
+    /// The style asked for; nil: off.
+    private(set) var subjectFocus: SubjectFocusStyle?
+    private var focusDrawn: SubjectFocusStyle?      // what is drawn: the style, still kept while fading out
+    private var focusFrom: SubjectFocusStyle?       // a style change cross-fades from this one
+    private var focusFadeStart: CFTimeInterval?     // nil: no fade running (or waiting for the first mask)
+    private var focusFadeIn = true
+    private let masker = SubjectMasker()
+    private var focusMask: SubjectMask?
+    private var frameShownAt: CFTimeInterval = 0
+    private var stillToken = 0
+    private static let focusFade = 0.25
+    /// How long a new frame waits for its own mask before it is drawn with the newest one: Vision balanced takes
+    /// ~10 ms a 1080p frame on the ANE (M4 Max), so at 30–60 fps the frame's own mask is normally in.
+    private static let maskWait = 0.02
+    /// A frame on screen this long with no next one (paused, stepped, scrubbed to) gets Vision's accurate mask.
+    private static let stillDelay = 0.25
+    private static let focusLog = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_LOG"] != nil
+    private var focusStats = (masks: 0, visionMs: 0.0, own: 0, latencyMs: 0.0, frames: 0, waited: 0, cpuMs: 0.0, gpuMs: 0.0, gpuFrames: 0)
+
     init() {
         device = MTLCreateSystemDefaultDevice()!
         commandQueue = device.makeCommandQueue()!
@@ -101,6 +121,7 @@ final class VideoView: NSView {
         flashLayer.opacity = 0
         metalLayer.addSublayer(flashLayer)
         registerForDraggedTypes([.fileURL])
+        masker.onMask = { [weak self] mask, ms in self?.maskArrived(mask, visionMs: ms) }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -139,6 +160,8 @@ final class VideoView: NSView {
         enhanced = nil
         enhancedFrame = nil
         imageIsHDR = false
+        focusMask = nil
+        masker.reset()
         skipCounter.reset()
         zoomPan.reset()
         needsRender = blank
@@ -151,6 +174,88 @@ final class VideoView: NSView {
         enhancedFrame = nil
         rebuildImage()
         needsRender = true
+        if subjectFocus != nil { requestMask(for: frame, accurate: false) }
+    }
+
+    // MARK: Subject Focus
+
+    /// Turns the effect on (fading in once the first mask is there), to another style (a cross-fade) or off (a fade
+    /// out). Off costs nothing: no Vision, no extra Core Image work.
+    func setSubjectFocus(_ style: SubjectFocusStyle?) {
+        guard style != subjectFocus else { return }
+        let wasOn = subjectFocus != nil
+        subjectFocus = style
+        let now = CACurrentMediaTime()
+        if let style {
+            focusFrom = wasOn ? focusDrawn : nil
+            if !wasOn, focusDrawn != nil {
+                // turned on again during the fade out: in from where the fade out got to
+                focusFadeStart = now - (1 - focusAmount(at: now)) * Self.focusFade
+            } else {
+                focusFadeStart = focusMask == nil ? nil : now
+            }
+            focusDrawn = style
+            focusFadeIn = true
+            if !wasOn, let frame = currentFrame { requestMask(for: frame, accurate: false) }
+        } else {
+            focusFrom = nil
+            focusFadeIn = false
+            focusFadeStart = now - (1 - focusAmount(at: now)) * Self.focusFade
+        }
+        needsRender = true
+    }
+
+    /// 0…1: how much of the effect is drawn at `now`.
+    private func focusAmount(at now: CFTimeInterval) -> Double {
+        guard focusDrawn != nil else { return 0 }
+        guard let start = focusFadeStart else { return focusMask == nil ? 0 : 1 }   // waiting for the first mask, or faded in
+        let t = min(1, max(0, (now - start) / Self.focusFade))
+        let eased = t * t * (3 - 2 * t)
+        return focusFadeIn ? eased : 1 - eased
+    }
+
+    private func requestMask(for frame: DecodedFrame, accurate: Bool) {
+        if !accurate { frameShownAt = CACurrentMediaTime() }
+        masker.submit(.init(pixelBuffer: frame.pixelBuffer, image: rotationClockwise == 0 ? nil : image,
+                            frame: frame.number, accurate: accurate))
+        guard !accurate else { return }
+        // a frame that stays: its accurate mask (one-shot per frame, dropped when the next frame comes)
+        stillToken += 1
+        let token = stillToken, number = frame.number
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stillDelay) { [weak self] in
+            guard let self, token == stillToken, subjectFocus != nil, let frame = currentFrame, frame.number == number else { return }
+            requestMask(for: frame, accurate: true)
+        }
+    }
+
+    private func maskArrived(_ mask: SubjectMask, visionMs: Double) {
+        guard subjectFocus != nil || focusDrawn != nil else { return }
+        // a playback mask after the accurate one of the same frame does not replace it; a still's mask only for its frame
+        if mask.accurate, mask.frame != currentFrame?.number { return }
+        if let shown = focusMask, shown.accurate, shown.frame == mask.frame, !mask.accurate { return }
+        if focusMask == nil, focusFadeStart == nil, focusFadeIn { focusFadeStart = CACurrentMediaTime() }
+        focusMask = mask
+        needsRender = true
+        // The frame on screen waited for this mask (`maskWait`): drawn now rather than at the next display-link tick, or
+        // with 4K (Vision ~17 ms) plus up to a refresh of waiting the next frame often came first and this one was lost.
+        if mask.frame == currentFrame?.number { render() }
+        guard Self.focusLog else { return }
+        focusStats.masks += 1
+        focusStats.visionMs += visionMs
+        if mask.frame == currentFrame?.number, !mask.accurate {
+            focusStats.own += 1
+            focusStats.latencyMs += (CACurrentMediaTime() - frameShownAt) * 1000
+        }
+        if mask.accurate { NSLog("subject focus: accurate mask for frame \(mask.frame), %.1f ms", visionMs) }
+    }
+
+    private func logFocusStats() {
+        let s = focusStats
+        guard Self.focusLog, s.frames >= 120 else { return }
+        NSLog("subject focus: %d frames drawn (%d with an older mask), masks %d (Vision %.1f ms avg; %d for the shown frame, %.1f ms after it came), draw CPU %.2f ms, GPU %.2f ms per frame; %d frames replaced before drawing so far",
+              s.frames, s.waited, s.masks, s.visionMs / Double(max(1, s.masks)), s.own, s.latencyMs / Double(max(1, s.own)),
+              s.cpuMs / Double(s.frames), s.gpuMs / Double(max(1, s.gpuFrames)), skippedFrames)
+        focusStats = (0, 0, 0, 0, 0, 0, 0, 0, 0)
     }
 
     /// Cross-fades to the neural-network version of the frame that is on screen (150 ms).
@@ -275,6 +380,13 @@ final class VideoView: NSView {
             ? CGSize(width: (size.height * aspect).rounded(), height: size.height)
             : CGSize(width: size.width, height: (size.width / aspect).rounded())
         guard fittedSize.width >= 1, fittedSize.height >= 1 else { return }   // keeps needsRender set
+        let now = CACurrentMediaTime()
+        var waited = false
+        if subjectFocus != nil, let frame = currentFrame, let mask = focusMask, mask.frame < frame.number {
+            if now - frameShownAt < Self.maskWait { return }   // its own mask is on the way; keeps needsRender set
+            waited = true
+        }
+        let cpuStart = Self.focusLog ? CACurrentMediaTime() : 0
         guard
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
@@ -290,12 +402,35 @@ final class VideoView: NSView {
             guard let previousColor else { return colorCorrection.apply(to: source) }
             return ColorCorrection.transition(from: previousColor, to: colorCorrection, progress: colorProgress, image: source)
         }
+        let amount = focusAmount(at: now)
+        if let start = focusFadeStart {
+            if now - start < Self.focusFade {
+                needsRender = true   // keep drawing until the fade is done
+            } else if focusFadeIn {
+                focusFadeStart = nil
+                focusFrom = nil
+            } else {   // faded out: nothing kept
+                focusDrawn = nil
+                focusFadeStart = nil
+                focusMask = nil
+                masker.reset()
+            }
+        }
+        func focused(_ full: CIImage) -> CIImage {
+            guard let style = focusDrawn, let mask = focusMask?.image, amount > 0 else { return full }
+            let crossFade = focusFrom != nil && focusFadeStart != nil
+            let out = SubjectFocusEffect.apply(to: full, mask: mask, look: style.look, amount: crossFade ? 1 : amount)
+            guard crossFade, let from = focusFrom else { return out }
+            let before = SubjectFocusEffect.apply(to: full, mask: mask, look: from.look, amount: 1)
+            return before.applyingFilter("CIDissolveTransition", parameters: [kCIInputTargetImageKey: out, kCIInputTimeKey: amount])
+                .cropped(to: full.extent)
+        }
         let atFit = zoomPan.isAtFit, refine = !zoomPan.isMoving
         func place(_ full: CIImage, using scaler: DisplayScaler, zoomScaler: DisplayScaler) -> CIImage {
             if !atFit {
-                return placeZoomed(full, using: zoomScaler, refine: refine, colored: colored, commandBuffer: commandBuffer)
+                return placeZoomed(focused(full), using: zoomScaler, refine: refine, colored: colored, commandBuffer: commandBuffer)
             }
-            let source = geometry.cropped(full)
+            let source = geometry.cropped(focused(full))
             let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: sharpen, hdr: imageIsHDR,
                                        commandBuffer: commandBuffer)
             return fitted.transformed(by: CGAffineTransform(
@@ -327,6 +462,16 @@ final class VideoView: NSView {
         }
         destination.colorSpace = outputColorSpace
         _ = try? context.startTask(toRender: composed, to: destination)
+        if Self.focusLog {
+            focusStats.frames += 1
+            if waited { focusStats.waited += 1 }
+            focusStats.cpuMs += (CACurrentMediaTime() - cpuStart) * 1000
+            commandBuffer.addCompletedHandler { [weak self] cb in
+                let ms = (cb.gpuEndTime - cb.gpuStartTime) * 1000
+                DispatchQueue.main.async { self?.focusStats.gpuMs += ms; self?.focusStats.gpuFrames += 1 }
+            }
+            logFocusStats()
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         StartupTrace.markOnce("first picture on screen")

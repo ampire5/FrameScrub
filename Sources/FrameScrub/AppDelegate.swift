@@ -504,6 +504,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    /// View › Subject Focus: on/off (H) and the styles (⇧H steps through them); a style turns it on.
+    private func makeSubjectFocusMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Subject Focus", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Subject Focus")
+        submenu.addItem(commandItem("Subject Focus", .toggleSubjectFocus, key: "", modifiers: []))   // h stays an input.conf binding
+        submenu.addItem(.separator())
+        for (tag, style) in SubjectFocusStyle.allCases.enumerated() {
+            let entry = NSMenuItem(title: style.title, action: #selector(setSubjectFocusStyle(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc func setSubjectFocusStyle(_ sender: NSMenuItem) {
+        controller?.setSubjectFocus(SubjectFocusStyle.allCases[sender.tag])
+    }
+
     private func makeUpscalerMenu() -> NSMenuItem {
         let item = NSMenuItem(title: "Upscaler for Saved Frames", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "Upscaler for Saved Frames")
@@ -563,6 +583,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // While a text field (the playlist filter, ⌘G) is typed in, ⌘⌫ deletes text there, never the video.
         if let box = item.representedObject as? CommandBox, box.command == .deleteFile,
            NSApp.keyWindow?.firstResponder is NSText { return false }
+        if item.action == #selector(setSubjectFocusStyle(_:)) {
+            item.state = controller?.subjectFocus == SubjectFocusStyle.allCases[item.tag] ? .on : .off
+            return controller?.hasOpenFile == true && controller?.showsHome != true
+        }
+        if let box = item.representedObject as? CommandBox, box.command == .toggleSubjectFocus {
+            item.state = controller?.subjectFocus != nil ? .on : .off
+        }
         if item.action == #selector(setSaveUpscaler(_:)), let config = preferences?.config {
             item.state = (item.tag == 0) == (config.saveUpscaler == .ml) ? .on : .off
         }
@@ -726,6 +753,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
         viewMenu.addItem(makeUpscalerMenu())
+        viewMenu.addItem(makeSubjectFocusMenu())
         viewMenu.addItem(commandItem("Next Aspect Ratio", .cycleAspect, key: "", modifiers: []))   // a stays an input.conf binding
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
         viewMenu.addItem(commandItem("Find in Folder…", .playlistFilter, key: "f"))
