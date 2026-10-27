@@ -2466,11 +2466,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let freeSpin = UserDefaults.standard.object(forKey: Self.wheelFreeSpinKey) as? Bool ?? true
         let wants = WheelWants(precision: core.config.wheelPrecision, freeSpin: freeSpin, playerInFront: inFront,
                                overVideo: overVideo)
-        guard wants != wheelWants else { return }
-        wheelWants = wants
-        mouseBridge.takeSmartShift(wants.wheelMode != nil)
+        if wants != wheelWants {
+            wheelWants = wants
+            mouseBridge.takeSmartShift(wants.wheelMode != nil)
+        }
         // As areas of this window: MouseService applies them while the pointer is over it, and rechecks the mouse
-        // itself after a sleep or a reconnect.
+        // itself after a sleep or a reconnect. Sent on every call (the bridge drops an unchanged wish), so the video's
+        // rect follows a resize and full screen.
         mouseBridge.wantWheel(window: window?.windowNumber, mode: wants.wheelMode,
                               highResolutionRect: wants.highResolution ? videoView.convert(videoView.bounds, to: nil) : nil)
     }
@@ -3672,7 +3674,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if !showsHome { window?.styleMask.remove(.fullSizeContentView) }
         updatePrecisionWheel()
     }
-    func windowDidResize(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) {
+        rememberFrame()
+        if window?.inLiveResize != true { updatePrecisionWheel() }   // the video's rect (a live resize: at its end)
+    }
+    func windowDidEndLiveResize(_ notification: Notification) { updatePrecisionWheel() }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while
     /// the window is being built, before the panel exists.
