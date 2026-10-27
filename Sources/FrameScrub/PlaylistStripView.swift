@@ -47,6 +47,9 @@ import HomeScreenModel
     private var restTimer: Timer?
     private var returnTimer: Timer?
     private var dwellTimer: Timer?
+    private var readTimer: Timer?
+    /// How long the rows in view stay put before they are read.
+    static let readDelay = 0.1
     private var relayoutPending = false
     private var factsSave: DispatchWorkItem?
     private var cardHeight = 0.0
@@ -77,6 +80,7 @@ import HomeScreenModel
         strip.card = card
         strip.onVisibleChange = { [weak self] in self?.visibleChanged() }
         strip.onPress = { [weak self] row in self?.open(row) }
+        strip.onPressBegan = { [weak self] in self?.pressBegan() }
         strip.onDrag = { [weak self] dy in self?.dragged(by: dy) }
         strip.onDragEnd = { [weak self] in self?.settle() }
         strip.onStripScroll = { [weak self] event in self?.scrolled(event) }
@@ -228,7 +232,9 @@ import HomeScreenModel
 
     // MARK: The card
 
+    /// The card's height does not depend on its width (the name takes two lines, the rest one each): measured once.
     private func measureCard(width: Double) {
+        guard cardHeight == 0 else { return }
         card.fill(lines: ["Name\nName", "line", "line", "line"])
         let height = card.fittingHeight(width: CGFloat(width))
         cardHeight = Double(height) + Double(FilmstripRowsView.cardGap)
@@ -271,6 +277,14 @@ import HomeScreenModel
         }
     }
 
+    /// A press on the rows stops a glide at once: the strip rests on the row nearest the centre, then the click or drag
+    /// goes on from there.
+    private func pressBegan() {
+        guard scroll.isMoving else { return }
+        _ = scroll.end()
+        settle()
+    }
+
     private func dragged(by dy: CGFloat) {
         guard let browsed = state.browsed else { return }
         apply(scroll.drag(by: Double(dy), layout: strip.layout, current: browsed))
@@ -300,8 +314,14 @@ import HomeScreenModel
     // MARK: Going back
 
     private func refreshState() {
-        state.activity(now: now, inGesture: pointerInside || scroll.isMoving)
-        armReturn()
+        state.activity(now: now, inGesture: scroll.isMoving)
+        // The pointer over the strip only puts the return off; the strip still follows the playing video.
+        if pointerInside {
+            returnTimer?.invalidate()
+            returnTimer = nil
+        } else {
+            armReturn()
+        }
     }
 
     private func armReturn() {
@@ -315,10 +335,7 @@ import HomeScreenModel
 
     private func returnFired() {
         returnTimer = nil
-        if pointerInside {
-            refreshState()
-            return
-        }
+        guard !pointerInside else { return }   // leaving the strip arms it again
         guard state.fire(now: now + 0.001) else { return }
         scroll.settle()
         place(animated: true)
@@ -327,7 +344,7 @@ import HomeScreenModel
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let trackingArea { removeTrackingArea(trackingArea) }
-        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+        let area = NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
                                   owner: self, userInfo: nil)
         addTrackingArea(area)
         trackingArea = area
@@ -386,7 +403,12 @@ import HomeScreenModel
             state.cancel()
             dwell.reset()
             asked = []
-            if scroll.end() || scroll.isMoving { scroll.settle() }
+            readTimer?.invalidate()
+            readTimer = nil
+            // A gesture cut short by the hiding: the strip sits on the browsed row again.
+            _ = scroll.end()
+            scroll.settle()
+            place(animated: false)
             return
         }
         visibleChanged()
@@ -398,8 +420,19 @@ import HomeScreenModel
     private func visibleChanged() {
         guard isShownOnScreen else { return }
         refreshVisibleText()
-        readVisible()
+        scheduleRead()
         checkDwell()
+    }
+
+    /// The rows in view are read once the strip has rested `readDelay`: rows a flick carries past are not read.
+    private func scheduleRead() {
+        readTimer?.invalidate()
+        readTimer = Timer.scheduledTimer(withTimeInterval: Self.readDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.readTimer = nil
+                self?.readVisible()
+            }
+        }
     }
 
     private func refreshVisibleText() {

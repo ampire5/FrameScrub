@@ -40,6 +40,8 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     }
     private var strip: PlaylistStripView?
     private var current = -1
+    /// The rows last given, whichever view shows them.
+    private var latest: [PlaylistRow] = []
 
     init() {
         super.init(frame: .zero)
@@ -128,11 +130,11 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
                 strip.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
                 strip.topAnchor.constraint(equalTo: scroll.topAnchor), strip.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
             ])
-            strip.update(rows: rows, current: current)
             self.strip = strip
         }
         strip?.isHidden = mode != .strip
         scroll.isHidden = mode == .strip
+        if mode == .strip { strip?.update(rows: latest, current: current) } else { updateTable() }
     }
 
     /// Whether the filter field has the keyboard (the panel stays while it does).
@@ -217,8 +219,18 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
 
     /// `current`: the row of the item playing; -1 when it is not shown.
     func update(rows: [PlaylistRow], current: Int) {
+        latest = rows
         self.current = current
-        strip?.update(rows: rows, current: current)
+        // Only the one shown is kept up to date; the other catches up when it is shown (`applyMode`).
+        if mode == .strip {
+            strip?.update(rows: rows, current: current)
+        } else {
+            updateTable()
+        }
+    }
+
+    private func updateTable() {
+        let rows = latest
         updating = true
         defer { updating = false }
         if rows != self.rows {   // unchanged list: only move the selection, no reload inside the table's own callback
