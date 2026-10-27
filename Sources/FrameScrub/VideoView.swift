@@ -97,6 +97,7 @@ final class VideoView: NSView {
     private static let stillDelay = 0.25
     private static let focusLog = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_LOG"] != nil
     private var focusStats = (masks: 0, visionMs: 0.0, own: 0, latencyMs: 0.0, frames: 0, waited: 0, cpuMs: 0.0, gpuMs: 0.0, gpuFrames: 0)
+    private var focusChange = (sum: 0.0, n: 0, since: 0.0)
 
     init() {
         device = MTLCreateSystemDefaultDevice()!
@@ -242,6 +243,7 @@ final class VideoView: NSView {
         guard Self.focusLog else { return }
         focusStats.masks += 1
         focusStats.visionMs += visionMs
+        if let c = mask.change { focusChange.sum += c; focusChange.n += 1 }
         if mask.frame == currentFrame?.number, !mask.accurate {
             focusStats.own += 1
             focusStats.latencyMs += (CACurrentMediaTime() - frameShownAt) * 1000
@@ -252,6 +254,10 @@ final class VideoView: NSView {
     private func logFocusStats() {
         let s = focusStats
         guard Self.focusLog, s.frames >= 120 else { return }
+        let now = CACurrentMediaTime(), span = focusChange.since > 0 ? now - focusChange.since : 0
+        NSLog("subject focus bench: %.1f fps drawn, mask change %.3f/255 per frame", span > 0 ? Double(s.frames) / span : 0,
+              focusChange.sum / Double(max(1, focusChange.n)))
+        focusChange = (0, 0, now)
         NSLog("subject focus: %d frames drawn (%d with an older mask), masks %d (Vision %.1f ms avg; %d for the shown frame, %.1f ms after it came), draw CPU %.2f ms, GPU %.2f ms per frame; %d frames replaced before drawing so far",
               s.frames, s.waited, s.masks, s.visionMs / Double(max(1, s.masks)), s.own, s.latencyMs / Double(max(1, s.own)),
               s.cpuMs / Double(s.frames), s.gpuMs / Double(max(1, s.gpuFrames)), skippedFrames)

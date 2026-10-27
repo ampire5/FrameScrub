@@ -47,6 +47,8 @@ struct SubjectMask {
     let image: CIImage
     let frame: Int
     let accurate: Bool
+    /// Playback masks: the mean change of the mask against the previous frame's (of 255), the flicker on a still scene.
+    var change: Double? = nil
 }
 
 /// Makes the masks off the main thread, one at a time: a frame that comes while one is being made waits in a single
@@ -75,13 +77,29 @@ final class SubjectMasker: @unchecked Sendable {
     private var state: [Bool] = []
     private var size = (0, 0)
     private var lastFrame = Int.min
+    private var previous: [UInt8] = []
+    private var previousLuma: [UInt8] = []
+    /// The picture's own change (of 255) taken as motion, when the frame's luma can be read: a mask change where the
+    /// picture stands still is flicker and is smoothed hard (`stillKeep`); where the picture moved it follows at once.
+    private static let lumaMotion: Float = 10, stillKeep: Float = 0.85
+
+    /// Benches (spike): `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate`, the playback masks' Vision quality (balanced
+    /// by default); `FRAMESCRUB_FOCUS_SMOOTH=0` shows Vision's raw masks (no smoothing, no hysteresis).
+    private static let liveQuality: VNGeneratePersonSegmentationRequest.QualityLevel = {
+        switch ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_QUALITY"] {
+        case "fast": .fast
+        case "accurate": .accurate
+        default: .balanced
+        }
+    }()
+    private static let smoothing = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SMOOTH"] != "0"
 
     /// How much of the past a quiet pixel keeps, and the change (of 255) taken as motion at once (no ghost behind a
     /// moving person): the prototype's live values (flicker 0.129 → 0.025 with the hysteresis, static 1080p clip).
     private static let keep: Float = 0.5, motion: Float = 48
 
     init() {
-        for (request, quality) in [(balanced, VNGeneratePersonSegmentationRequest.QualityLevel.balanced), (accurate, .accurate)] {
+        for (request, quality) in [(balanced, Self.liveQuality), (accurate, .accurate)] {
             request.qualityLevel = quality
             request.outputPixelFormat = kCVPixelFormatType_OneComponent8
             // The neural engine: 3× faster than the GPU for balanced here, and it leaves the GPU to the picture.
@@ -121,6 +139,23 @@ final class SubjectMasker: @unchecked Sendable {
         }
     }
 
+    /// The frame's luma at `w`×`h` (nearest sample of an 8-bit Y plane), nil for other formats.
+    private static func luma(_ pb: CVPixelBuffer, _ w: Int, _ h: Int) -> [UInt8]? {
+        let format = CVPixelBufferGetPixelFormatType(pb)
+        guard format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+              CVPixelBufferLockBaseAddress(pb, .readOnly) == kCVReturnSuccess else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(pb, 0) else { return nil }
+        let pw = CVPixelBufferGetWidthOfPlane(pb, 0), ph = CVPixelBufferGetHeightOfPlane(pb, 0)
+        let rowBytes = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
+        var out = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h {
+            let row = (base + min(ph - 1, (y * ph + ph / (2 * h)) / h) * rowBytes).assumingMemoryBound(to: UInt8.self)
+            for x in 0..<w { out[y * w + x] = row[min(pw - 1, (x * pw + pw / (2 * w)) / w)] }
+        }
+        return out
+    }
+
     private func make(_ job: Job) -> SubjectMask? {
         let request = job.accurate ? accurate : balanced
         do {
@@ -150,6 +185,7 @@ final class SubjectMasker: @unchecked Sendable {
         }
         CVPixelBufferUnlockBaseAddress(pb, .readOnly)
 
+        let luma = job.image == nil ? Self.luma(job.pixelBuffer, w, h) : nil
         // Playback: motion-adaptive smoothing over time, then hysteresis (on above 0.6, off below 0.4). A still frame:
         // its own accurate mask, only stretched. A jump (seek, loop) or another size starts the smoothing over.
         let continuous = !job.accurate && size == (w, h) && !smooth.isEmpty && lastFrame != .min
@@ -167,11 +203,18 @@ final class SubjectMasker: @unchecked Sendable {
             let ob = o.bindMemory(to: UInt8.self)
             for i in 0..<(w * h) {
                 var v: Float
-                if job.accurate {
+                if job.accurate || !Self.smoothing {
                     v = Float(raw[i]) / 255
                 } else {
                     let n = Float(raw[i]), s = smooth[i]
-                    let k = continuous ? Self.keep * max(0, 1 - abs(n - s) / Self.motion) : 0
+                    let k: Float
+                    if !continuous {
+                        k = 0
+                    } else if let luma, previousLuma.count == luma.count {
+                        k = Self.stillKeep * max(0, 1 - abs(Float(luma[i]) - Float(previousLuma[i])) / Self.lumaMotion)
+                    } else {
+                        k = Self.keep * max(0, 1 - abs(n - s) / Self.motion)
+                    }
                     let e = s * k + n * (1 - k)
                     smooth[i] = e
                     v = e / 255
@@ -179,12 +222,23 @@ final class SubjectMasker: @unchecked Sendable {
                 }
                 // stretched a little (0.2…0.8 → 0…1): firmer, still soft enough that a small grid shows no steps
                 let x = min(1, max(0, (v - 0.2) / 0.6)), c = x * x * (3 - 2 * x)
-                let o = job.accurate || v < 0.4 || v > 0.6 ? c : (state[i] ? max(c, 0.5) : min(c, 0.5))
+                let o = job.accurate || !Self.smoothing || v < 0.4 || v > 0.6 ? c : (state[i] ? max(c, 0.5) : min(c, 0.5))
                 ob[i] = UInt8(o * 255 + 0.5)
             }
         }
         let image = CIImage(bitmapData: out, bytesPerRow: w, size: CGSize(width: w, height: h), format: .L8, colorSpace: nil)
-        return SubjectMask(image: image, frame: job.frame, accurate: job.accurate)
+        if !job.accurate, let luma { previousLuma = luma }
+        var change: Double?
+        if !job.accurate {
+            let bytes = [UInt8](out)
+            if continuous, previous.count == bytes.count {
+                var sum = 0
+                for i in 0..<bytes.count { sum += abs(Int(bytes[i]) - Int(previous[i])) }
+                change = Double(sum) / Double(bytes.count)
+            }
+            previous = bytes
+        }
+        return SubjectMask(image: image, frame: job.frame, accurate: job.accurate, change: change)
     }
 }
 
