@@ -905,7 +905,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         let browser = view.browser
         browser.files = .videos   // 16:9 slots, "videos" in the counts, the length and progress on each picture
-        browser.names = .below
+        browser.names = .auto   // names and facts under the posters from 160 pt, a band on hover on smaller ones
         browser.cardSizeRange = 60...480   // home-card-size's
         browser.onWindowText = { [weak self] title, _ in
             guard let self, self.showsHome else { return }
