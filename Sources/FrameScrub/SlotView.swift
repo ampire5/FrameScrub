@@ -29,14 +29,25 @@ import QuartzCore
             applyTextShadow(mode == .overlay && backdrop == .clear)
         }
     }
-    var title = "" { didSet { titleButton.title = title + (showsSlotMenu ? " ▾" : "") } }
-    /// False for a card that is not a slot (Subject Focus's panel): no ▾ menu, no pin.
-    var showsSlotMenu = true {
+    var title = "" { didSet { updateTitle() } }
+    /// Two or more: a switch between them in the header (the slot's own view and Subject Focus's panel), the name's
+    /// place taken by it, ▾ after it.
+    var tabs: [String] = [] {
         didSet {
-            pinButton.isHidden = !showsSlotMenu
-            titleButton.title = title + (showsSlotMenu ? " ▾" : "")
+            guard tabs != oldValue else { return }
+            tabControl.segmentCount = tabs.count
+            for (i, name) in tabs.enumerated() {
+                tabControl.setLabel(name, forSegment: i)
+                tabControl.setWidth(0, forSegment: i)
+            }
+            tabControl.isHidden = tabs.count < 2
+            tabControl.selectedSegment = selectedTab
+            updateTitle()
         }
     }
+    var selectedTab = 0 { didSet { tabControl.selectedSegment = selectedTab } }
+    /// A tab clicked.
+    var onSelectTab: ((Int) -> Void)?
     /// Shown in the middle of a slot without a view (a plugin that is not in the config any more).
     var note: String? { didSet { updateEmptyState() } }
     var mode = SlotMode.overlay { didSet { applyLook() } }
@@ -66,6 +77,7 @@ import QuartzCore
     private let veil = NSView()
     private let header = NSView()
     private let titleButton = NSButton(title: "", target: nil, action: nil)
+    private let tabControl = NSSegmentedControl(labels: [], trackingMode: .selectOne, target: nil, action: nil)
     private let pinButton = SlotView.symbolButton("pin", "Pin / Float")
     private let backdropButton = SlotView.symbolButton("circle.lefthalf.filled", "Next Backdrop")
     private let closeButton = SlotView.symbolButton("xmark", "Hide")
@@ -211,7 +223,13 @@ import QuartzCore
         closeButton.action = #selector(closePressed)
         let spacer = NSView()
         spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let stack = NSStackView(views: [titleButton, spacer, pinButton, backdropButton, closeButton])
+        tabControl.controlSize = .small
+        tabControl.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        tabControl.isHidden = true
+        tabControl.target = self
+        tabControl.action = #selector(tabPressed)
+        tabControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let stack = NSStackView(views: [tabControl, titleButton, spacer, pinButton, backdropButton, closeButton])
         stack.spacing = 4
         stack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 8)
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -377,6 +395,9 @@ import QuartzCore
     }
 
     @objc private func titlePressed() { onHeaderMenu?(titleButton) }
+    @objc private func tabPressed() { onSelectTab?(tabControl.selectedSegment) }
+
+    private func updateTitle() { titleButton.title = tabs.count >= 2 ? "▾" : title + " ▾" }
     @objc private func pinPressed() { onTogglePin?() }
     @objc private func backdropPressed() { onCycleBackdrop?() }
     @objc private func closePressed() { onClose?() }

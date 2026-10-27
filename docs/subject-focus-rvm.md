@@ -50,18 +50,28 @@ neural engine and the GPU and takes 20 ms a frame. The edge is refined in the ap
 
 ## The panel
 
-⌥H (`toggle-subject-focus-panel`, View › Subject Focus › Subject Focus Panel) shows Subject Focus's panel over the
-video's right side, made after the mockup "Subject Focus panel": on/off (H) and the style for its window (⇧H steps
-through them, Custom last); the background's brightness, blur and colour; the edge's softness, shrink or grow (points of
-a 1080-line frame), falloff near the people, the people's contrast and the clean edge colour; and, for every window, the
-mask (RVM or Vision, Vision's quality while playing and its steadiness, the sharper mask when paused), who (all or the
-main people) and the mask tinted over the people. A slider makes the style Custom, starting from the style on screen.
-Everything is kept in `UserDefaults` (`SubjectFocus.*`), not in framescrub.conf, while this is a spike; Reset to
-Defaults puts it back.
+⌥H (`toggle-subject-focus-panel`, View › Subject Focus › Subject Focus Panel) shows Subject Focus's panel, made after the
+mockup "Subject Focus panel": on/off (H) and the style for its window (⇧H steps through them, Custom last); the
+background's brightness, blur and colour; the edge's softness, shrink or grow (points of a 1080-line frame), falloff near
+the people, the people's contrast and the clean edge colour; and, for every window, the mask (RVM or Vision, Vision's
+quality while playing and its steadiness, the sharper mask when paused), who (all or the main people) and the mask tinted
+over the people. A slider makes the style Custom, starting from the style on screen. Everything is kept in
+`UserDefaults` (`SubjectFocus.*`), not in framescrub.conf, while this is a spike; Reset to Defaults puts it back.
 
-It is an overlay card apart from the slots (they may all hold plugins), with the slots' card, backdrops (the ◐ button,
-glass by default) and motion; it goes 150 ms after the pointer left it (past the window's right edge by up to 200 pt
-still counts as in), with ⌥H, ✕ or a click on the video. Built the first time it shows, kept after.
+It is a second tab of a slot (the right one), so two panels never fight over one edge: the header switches between the
+slot's own view (a plugin, the playlist) and Subject Focus, ▾ after them. The tab has its own pin, on by default (it
+takes its room from the video and stays), and its own width (`SubjectFocus.panelPinned`, `.panelWidth`); floated, it
+hides as the slot does. The edge always brings the slot's own view: a slot hidden on the panel's tab goes back to it, and
+⌥H opens the slot on the panel's tab (or hides it when it shows it). The tab is for the run; the slot's line in
+framescrub.conf stays its own view's. In an empty slot the panel is its only view, without tabs.
+
+The mockup's "Applies to: this folder / everywhere" and Save as Default are left out (one set for everything, kept as
+it changes); "Largest person" and "Person under pointer" too (All / Main people is what the masks can do now).
+
+Main thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`, `FRAMESCRUB_FOCUS_PANEL=bench`, 5 rounds, M4 Max, the right slot
+holding a plugin page): ⌥H showing the tab 22 ms the first time (building it), then 8–13 ms (the slot puts its page
+back on the way); a slider step 0.13–0.42 ms (max 0.62); hiding 0.3–0.5 ms; no round slower than the ones before. Layout
+and drawing after the action are not in these numbers.
 
 The presets got the people's contrast Loupe's styles have (Studio 0.3, Lens 0.15, Black 0.2, White 0.1, Accent 0.5):
 the people's local contrast against their blur at a quarter of the frame. It costs ~0.05 ms of the main thread and

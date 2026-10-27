@@ -1552,9 +1552,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
         videoView.onLeftClick = { [weak self] in
-            guard let self else { return }
-            if subjectFocusPanelMade { subjectFocusPanel.hide() }
-            slots.hideOverlays()
+            self?.slots.hideOverlays()
         }
         videoView.zoomAllowed = { [weak self] in self.map { !$0.showsHome && $0.core.info != nil } ?? false }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
@@ -1891,7 +1889,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .cycleSubjectFocus:
             setSubjectFocus((videoView.subjectFocus ?? Self.subjectFocusStyle).next)
         case .toggleSubjectFocusPanel:
-            subjectFocusPanel.toggle()
+            slots.toggleSubjectFocusPanel()
         case .cycleUpscaler:
             let next: Upscaler = core.config.saveUpscaler == .ml ? .lanczos : .ml
             do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = next } } catch {
@@ -3002,6 +3000,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
         slots = SlotsController(container: container, above: failureView, config: globalConfig, playlistView: playlistPanel)
         slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
+        slots.makeSubjectFocusPanel = { [weak self] in
+            let panel = SubjectFocusPanelView()
+            panel.currentStyle = { [weak self] in self?.videoView.subjectFocus }
+            panel.setStyle = { [weak self] in self?.setSubjectFocus($0) }
+            panel.lastStyle = { Self.subjectFocusStyle }
+            self?.subjectFocusPanel = panel
+            return panel
+        }
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
         slots.onMessage = { [weak self] in self?.showMessage($0) }
@@ -3490,18 +3496,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         .flatMap(SubjectFocusStyle.init(rawValue:)) ?? .studio {
         didSet { UserDefaults.standard.set(subjectFocusStyle.rawValue, forKey: "SubjectFocus.style") }
     }
-    /// The panel over the video's right side (⌥H), made the first time it shows.
-    private lazy var subjectFocusPanel: SubjectFocusPanelHost = {
-        let host = SubjectFocusPanelHost(container: window!.contentView!)
-        host.topInset = { [weak self] in self?.slots.topInset ?? 0 }
-        host.panel.currentStyle = { [weak self] in self?.videoView.subjectFocus }
-        host.panel.setStyle = { [weak self] in self?.setSubjectFocus($0) }
-        host.panel.lastStyle = { Self.subjectFocusStyle }
-        subjectFocusPanelMade = true
-        return host
-    }()
-    private var subjectFocusPanelMade = false
+    /// The panel in a slot's tab (⌥H), once made.
+    private weak var subjectFocusPanel: SubjectFocusPanelView?
     private static var focusFromEnvironmentDone = false
+
+    /// Bench (`FRAMESCRUB_FOCUS_PANEL=bench`): the main thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) for ⌥H showing
+    /// the panel's tab (the first time builds it), a slider step and ⌥H hiding it, 5 rounds, logged.
+    private func benchSubjectFocusPanel(round: Int = 1) {
+        guard round <= 5 else { return }
+        func cpu() -> Double { var t = timespec(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return Double(t.tv_sec) * 1e3 + Double(t.tv_nsec) / 1e6 }
+        var t = cpu()
+        slots.toggleSubjectFocusPanel()
+        let shown = cpu() - t
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, let panel = subjectFocusPanel else { return }
+            var slides: [Double] = []
+            for k in 0..<10 { t = cpu(); panel.benchSlide(to: -1 + Double(k) * 0.2); slides.append(cpu() - t) }
+            t = cpu()
+            slots.toggleSubjectFocusPanel()
+            NSLog("subject focus panel bench: round %d, show %.2f ms, slider step %.2f ms (max %.2f), hide %.2f ms", round,
+                  shown, slides.reduce(0, +) / Double(slides.count), slides.max()!, cpu() - t)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.benchSubjectFocusPanel(round: round + 1) }
+        }
+    }
 
     /// Bench: `FRAMESCRUB_FOCUS_SCRUB=<frames a step>,<steps a second>` pauses and scrubs like the wheel, 40 steps
     /// forward and 20 back, round, for a minute (Subject Focus's scrub masks, `FRAMESCRUB_FOCUS_LOG=1`).
@@ -3527,7 +3544,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func setSubjectFocus(_ style: SubjectFocusStyle?) {
         if let style { Self.subjectFocusStyle = style }
         videoView.setSubjectFocus(style)
-        if subjectFocusPanelMade { subjectFocusPanel.panel.refresh() }
+        subjectFocusPanel?.refresh()
         showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
     }
 
@@ -3608,8 +3625,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if let style = SubjectFocusStyle(rawValue: name) { setSubjectFocus(style) }
             startScrubBench()
             switch ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_PANEL"] {   // benches, screenshots
-            case "1": subjectFocusPanel.show()
-            case "bench": DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.subjectFocusPanel.bench() }
+            case "1": slots.toggleSubjectFocusPanel()
+            case "bench": DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.benchSubjectFocusPanel() }
             default: break
             }
         }

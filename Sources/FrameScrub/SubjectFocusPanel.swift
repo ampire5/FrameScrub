@@ -3,9 +3,9 @@ import FrameScrubCore
 
 /// Subject Focus's panel (spike; the mockup "Subject Focus panel"): on/off and the style for its window, the look's
 /// sliders (a change makes the style Custom), the edge, and the mask's settings shared by the windows
-/// (`SubjectFocusSettings`). It lives in a slot (⌥H, View › Subject Focus › Panel, a slot's menu), which brings the
-/// edge, the backdrop and hiding; the text is light on any backdrop (the slots' backdrops are dark). Built once, when
-/// first shown, and kept.
+/// (`SubjectFocusSettings`). It is a slot's second tab (⌥H, View › Subject Focus › Subject Focus Panel; the right slot
+/// the first time), pinned unless floated, with the slot's backdrop and hiding; the text is light on any backdrop (the
+/// slots' backdrops are dark). Built once, when first shown, and kept.
 @MainActor final class SubjectFocusPanelView: NSView {
     /// The window's style; nil: off.
     var currentStyle: () -> SubjectFocusStyle? = { nil }
@@ -337,115 +337,4 @@ import FrameScrubCore
 
 private final class FlippedView: NSView {
     override var isFlipped: Bool { true }
-}
-
-/// Subject Focus's panel as an overlay card over the video's right side, apart from the slots (they may all hold
-/// plugins): the slots' card (`SlotView`: backdrop, spring in, slide out) and their hiding (`AutoHideClock`): ⌥H or
-/// View › Subject Focus › Panel shows it, it goes 150 ms after the pointer left it (overshooting the window's right
-/// edge by up to 200 pt still counts as in), and with ⌥H again, ✕ or a click on the video. Nothing runs while hidden.
-@MainActor final class SubjectFocusPanelHost {
-    let panel = SubjectFocusPanelView()
-    /// The band at the container's top the card keeps clear (title bar and toolbar).
-    var topInset: () -> CGFloat = { 0 }
-    private let container: NSView
-    private let card = SlotView(edge: .right)
-    private var clock = AutoHideClock(mode: .mouseLeaves)
-    private var monitor: Any?
-    private var hideTimer: Timer?
-    private static let width: CGFloat = 340 + 2 * SlotView.overlayInset
-    private static let overshoot: CGFloat = 200
-    private static let backdropKey = "SubjectFocus.panelBackdrop"
-
-    init(container: NSView) { self.container = container }
-
-    var isShown: Bool { card.isShown }
-
-    func toggle() { if card.isShown { hide() } else { show() } }
-
-    func show() {
-        guard !card.isShown else { return }
-        if card.superview == nil {
-            panel.prepare()   // the controls are built before the card is in the window
-            card.showsSlotMenu = false
-            card.title = "Subject Focus"
-            card.content = panel
-            card.backdrop = UserDefaults.standard.string(forKey: Self.backdropKey).flatMap(SlotBackdrop.init(rawValue:)) ?? .glass
-            card.onClose = { [weak self] in self?.hide() }
-            card.onCycleBackdrop = { [weak self] in
-                guard let self else { return }
-                card.backdrop = card.backdrop.next
-                UserDefaults.standard.set(card.backdrop.rawValue, forKey: Self.backdropKey)
-            }
-            card.translatesAutoresizingMaskIntoConstraints = true
-            card.autoresizingMask = [.minXMargin, .height]
-        } else {
-            panel.refresh()
-        }
-        container.addSubview(card)   // on top of the slots and their tongues
-        let b = container.bounds
-        card.frame = NSRect(x: b.maxX - Self.width, y: b.minY, width: Self.width, height: max(0, b.height - topInset()))
-        card.setShown(true, animated: true)
-        clock.shown(pointerInside: pointerInside, now: CACurrentMediaTime())
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
-            MainActor.assumeIsolated { self?.pointerMoved() }
-            return event
-        }
-    }
-
-    func hide() {
-        guard card.isShown else { return }
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
-        hideTimer?.invalidate()
-        hideTimer = nil
-        if card.holds(container.window?.firstResponder as? NSView) { container.window?.makeFirstResponder(container) }
-        card.setShown(false, animated: true)
-    }
-
-    /// In the card, or past the window's right edge beside it (up to `overshoot`).
-    private var pointerInside: Bool {
-        guard let window = container.window else { return false }
-        let p = container.convert(window.mouseLocationOutsideOfEventStream, from: nil)
-        let f = card.frame
-        return p.x >= f.minX && p.x <= f.maxX + Self.overshoot && p.y >= f.minY && p.y <= f.maxY
-    }
-
-    private func pointerMoved() {
-        clock.pointerInside(pointerInside, now: CACurrentMediaTime())
-        guard hideTimer == nil else { return }
-        hideTimer = Timer.scheduledTimer(withTimeInterval: AutoHideClock.mouseLeaveDelay + 0.01, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkHide() }
-        }
-    }
-
-    /// Bench (`FRAMESCRUB_FOCUS_PANEL=bench`): the main thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) to show the panel
-    /// (the first time builds it), to hide it, and for a slider step, 5 rounds, logged.
-    func bench() {
-        func cpu() -> Double { var t = timespec(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return Double(t.tv_sec) * 1e3 + Double(t.tv_nsec) / 1e6 }
-        var round = 0
-        func step() {
-            guard round < 5 else { return }
-            round += 1
-            var t = cpu(); show(); let shown = cpu() - t
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [self] in
-                var slides: [Double] = []
-                for k in 0..<10 {
-                    t = cpu(); panel.benchSlide(to: -1 + Double(k) * 0.2); slides.append(cpu() - t)
-                }
-                t = cpu(); hide(); let hidden = cpu() - t
-                NSLog("subject focus panel bench: round %d, show %.2f ms, slider step %.2f ms (max %.2f), hide %.2f ms", round,
-                      shown, slides.reduce(0, +) / Double(slides.count), slides.max()!, hidden)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { step() }
-            }
-        }
-        step()
-    }
-
-    private func checkHide() {
-        hideTimer = nil
-        guard card.isShown else { return }
-        clock.pointerInside(pointerInside, now: CACurrentMediaTime())
-        clock.setBusy(NSEvent.pressedMouseButtons != 0)   // a slider held past the card's edge
-        if clock.shouldHide(now: CACurrentMediaTime()) { hide() } else if !pointerInside { pointerMoved() }
-    }
 }

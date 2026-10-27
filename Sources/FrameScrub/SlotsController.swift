@@ -26,6 +26,17 @@ import FrameScrubCore
     }
 
     let playlistView: PlaylistPanelView
+    /// Subject Focus's panel (spike), made the first time a slot shows its tab.
+    var makeSubjectFocusPanel: (() -> SubjectFocusPanelView)?
+    private var subjectFocusPanel: SubjectFocusPanelView?
+    /// The panel's tab: pinned (it takes its room from the video) unless the user floats it, and its own width; kept in
+    /// `UserDefaults` (the spike stays out of framescrub.conf).
+    private var focusPinned = UserDefaults.standard.object(forKey: "SubjectFocus.panelPinned") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(focusPinned, forKey: "SubjectFocus.panelPinned") }
+    }
+    private var focusWidth = UserDefaults.standard.object(forKey: "SubjectFocus.panelWidth") as? Int ?? 360 {
+        didSet { UserDefaults.standard.set(focusWidth, forKey: "SubjectFocus.panelWidth") }
+    }
 
     @MainActor private final class Slot {
         let edge: SlotEdge
@@ -43,6 +54,10 @@ import FrameScrubCore
         /// When the slot was last shown, for the layout's "newest demotes first".
         var shownOrder = 0
         var demoted = false
+        /// Subject Focus's panel is this slot's second tab (for the run), and the tab on screen. The slot's setting
+        /// stays its own view's: the edge always brings that one (a slot hidden on the panel's tab goes back to it).
+        var focusTab = false
+        var focusActive = false
 
         init(edge: SlotEdge, setting: SlotSetting) {
             self.edge = edge
@@ -298,7 +313,9 @@ import FrameScrubCore
             onPagesChanged?()
             updateAutoHideTimer()
         }
-        if slot.setting.content == .empty {
+        if slot.focusActive {
+            return
+        } else if slot.setting.content == .empty {
             DispatchQueue.main.async { [weak self, weak slot] in
                 guard let self, let slot, slot.view.isShown else { return }
                 popUp(plusMenu(for: slot), from: nil, in: slot)
@@ -312,7 +329,11 @@ import FrameScrubCore
         guard slot.view.isShown else { return }
         let hadFocus = holdsFocus(slot)
         slot.setting.shown = false
-        slot.view.setShown(false, animated: true) { [weak self] in self?.onPagesChanged?() }
+        slot.view.setShown(false, animated: true) { [weak self, weak slot] in
+            // hidden on the panel's tab: back to the slot's own view, which its edge brings
+            if let self, let slot, !slot.view.isShown, slot.focusActive { activateFocus(false, in: slot) }
+            self?.onPagesChanged?()
+        }
         slot.page?.isShownInSlot = false
         applyLayout(revealing: nil)
         persist(slot)
@@ -337,7 +358,7 @@ import FrameScrubCore
         }
         let shown = orderedSlots.filter { $0.view.isShown || $0 === revealing }
         var sizes: [SlotEdge: (mode: SlotMode, size: CGFloat)] = [:]
-        for slot in shown { sizes[slot.edge] = (slot.setting.mode, CGFloat(slot.setting.size)) }
+        for slot in shown { sizes[slot.edge] = (mode(slot), CGFloat(size(slot))) }
         let layout = SlotLayout.compute(.init(container: container.bounds, slots: sizes,
                                               order: shown.sorted { $0.shownOrder < $1.shownOrder }.map(\.edge),
                                               topInset: topInset))
@@ -345,8 +366,8 @@ import FrameScrubCore
         for slot in shown {
             guard let rect = layout.slots[slot.edge] else { continue }
             if slot.view.frame != rect { slot.view.frame = rect }
-            let mode = layout.effectiveMode[slot.edge] ?? slot.setting.mode
-            if slot.view.mode != mode { slot.view.mode = mode; modesChanged = true }
+            let shownMode = layout.effectiveMode[slot.edge] ?? mode(slot)
+            if slot.view.mode != shownMode { slot.view.mode = shownMode; modesChanged = true }
             slot.view.backdrop = slot.setting.backdrop
             slot.demoted = layout.demoted.contains(slot.edge)
         }
@@ -380,7 +401,61 @@ import FrameScrubCore
         if modesChanged { onPagesChanged?() }
     }
 
-    private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : slot.setting.mode }
+    private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : mode(slot) }
+
+    /// The tab on screen's mode and size: the panel's own, or the slot's.
+    private func mode(_ slot: Slot) -> SlotMode { slot.focusActive ? (focusPinned ? .pinned : .overlay) : slot.setting.mode }
+    private func size(_ slot: Slot) -> Int { slot.focusActive ? focusWidth : slot.setting.size }
+
+    // MARK: Subject Focus's tab
+
+    /// ⌥H (`toggle-subject-focus-panel`): the slot holding the panel's tab (the right one the first time) shows it, or
+    /// hides when it shows it already.
+    func toggleSubjectFocusPanel() {
+        guard let slot = orderedSlots.first(where: { $0.focusTab }) ?? slots[.right] else { return }
+        if slot.view.isShown && slot.focusActive {
+            hide(slot)
+            return
+        }
+        slot.focusTab = true
+        activateFocus(true, in: slot)
+        show(slot, focus: false)
+    }
+
+    /// The panel's tab on (`on`) or the slot's own view back; a shown slot takes the tab's mode and size at once.
+    private func activateFocus(_ on: Bool, in slot: Slot) {
+        guard slot.focusTab else { return }
+        let hadFocus = holdsFocus(slot)
+        let changed = on != slot.focusActive
+        slot.focusActive = on
+        if on, subjectFocusPanel == nil { subjectFocusPanel = makeSubjectFocusPanel?() }
+        if on { subjectFocusPanel?.prepare() }   // built before it is in the window
+        install(slot.setting.content, in: slot)   // the own view (kept as it was), then the tabs
+        guard changed else { return }
+        if hadFocus { onFocusVideo?() }
+        if slot.view.isShown {
+            applyLayout(revealing: nil, animated: false)
+            updateAutoHideTimer()
+        }
+        onPagesChanged?()
+    }
+
+    /// The header's tabs and the view on screen for a slot with the panel's tab.
+    private func applyTabs(_ slot: Slot) {
+        guard slot.focusTab else { slot.view.tabs = []; return }
+        let own = slot.view.title
+        if slot.setting.content == .empty {
+            slot.view.tabs = []
+            if slot.focusActive { slot.view.title = "Subject Focus" }
+        } else {
+            slot.view.selectedTab = slot.focusActive ? 1 : 0
+            slot.view.tabs = [own, "Subject Focus"]
+        }
+        guard slot.focusActive, let panel = subjectFocusPanel else { return }
+        slot.view.content = panel
+        slot.view.note = nil
+        slot.page?.isShownInSlot = false
+    }
 
     // MARK: Contents
 
@@ -413,6 +488,7 @@ import FrameScrubCore
     /// Puts the view for `content` into the slot: the playlist, a page (kept when it already shows that plugin), or
     /// nothing (the "+", with a note when the plugin is not in the config).
     private func install(_ content: SlotContent, in slot: Slot) {
+        defer { applyTabs(slot) }
         slot.view.note = nil
         switch content {
         case .empty:
@@ -495,6 +571,10 @@ import FrameScrubCore
             guard let self, let slot else { return }
             popUp(headerMenu(for: slot), from: button, in: slot)
         }
+        view.onSelectTab = { [weak self, weak slot] tab in
+            guard let self, let slot else { return }
+            activateFocus(tab == 1, in: slot)
+        }
         view.onTogglePin = { [weak self, weak slot] in
             guard let self, let slot else { return }
             togglePin(slot)
@@ -511,6 +591,12 @@ import FrameScrubCore
             guard let self, let slot else { return }
             let range = slot.edge.sizeRange
             let clamped = min(max(Int(size.rounded()), range.lowerBound), range.upperBound)
+            if slot.focusActive {
+                guard clamped != focusWidth else { return }
+                focusWidth = clamped
+                applyLayout(revealing: nil, animated: false)
+                return
+            }
             guard clamped != slot.setting.size else { return }
             slot.setting.size = clamped
             applyLayout(revealing: nil, animated: false)
@@ -539,8 +625,12 @@ import FrameScrubCore
     }
 
     private func togglePin(_ slot: Slot) {
-        slot.setting.mode = slot.setting.mode == .pinned ? .overlay : .pinned
-        persist(slot)
+        if slot.focusActive {
+            focusPinned.toggle()
+        } else {
+            slot.setting.mode = slot.setting.mode == .pinned ? .overlay : .pinned
+            persist(slot)
+        }
         applyLayout(revealing: nil, animated: false)
         updateAutoHideTimer()
         onPagesChanged?()
@@ -813,6 +903,7 @@ import FrameScrubCore
 
     private func persist(_ slot: Slot) {
         var setting = slot.setting
+        if slot.focusActive { setting.shown = false }   // shown for the panel's tab: the own view was not
         if let saved = slot.savedContent {
             setting.content = saved
             if saved == .empty { setting.shown = false }
