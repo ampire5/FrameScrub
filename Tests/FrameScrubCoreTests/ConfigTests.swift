@@ -115,7 +115,8 @@ import Testing
         #expect(c.text(forKey: "home-card-size") == "300" && c.text(forKey: "recent-count") == "12")
         #expect(Config.parse("home-card-size=1000").0.homeCardSize == 220)
         #expect(Config.parse("recent-count=0").0.recentCount == 50)
-        for key in ["home-tab", "home-card-size", "recent-count", "home-sidebar"] { #expect(Config.keys.contains(key)) }
+        for key in ["home-tab", "home-card-size", "recent-count", "home-sidebar", "monochrome"] { #expect(Config.keys.contains(key)) }
+        #expect(!d.monochrome && Config.parse("monochrome=yes").0.monochrome)
     }
 
     /// The start screen's keys went with it (no migration): they are unknown now.

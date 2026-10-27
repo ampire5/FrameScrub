@@ -8,6 +8,9 @@ extension SettingsPanel {
                 .number("home-card-size", "Card size (⌘= / ⌘−)", unit: "pt", step: 20, symbol: "square.grid.2x2",
                         description: "60–480, default 220."),
                 .toggle("home-sidebar", "Sidebar (⌃⌘S)", symbol: "sidebar.left", description: "Default on."),
+                .toggle("monochrome", "Monochrome badges", symbol: "circle.lefthalf.filled",
+                        description: "The badges on the pictures and the glyphs of their facts in grey, not in colour. "
+                            + "Default off."),
                 .number("recent-count", "Recent videos", step: 5, symbol: "clock",
                         description: "How many videos Recent keeps. 1–200, default 50."),
             ]),

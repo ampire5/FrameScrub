@@ -155,6 +155,9 @@ public struct Config: Equatable, Sendable {
     public var recentCount = 50
     /// `home-sidebar`: whether Home shows its sidebar (⌃⌘S).
     public var homeSidebar = true
+    /// `monochrome`: the badges on the pictures and the glyphs of their facts in light grey, not in the colours of
+    /// what they say.
+    public var monochrome = false
     public var singleInstance = false
     /// `home-tab`: where Home opens at launch, Recent unless set (the user's moves are not saved: the owner wants every
     /// launch on Recent, 2026-10-27).
@@ -264,7 +267,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "monochrome", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -292,6 +295,7 @@ public struct Config: Equatable, Sendable {
         case "home-card-size": return formatNumber(homeCardSize)
         case "recent-count": return String(recentCount)
         case "home-sidebar": return yesNo(homeSidebar)
+        case "monochrome": return yesNo(monochrome)
         case "single-instance": return yesNo(singleInstance)
         case "home-tab": return homeTab.rawValue
         case "stash-url": return stashURL
@@ -476,6 +480,7 @@ public struct Config: Equatable, Sendable {
         case "home-card-size": guard let v = double(60...480) else { return false }; homeCardSize = v
         case "recent-count": guard let v = int(1...200) else { return false }; recentCount = v
         case "home-sidebar": guard let v = bool() else { return false }; homeSidebar = v
+        case "monochrome": guard let v = bool() else { return false }; monochrome = v
         case "single-instance": guard let v = bool() else { return false }; singleInstance = v
         case "home-tab": guard let v = HomeTab(rawValue: value.lowercased()) else { return false }; homeTab = v
         case "stash-url": stashURL = value

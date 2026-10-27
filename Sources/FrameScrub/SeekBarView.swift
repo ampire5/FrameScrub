@@ -1,4 +1,6 @@
 import AppKit
+import FrameScrubCore
+import HomeChrome
 
 /// Bottom bar: track (thicker while pointed at), cached ranges, the A-B range, the previewed frame, playhead and a
 /// time label, with the transport controls (previous / next item, mute and volume) at the right under the track.
@@ -169,7 +171,6 @@ final class TransportControls: NSView {
     private let slider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private var shown: (previous: Bool, next: Bool, volume: Int, muted: Bool)?
 
-    private static let symbol = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
     private static let tint = NSColor(white: 1, alpha: 0.9)
     private static let dimmed = NSColor(white: 1, alpha: 0.3)
 
@@ -225,10 +226,8 @@ final class TransportControls: NSView {
         return button
     }
 
-    private static func image(_ symbol: String, variable: Double? = nil, label: String) -> NSImage {
-        let image = variable.flatMap { NSImage(systemSymbolName: symbol, variableValue: $0, accessibilityDescription: label) }
-            ?? NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage()
-        return image.withSymbolConfiguration(Self.symbol) ?? image
+    private static func image(_ symbol: String, label: String) -> NSImage {
+        Lucide.icon(symbol, pointSize: 12, weight: .medium, description: label) ?? NSImage()
     }
 
     /// What the controls show: whether there is an item before / after, the volume (0…100) and mute.
@@ -239,8 +238,8 @@ final class TransportControls: NSView {
         if shown?.next != state.next { Self.enable(next, state.next) }
         if shown?.volume != state.volume || shown?.muted != state.muted {
             let label = muted ? "Unmute" : "Mute"
-            mute.image = muted ? Self.image("speaker.slash.fill", label: label)
-                : Self.image("speaker.wave.3.fill", variable: Double(state.volume) / 100, label: label)
+            // The speaker's waves as many as the level's (Lucide has no variable symbols): as the volume HUD's.
+            mute.image = Self.image(muted ? "speaker.slash.fill" : Feedback.volume(state.volume).symbolName, label: label)
             mute.toolTip = label
             mute.setAccessibilityLabel(label)
             if slider.integerValue != state.volume { slider.doubleValue = Double(state.volume) }

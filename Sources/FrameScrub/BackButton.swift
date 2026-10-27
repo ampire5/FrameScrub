@@ -1,4 +1,5 @@
 import AppKit
+import HomeChrome
 import InfoPanelKit
 
 /// "‹ Stash" / "‹ Recent" (a chevron and the title) in the top left corner over the video, on a glass capsule: closes the file and goes back
@@ -18,8 +19,7 @@ final class BackButton: NSView {
         super.init(frame: .zero)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         addSubview(backdrop)
-        chevron.image = NSImage(systemSymbolName: "chevron.left", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 16, weight: .semibold))
+        chevron.image = Lucide.icon("chevron.left", pointSize: 16, weight: .semibold)
         chevron.contentTintColor = .white
         label.font = .systemFont(ofSize: 17, weight: .semibold)
         label.textColor = .white
