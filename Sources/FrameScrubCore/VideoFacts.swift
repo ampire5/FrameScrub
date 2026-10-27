@@ -8,11 +8,16 @@ extension MediaSource {
     public var facts: FileFacts {
         let turned = rotationClockwise % 180 != 0
         let p = videoStream.pointee.codecpar.pointee
-        let hdr = p.color_trc == AVCOL_TRC_SMPTE2084 || p.color_trc == AVCOL_TRC_ARIB_STD_B67
+        // The guide's colour badge: PQ is HDR10, ARIB STD-B67 is HLG, anything else SDR.
+        let transfer: FileFacts.Transfer = switch p.color_trc {
+        case AVCOL_TRC_SMPTE2084: .hdr10
+        case AVCOL_TRC_ARIB_STD_B67: .hlg
+        default: .sdr
+        }
         return FileFacts(width: turned ? height : width, height: turned ? width : height,
                          duration: durationSeconds > 0 ? durationSeconds : nil, codec: VideoFacts.codec(format.videoCodec),
                          fps: frameRate > 0 ? frameRate : nil,
-                         bitrate: format.fileBitRate > 0 ? Int(format.fileBitRate) : nil, hdr: hdr)
+                         bitrate: format.fileBitRate > 0 ? Int(format.fileBitRate) : nil, transfer: transfer)
     }
 }
 

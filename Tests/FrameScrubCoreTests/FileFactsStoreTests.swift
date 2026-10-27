@@ -13,7 +13,7 @@ import Testing
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = FileFactsStore(url: url)
         #expect(store.all().isEmpty)
-        let facts = FileFacts(width: 1920, height: 1080, duration: 65, codec: "HEVC", fps: 30, hdr: false)
+        let facts = FileFacts(width: 1920, height: 1080, duration: 65, codec: "HEVC", fps: 30, transfer: .sdr)
         store.set(facts, for: "/v/a.mp4")
         store.save()
         #expect(FileFactsStore(url: url).all() == ["/v/a.mp4": facts])
