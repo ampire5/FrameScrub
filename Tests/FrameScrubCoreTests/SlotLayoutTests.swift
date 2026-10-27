@@ -33,6 +33,17 @@ import Testing
         #expect(l.seekBarBottomInset == 0)
     }
 
+    @Test func sidesKeepTheTopBandClearVideoAndBottomDoNot() {
+        let slots: [SlotEdge: (mode: SlotMode, size: CGFloat)] = [.left: (.overlay, 300), .right: (.pinned, 400),
+                                                                  .bottom: (.pinned, 200)]
+        let l = SlotLayout.compute(.init(container: container, slots: slots, order: [.left, .right, .bottom],
+                                         topInset: 52))
+        #expect(l.slots[.left] == CGRect(x: 0, y: 200, width: 300, height: 648))
+        #expect(l.slots[.right] == CGRect(x: 1200, y: 0, width: 400, height: 848))
+        #expect(l.slots[.bottom] == CGRect(x: 0, y: 0, width: 1200, height: 200))
+        #expect(l.video == CGRect(x: 0, y: 200, width: 1200, height: 700))
+    }
+
     @Test func overlayDoesNotMoveVideo() {
         let l = layout([.right: (.overlay, 500)])
         #expect(l.video == container)

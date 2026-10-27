@@ -20,8 +20,10 @@ import FrameScrubCore
     var onFocusVideo: (() -> Void)?
     /// A page left its slot for good (cleared, replaced, its plugin gone): what it declared is void.
     var onPageDropped: ((PluginPanel) -> Void)?
-    /// The shown slots were laid out again (one shown, hidden or resized, the window resized): see `shownFrames`.
-    var onSlotsPlaced: (() -> Void)?
+    /// The band at the container's top that the side slots keep clear: the title bar and toolbar over the content.
+    var topInset: CGFloat = 0 {
+        didSet { if topInset != oldValue { applyLayout(revealing: nil, animated: false) } }
+    }
 
     let playlistView: PlaylistPanelView
 
@@ -337,7 +339,8 @@ import FrameScrubCore
         var sizes: [SlotEdge: (mode: SlotMode, size: CGFloat)] = [:]
         for slot in shown { sizes[slot.edge] = (slot.setting.mode, CGFloat(slot.setting.size)) }
         let layout = SlotLayout.compute(.init(container: container.bounds, slots: sizes,
-                                              order: shown.sorted { $0.shownOrder < $1.shownOrder }.map(\.edge)))
+                                              order: shown.sorted { $0.shownOrder < $1.shownOrder }.map(\.edge),
+                                              topInset: topInset))
         var modesChanged = false
         for slot in shown {
             guard let rect = layout.slots[slot.edge] else { continue }
@@ -375,11 +378,7 @@ import FrameScrubCore
             report()
         }
         if modesChanged { onPagesChanged?() }
-        onSlotsPlaced?()
     }
-
-    /// The frames of the shown slots (and of one sliding in), in the container.
-    var shownFrames: [CGRect] { orderedSlots.filter(\.view.isShown).map(\.view.frame) }
 
     private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : slot.setting.mode }
 

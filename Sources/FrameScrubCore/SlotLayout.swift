@@ -13,11 +13,16 @@ public struct SlotLayout: Equatable, Sendable {
         public var slots: [SlotEdge: (mode: SlotMode, size: CGFloat)]
         /// The order the slots were shown in, oldest first; a slot missing here counts as the oldest.
         public var order: [SlotEdge]
+        /// The band at the container's top that the side slots keep clear (the title bar and toolbar lying over the
+        /// content); the video and the bottom slot still go under it.
+        public var topInset: CGFloat
 
-        public init(container: CGRect, slots: [SlotEdge: (mode: SlotMode, size: CGFloat)], order: [SlotEdge]) {
+        public init(container: CGRect, slots: [SlotEdge: (mode: SlotMode, size: CGFloat)], order: [SlotEdge],
+                    topInset: CGFloat = 0) {
             self.container = container
             self.slots = slots
             self.order = order
+            self.topInset = topInset
         }
     }
 
@@ -46,7 +51,14 @@ public struct SlotLayout: Equatable, Sendable {
         let floating = place(overlays, sizes: input.slots, in: video)
         var modes: [SlotEdge: SlotMode] = [:]
         for edge in input.slots.keys { modes[edge] = pinned.contains(edge) ? .pinned : .overlay }
-        return SlotLayout(video: video, slots: placed.rects.merging(floating.rects) { a, _ in a },
+        var rects = placed.rects.merging(floating.rects) { a, _ in a }
+        let top = input.container.maxY - max(0, input.topInset)
+        for edge in [SlotEdge.left, .right] {
+            guard var rect = rects[edge], rect.maxY > top else { continue }
+            rect.size.height = max(0, top - rect.minY)
+            rects[edge] = rect
+        }
+        return SlotLayout(video: video, slots: rects,
                           effectiveMode: modes, demoted: demoted,
                           seekBarBottomInset: floating.rects[.bottom]?.height ?? 0)
     }
