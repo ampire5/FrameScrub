@@ -22,17 +22,16 @@ import AppKit
     private static let secondary = NSColor(srgbRed: 0x9a / 255, green: 0x9a / 255, blue: 0xa2 / 255, alpha: 1)
     private static let buttonWidth: CGFloat = 96
     private let stack = NSStackView()
-    private let grid = NSGridView(numberOfColumns: 3, rows: 0)
+    private var grid = NSGridView(numberOfColumns: 3, rows: 0)
     private let nameRow = NSStackView()
     private let nameField = NSTextField()
     private let hideStandard = NSButton(checkboxWithTitle: "Hide standard presets", target: nil, action: nil)
     private var items: [Item] = []
     private var buttons: [String: NSButton] = [:]
+    private var chips: [String: PresetChip] = [:]
 
     init() {
         super.init(frame: .zero)
-        grid.columnSpacing = 6
-        grid.rowSpacing = 6
         nameField.placeholderString = "Preset name"
         nameField.delegate = self
         nameField.controlSize = .small
@@ -54,7 +53,7 @@ import AppKit
         stack.orientation = .vertical
         stack.alignment = .leading
         stack.spacing = 8
-        stack.setViews([grid, nameRow, hideStandard], in: .top)
+        stack.setViews([nameRow, hideStandard], in: .top)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
@@ -73,12 +72,18 @@ import AppKit
             rebuild()
         }
         for (id, b) in buttons { b.state = id == selected ? .on : .off }
+        for (id, c) in chips { c.isSelected = id == selected }
         hideStandard.state = hidden ? .on : .off
     }
 
+    /// A new grid each time: removing a grid's rows leaves their views in it, drawn over the new ones.
     private func rebuild() {
-        while grid.numberOfRows > 0 { grid.removeRow(at: 0) }
+        grid.removeFromSuperview()
+        grid = NSGridView(numberOfColumns: 3, rows: 0)
+        grid.columnSpacing = 6
+        grid.rowSpacing = 6
         buttons = [:]
+        chips = [:]
         var cells: [NSView] = items.map(cell)
         let plus = NSButton(title: "+", target: self, action: #selector(askName))
         plus.bezelStyle = .push
@@ -86,37 +91,38 @@ import AppKit
         plus.translatesAutoresizingMaskIntoConstraints = false
         plus.widthAnchor.constraint(equalToConstant: Self.buttonWidth).isActive = true
         cells.append(plus)
-        for start in stride(from: 0, to: cells.count, by: 3) {
-            var row = Array(cells[start..<min(cells.count, start + 3)])
-            while row.count < 3 { row.append(NSGridCell.emptyContentView) }
-            grid.addRow(with: row)
+        // three columns; a preset whose name does not fit one takes two (or three) of them, starting a row if it must
+        var rows: [[(NSView, Int)]] = [[]]
+        for view in cells {
+            let span = (view as? PresetChip)?.span ?? 1
+            if rows[rows.count - 1].reduce(0, { $0 + $1.1 }) + span > 3 { rows.append([]) }
+            rows[rows.count - 1].append((view, span))
         }
+        for row in rows {
+            var views: [NSView] = []
+            var merges: [Range<Int>] = []
+            for (view, span) in row {
+                if span > 1 { merges.append(views.count..<views.count + span) }
+                views.append(view)
+                for _ in 1..<max(span, 1) { views.append(NSGridCell.emptyContentView) }
+            }
+            while views.count < 3 { views.append(NSGridCell.emptyContentView) }
+            grid.addRow(with: views)
+            for range in merges { grid.mergeCells(inHorizontalRange: NSRange(range), verticalRange: NSRange(location: grid.numberOfRows - 1, length: 1)) }
+        }
+        stack.insertArrangedSubview(grid, at: 0)
     }
 
-    /// The button, and for the user's presets the × on its corner, outside the title.
+    /// A standard style's push button, or the user's preset as one block (`PresetChip`).
     private func cell(_ item: Item) -> NSView {
-        let b = button(item)
-        guard item.user else { return b }
-        let holder = NSView()
-        holder.translatesAutoresizingMaskIntoConstraints = false
-        b.removeFromSuperview()
-        holder.addSubview(b)
-        let x = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill", accessibilityDescription: "Delete \(item.title)")!
-            .withSymbolConfiguration(.init(pointSize: 9, weight: .regular))!, target: self, action: #selector(delete(_:)))
-        x.isBordered = false
-        x.contentTintColor = NSColor(white: 1, alpha: 0.4)
-        x.identifier = b.identifier
-        x.toolTip = "Delete \(item.title)"
-        x.translatesAutoresizingMaskIntoConstraints = false
-        holder.addSubview(x)
-        NSLayoutConstraint.activate([
-            b.leadingAnchor.constraint(equalTo: holder.leadingAnchor), b.trailingAnchor.constraint(equalTo: holder.trailingAnchor),
-            b.topAnchor.constraint(equalTo: holder.topAnchor), b.bottomAnchor.constraint(equalTo: holder.bottomAnchor),
-            x.centerXAnchor.constraint(equalTo: holder.trailingAnchor, constant: -2),
-            x.centerYAnchor.constraint(equalTo: holder.topAnchor, constant: 2),
-            x.widthAnchor.constraint(equalToConstant: 12), x.heightAnchor.constraint(equalToConstant: 12),
-        ])
-        return holder
+        guard item.user else { return button(item) }
+        let chip = PresetChip(title: item.title, cell: Self.buttonWidth, gap: 6)
+        chip.onPick = { [weak self] in self?.onPick(item.id) }
+        chip.onDelete = { [weak self] in self?.onDelete(item.id) }
+        chip.toolTip = "Your preset: × deletes it (click twice), a right click replaces it with the look on screen"
+        chip.menu = menu(for: item)
+        chips[item.id] = chip
+        return chip
     }
 
     private func button(_ item: Item) -> NSButton {
@@ -128,8 +134,10 @@ import AppKit
         b.translatesAutoresizingMaskIntoConstraints = false
         b.widthAnchor.constraint(equalToConstant: Self.buttonWidth).isActive = true
         buttons[item.id] = b
-        guard item.user else { return b }
-        b.toolTip = "Your preset: the × on its corner deletes it, a right click replaces it with the look on screen"
+        return b
+    }
+
+    private func menu(for item: Item) -> NSMenu {
         let menu = NSMenu()
         let replace = menu.addItem(withTitle: "Replace with the Look on Screen", action: #selector(replace(_:)), keyEquivalent: "")
         replace.target = self
@@ -137,12 +145,10 @@ import AppKit
         let delete = menu.addItem(withTitle: "Delete “\(item.title)”", action: #selector(deleteItem(_:)), keyEquivalent: "")
         delete.target = self
         delete.representedObject = item.id
-        b.menu = menu
-        return b
+        return menu
     }
 
     @objc private func pick(_ sender: NSButton) { sender.identifier.map { onPick($0.rawValue) } }
-    @objc private func delete(_ sender: NSButton) { sender.identifier.map { onDelete($0.rawValue) } }
     @objc private func deleteItem(_ sender: NSMenuItem) { (sender.representedObject as? String).map(onDelete) }
     @objc private func replace(_ sender: NSMenuItem) { (sender.representedObject as? String).map(onReplace) }
     @objc private func toggleHideStandard() { onHideStandard(hideStandard.state == .on) }
@@ -173,5 +179,113 @@ import AppKit
         case #selector(NSResponder.cancelOperation(_:)): cancelName(); return true
         default: return false
         }
+    }
+}
+
+/// A user's preset as one block, the way browser tabs carry their close button: the name, a hairline, and a faint ×
+/// inside the same rounded shape (the × is also what tells it from the standard styles). Hovering brightens the ×; a
+/// click on it arms it (a red trash for 3 s), a second click deletes. A click anywhere else picks the preset.
+@MainActor final class PresetChip: NSView {
+    var onPick: () -> Void = {}
+    var onDelete: () -> Void = {}
+    var isSelected = false { didSet { updateLook() } }
+
+    private let label: NSTextField
+    private let divider = NSView()
+    private let close = NSImageView()
+    private var hover = false, overClose = false, armed = false
+    private var disarm: DispatchWorkItem?
+    private static let closeWidth: CGFloat = 18
+
+    /// How many of the row's columns it takes: its name whole, up to three.
+    let span: Int
+
+    init(title: String, cell: CGFloat, gap: CGFloat) {
+        label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12)
+        let needed = label.fittingSize.width + 4 + 2 + 1 + Self.closeWidth + 6
+        span = min(3, Int(((needed + gap) / (cell + gap)).rounded(.up)))
+        let width = CGFloat(span) * cell + CGFloat(span - 1) * gap
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 6
+        layer?.cornerCurve = .continuous
+        label.font = .systemFont(ofSize: 12)
+        label.lineBreakMode = .byTruncatingTail
+        label.alignment = .center
+        label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        divider.wantsLayer = true
+        close.imageScaling = .scaleNone
+        for view in [label, divider, close] { view.translatesAutoresizingMaskIntoConstraints = false; addSubview(view) }
+        translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: width), heightAnchor.constraint(equalToConstant: 24),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            label.trailingAnchor.constraint(equalTo: divider.leadingAnchor, constant: -2),
+            label.centerYAnchor.constraint(equalTo: centerYAnchor),
+            divider.trailingAnchor.constraint(equalTo: close.leadingAnchor),
+            divider.widthAnchor.constraint(equalToConstant: 1),
+            divider.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            close.trailingAnchor.constraint(equalTo: trailingAnchor),
+            close.widthAnchor.constraint(equalToConstant: Self.closeWidth),
+            close.topAnchor.constraint(equalTo: topAnchor), close.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+        setAccessibilityElement(true)
+        setAccessibilityRole(.button)
+        setAccessibilityLabel(title)
+        updateLook()
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .mouseMoved, .activeInActiveApp,
+                                                                .inVisibleRect], owner: self))
+    }
+
+    override func mouseEntered(with event: NSEvent) { hover = true; track(event) }
+    override func mouseMoved(with event: NSEvent) { track(event) }
+    override func mouseExited(with event: NSEvent) { hover = false; overClose = false; updateLook() }
+
+    private func track(_ event: NSEvent) {
+        overClose = convert(event.locationInWindow, from: nil).x >= bounds.maxX - Self.closeWidth
+        updateLook()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard convert(event.locationInWindow, from: nil).x >= bounds.maxX - Self.closeWidth else {
+            setArmed(false)
+            onPick()
+            return
+        }
+        if armed { onDelete() } else { setArmed(true) }
+    }
+
+    private func setArmed(_ on: Bool) {
+        armed = on
+        disarm?.cancel()
+        if on {
+            let work = DispatchWorkItem { [weak self] in self?.setArmed(false) }
+            disarm = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+        }
+        setAccessibilityHelp(on ? "Click × again to delete" : nil)
+        updateLook()
+    }
+
+    private func updateLook() {
+        let base: NSColor = isSelected ? .controlAccentColor : NSColor(white: 1, alpha: hover ? 0.17 : 0.12)
+        layer?.backgroundColor = base.cgColor
+        label.textColor = .white
+        divider.layer?.backgroundColor = NSColor(white: 1, alpha: isSelected ? 0.35 : 0.15).cgColor
+        let symbol = armed ? "trash.fill" : "xmark"
+        close.image = NSImage(systemSymbolName: symbol, accessibilityDescription: armed ? "Delete" : "Delete…")?
+            .withSymbolConfiguration(.init(pointSize: armed ? 10 : 9, weight: .semibold))
+        close.contentTintColor = armed ? .systemRed
+            : NSColor(white: 1, alpha: overClose ? 0.95 : (hover || isSelected ? 0.6 : 0.4))
+        close.toolTip = armed ? "Click again to delete" : "Delete"
     }
 }
