@@ -27,7 +27,7 @@ import Testing
                           "size", "name-desc", "date-desc", "size-desc", "3", "7", "curve", "watch", "system", "ml",
                           "lanczos", "stop", "repeat", "loop", "left-hand", "classic", "every", "scenes", "sharp",
                           "subtle-collision", "none", "sharp-collision", "strong", "frames-a-notch", "always", "never",
-                          "proxy", "direct", "width:640", "http://localhost:9999", "500", "joined", "once"]
+                          "proxy", "direct", "width:640", "http://localhost:9999", "500", "joined", "once", "sf"]
         return candidates.first { candidate in
             guard candidate != current else { return false }
             var config = Config()

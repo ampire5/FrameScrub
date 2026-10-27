@@ -33,9 +33,23 @@ import Testing
         let worker = RecentThumbnailer(store: store, callbackQueue: DispatchQueue(label: "test"))
         let url = Fixtures.url(Fixtures.withAudioGOP25)
         let duration: Double = await withCheckedContinuation { continuation in
-            worker.start([RecentThumbnailer.Job(url: url, seconds: 1)]) { _, duration in continuation.resume(returning: duration) }
+            worker.start([RecentThumbnailer.Job(url: url, seconds: 1)]) { _, facts in continuation.resume(returning: facts.duration ?? 0) }
         }
         #expect(abs(duration - 4) < 0.1)
         #expect(store.image(for: url) != nil)
+    }
+
+    /// A kept poster without facts: a probe brings them and makes no picture.
+    @Test func aFactsOnlyJobProbesWithoutAPicture() async throws {
+        let store = ThumbnailStore(directory: makeTemporaryDirectory())
+        let worker = RecentThumbnailer(store: store, callbackQueue: DispatchQueue(label: "test"))
+        let url = Fixtures.url(Fixtures.h264)
+        let codec: String? = await withCheckedContinuation { continuation in
+            worker.start([RecentThumbnailer.Job(url: url, seconds: nil, factsOnly: true)]) { _, facts in
+                continuation.resume(returning: facts.codec)
+            }
+        }
+        #expect(codec == "H.264")
+        #expect(store.image(for: url) == nil)
     }
 }

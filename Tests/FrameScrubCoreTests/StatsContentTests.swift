@@ -26,7 +26,7 @@ import Testing
     }
 
     @Test func plainFileSections() {
-        let file = FileFacts(name: "a.mov", folder: "/tmp", size: 1000, modified: nil)
+        let file = StatsFile(name: "a.mov", folder: "/tmp", size: 1000, modified: nil)
         let sections = StatsContent.sections(player: player(), file: file, picture: picture, stash: nil)
         #expect(sections.map(\.id) == ["File", "Video", "Audio", "Playback", "Picture", "Diagnostics"])
         #expect(sections.allSatisfy { !$0.rows.isEmpty })
@@ -34,7 +34,7 @@ import Testing
     }
 
     @Test func fileRows() {
-        let small = FileFacts(name: "a.mov", folder: "/tmp/dir", size: 734_003_200, modified: Date(timeIntervalSince1970: 1_700_000_000))
+        let small = StatsFile(name: "a.mov", folder: "/tmp/dir", size: 734_003_200, modified: Date(timeIntervalSince1970: 1_700_000_000))
         let r = rows(StatsContent.sections(player: player(), file: small, picture: nil, stash: nil), "File")
         #expect(r["Name"] == "a.mov")
         #expect(r["Folder"] == "/tmp/dir")
@@ -45,7 +45,7 @@ import Testing
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         #expect(r["Modified"] == formatter.string(from: Date(timeIntervalSince1970: 1_700_000_000)))
-        let big = FileFacts(name: "b.mov", folder: "/", size: 2_500_000_000, modified: nil)
+        let big = StatsFile(name: "b.mov", folder: "/", size: 2_500_000_000, modified: nil)
         let b = rows(StatsContent.sections(player: player(), file: big, picture: nil, stash: nil), "File")
         #expect(b["Size"] == "2.50 GB")
         #expect(b["Modified"] == nil)
@@ -55,7 +55,7 @@ import Testing
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("statscontent-\(UUID().uuidString).bin")
         try Data(count: 2048).write(to: url)
         defer { try? FileManager.default.removeItem(at: url) }
-        let facts = FileFacts.read(url)
+        let facts = StatsFile.read(url)
         #expect(facts.name == url.lastPathComponent)
         #expect(facts.folder == url.deletingLastPathComponent().path)
         #expect(facts.size == 2048)
@@ -190,7 +190,7 @@ import Testing
     }
 
     @Test func stashSectionComesSecond() {
-        let file = FileFacts(name: "a.mov", folder: "/tmp", size: 1000, modified: nil)
+        let file = StatsFile(name: "a.mov", folder: "/tmp", size: 1000, modified: nil)
         let sections = StatsContent.sections(player: player(), file: file, picture: nil, stash: .loaded(scene(["id": "357", "title": "T"])))
         #expect(sections.map(\.id).prefix(3) == ["File", "Stash", "Video"])
         #expect(sections[1].title == "Stash")

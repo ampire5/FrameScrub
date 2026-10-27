@@ -3,7 +3,7 @@ import InfoPanelModel
 import StashKit
 
 /// What the file is on disk.
-public struct FileFacts: Equatable, Sendable {
+public struct StatsFile: Equatable, Sendable {
     public var name: String
     public var folder: String
     public var size: Int?
@@ -17,9 +17,9 @@ public struct FileFacts: Equatable, Sendable {
     }
 
     /// Reads the file's size and modification date. Touches the disk: call it off the main thread.
-    public static func read(_ url: URL) -> FileFacts {
+    public static func read(_ url: URL) -> StatsFile {
         let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        return FileFacts(name: url.lastPathComponent, folder: url.deletingLastPathComponent().path,
+        return StatsFile(name: url.lastPathComponent, folder: url.deletingLastPathComponent().path,
                          size: values?.fileSize, modified: values?.contentModificationDate)
     }
 }
@@ -69,7 +69,7 @@ public struct PlayerStats: Equatable, Sendable {
 public enum StatsContent {
     public static let defaultOrder = ["File", "Stash", "Video", "Audio", "Playback", "Picture", "Diagnostics"]
 
-    public static func sections(player: PlayerStats?, file: FileFacts?, picture: PictureStats?, stash: StashDetailsState?) -> [InfoSection] {
+    public static func sections(player: PlayerStats?, file: StatsFile?, picture: PictureStats?, stash: StashDetailsState?) -> [InfoSection] {
         var sections: [InfoSection] = []
         func add(_ title: String, _ rows: [InfoRow?]) {
             let rows = rows.compactMap { $0 }
@@ -96,7 +96,7 @@ public enum StatsContent {
 
     // MARK: Sections
 
-    private static func fileRows(player: PlayerStats?, file: FileFacts?) -> [InfoRow?] {
+    private static func fileRows(player: PlayerStats?, file: StatsFile?) -> [InfoRow?] {
         [row("Name", file?.name), row("Folder", file?.folder),
          row("Size", file?.size.map(sizeText)), row("Modified", file?.modified.map(dateText)),
          row("Duration", player.map { duration($0.duration) }), row("Container", player?.format.containerText)]

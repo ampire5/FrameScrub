@@ -1,6 +1,8 @@
 import AppKit
 import FrameScrubCore
 import FrameScrubSettings
+import HomeChrome
+import HomeScreenModel
 import SwiftUI
 
 /// Carries a `Command` in a menu item's `representedObject`.
@@ -44,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var mouseBridge: LogiMouseBridge?
     /// The folders' colour (folder-colors.json); nil for a secondary launch, which never opens a file.
     private var folderColors: FolderColors?
+    private var folderSorts: FolderSorts?
 
     private static let openFileNotification = Notification.Name("com.framescrub.open-file")
 
@@ -54,14 +57,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             becomeSecondary(primary)
             return
         }
+        Icons.set = Icons.Set(rawValue: config.iconSet.rawValue) ?? .lucide   // before the first icon is made
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)
         gestureBindings = InputPreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
+        let folderSorts = FolderSorts()
+        self.folderSorts = folderSorts
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
-                                                folderColors: folderColors)
+                                                folderColors: folderColors, folderSorts: folderSorts,
+                                                unreadable: UnreadableFiles())
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
         preferences.addObserver { [weak self] in
             self?.gestureBindings.layout = $0.keyLayout
@@ -262,6 +269,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let handOverObserver { DistributedNotificationCenter.default().removeObserver(handOverObserver) }
         controller?.shutdown()   // nil for a secondary launch, which never built a controller
         folderColors?.flush()   // a folder save still waiting for its debounced write
+        folderSorts?.flush()
     }
 
     // MARK: Single instance
@@ -545,6 +553,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             #selector(toggleHomeSidebar(_:))].contains(item.action) {
             return controller?.showsHome == true
         }
+        // Over Home the video is paused behind it: its commands wait until it is back.
+        if let box = item.representedObject as? CommandBox, !box.command.worksWithoutPlayer,
+           controller?.showsHome == true { return false }
         if item.action == #selector(closeWindow(_:)) {
             let video = NSApp.keyWindow === controller?.window && controller?.hasOpenFile == true
             item.title = video ? "Close Video" : "Close"

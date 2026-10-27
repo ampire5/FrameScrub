@@ -9,7 +9,7 @@ import Testing
 
     @Test func entriesCarryProgressAndTime() {
         let entries = HomeRecent.entries([a, b], resume: { $0 == a ? ResumeEntry(position: 30, duration: 120, updated: day) : nil },
-                                         durations: [:], dimmed: [])
+                                         facts: [:], dimmed: [])
         #expect(entries.map(\.id) == ["recent:/v/a.mp4", "recent:/v/b.mkv"])
         #expect(entries[0].kind == .file && entries[0].name == "a.mp4")
         #expect(entries[0].subtitle == RecentFiles.timeText(position: 30, duration: 120))
@@ -21,12 +21,12 @@ import Testing
 
     /// A length the thumbnailer found (the file was never played to a position) shows before the store has one.
     @Test func durationsFillTheLength() {
-        let entries = HomeRecent.entries([b], resume: { _ in nil }, durations: ["/v/b.mkv": 65], dimmed: [])
+        let entries = HomeRecent.entries([b], resume: { _ in nil }, facts: ["/v/b.mkv": FileFacts(duration: 65)], dimmed: [])
         #expect(entries[0].subtitle == "1:05")
     }
 
     @Test func dimsUnreachable() {
-        let entries = HomeRecent.entries([a, b], resume: { _ in nil }, durations: [:], dimmed: ["/v/a.mp4"])
+        let entries = HomeRecent.entries([a, b], resume: { _ in nil }, facts: [:], dimmed: ["/v/a.mp4"])
         #expect(entries.map(\.isDimmed) == [true, false])
     }
 

@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import HomeScreenModel
 
 /// The playlist (shown in a slot): the folder's videos or a page's list, current one highlighted; a click opens a row.
 /// On top: a name filter and, for a folder, the order.
@@ -114,11 +115,23 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         window?.makeFirstResponder(search)
     }
 
-    /// A folder: its order can be picked.
-    func showSort(_ sort: PlaylistSort) {
+    /// A folder: its order (Home's too) can be picked; the chosen field shows its direction, picking it again turns it.
+    func showSort(_ sort: BrowserSort) {
         sortButton.isHidden = false
         search.placeholderString = "Filter (⌘F)"
-        sortButton.selectItem(at: PlaylistSort.allCases.firstIndex(of: sort) ?? 0)
+        for (i, key) in PlaylistSort.allCases.enumerated() {
+            let item = sortButton.item(at: i)
+            item?.title = key.rawValue == sort.key.rawValue ? Self.title(sort) : key.shortTitle
+        }
+        sortButton.selectItem(at: PlaylistSort.allCases.firstIndex { $0.rawValue == sort.key.rawValue } ?? 0)
+    }
+
+    private static func title(_ sort: BrowserSort) -> String {
+        switch sort.key {
+        case .name: sort.ascending ? "Name" : "Name Z–A"
+        case .date: sort.ascending ? "Oldest" : "Newest"
+        case .size: sort.ascending ? "Smallest" : "Largest"
+        }
     }
 
     /// A page's list: kept in the page's order; `name` (if the page gave one) shows in the filter field.

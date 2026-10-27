@@ -46,26 +46,18 @@ public enum HomeFolders {
     }
 
     /// A file's progress and length line on its card: where it was left (the position store) and its length (the
-    /// store's, else one found while making its poster).
+    /// store's, else one found while making its poster); and its stream's facts (`facts`, by path) for the card.
     public static func withFacts(_ entries: [BrowserEntry], resume: (URL) -> ResumeEntry?,
-                                 durations: [String: Double]) -> [BrowserEntry] {
+                                 facts: [String: FileFacts]) -> [BrowserEntry] {
         entries.map { e in
             guard e.isFile else { return e }
             var e = e
             let entry = resume(e.url)
-            let duration = entry?.duration ?? durations[e.url.path]
+            e.facts = facts[e.url.path]
+            let duration = entry?.duration ?? e.facts?.duration
             e.subtitle = RecentFiles.timeText(position: entry?.position, duration: duration)
             e.progress = RecentFiles.progress(position: entry?.position, duration: duration)
             return e
-        }
-    }
-
-    /// Home's sort of a folder as the playlist's order: › and ‹ go through the videos as the grid showed them.
-    public static func playlistOrder(_ sort: BrowserSort) -> (sort: PlaylistSort, ascending: Bool) {
-        switch sort.key {
-        case .name: (.name, sort.ascending)
-        case .date: (.date, sort.ascending)
-        case .size: (.size, sort.ascending)
         }
     }
 

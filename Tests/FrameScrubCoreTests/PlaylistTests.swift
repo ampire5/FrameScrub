@@ -1,4 +1,5 @@
 import Foundation
+import HomeScreenModel
 import Testing
 @testable import FrameScrubCore
 
@@ -89,14 +90,14 @@ import Testing
 
     @Test func sortsByDateNewestFirst() throws {
         let dir = try folder([("old.mp4", 1, 300), ("new.mp4", 1, 10), ("mid.mp4", 1, 100)])
-        let playlist = Playlist(current: dir.appendingPathComponent("mid.mp4"), sort: .date)
+        let playlist = Playlist(current: dir.appendingPathComponent("mid.mp4"), sort: PlaylistSort.date.defaultSort)
         #expect(playlist.files.map(\.lastPathComponent) == ["new.mp4", "mid.mp4", "old.mp4"])
         #expect(playlist.currentIndex == 1)
     }
 
     @Test func sortsBySizeLargestFirstThenByName() throws {
         let dir = try folder([("b.mp4", 10, 0), ("a.mp4", 10, 0), ("big.mp4", 500, 0), ("small.mp4", 1, 0)])
-        let playlist = Playlist(current: dir.appendingPathComponent("a.mp4"), sort: .size)
+        let playlist = Playlist(current: dir.appendingPathComponent("a.mp4"), sort: PlaylistSort.size.defaultSort)
         #expect(playlist.files.map(\.lastPathComponent) == ["big.mp4", "a.mp4", "b.mp4", "small.mp4"])
     }
 
@@ -105,11 +106,11 @@ import Testing
         let dir = try folder([("b.mp4", 10, 300), ("a.mp4", 10, 10), ("big.mp4", 500, 100), ("small.mp4", 1, 200)])
         let listing = FolderListing.read(dir)
         let current = dir.appendingPathComponent("a.mp4")
-        #expect(Playlist(current: current, sort: .date, ascending: true, listing: listing).files.map(\.lastPathComponent)
+        #expect(Playlist(current: current, sort: BrowserSort(key: .date, ascending: true), listing: listing).files.map(\.lastPathComponent)
                 == ["b.mp4", "small.mp4", "big.mp4", "a.mp4"])
-        #expect(Playlist(current: current, sort: .size, ascending: true, listing: listing).files.map(\.lastPathComponent)
+        #expect(Playlist(current: current, sort: BrowserSort(key: .size, ascending: true), listing: listing).files.map(\.lastPathComponent)
                 == ["small.mp4", "a.mp4", "b.mp4", "big.mp4"])
-        #expect(Playlist(current: current, sort: .name, ascending: false, listing: listing).files.map(\.lastPathComponent)
+        #expect(Playlist(current: current, sort: BrowserSort(key: .name, ascending: false), listing: listing).files.map(\.lastPathComponent)
                 == ["small.mp4", "big.mp4", "b.mp4", "a.mp4"])
     }
 
@@ -145,5 +146,41 @@ import Testing
     @Test func sortCyclesAndParses() {
         #expect(PlaylistSort.name.next == .date && PlaylistSort.date.next == .size && PlaylistSort.size.next == .name)
         #expect(PlaylistSort(rawValue: "date") == .date)
+    }
+
+    @Test func orderIsTheGrids() throws {   // › and ‹ go where Home's next card is, in every sort
+        let dir = try folder([("b.mp4", 10, 300), ("a.mp4", 10, 300), ("clip10.mp4", 500, 100), ("clip2.mp4", 1, 200)])
+        let entries = try HomeFolders.entries(in: dir)
+        let current = dir.appendingPathComponent("a.mp4")
+        for text in ["name", "name-desc", "date", "date-desc", "size", "size-desc"] {
+            let sort = BrowserSort(text: text)!
+            let grid = sort.order(entries).filter(\.isFile).map(\.url.standardizedFileURL)
+            #expect(Playlist(current: current, sort: sort, listing: FolderListing.read(dir)).files == grid, "\(text)")
+        }
+    }
+
+    @Test func fileWithoutDateGoesLast() {   // as in the grid, not as the oldest
+        let dir = URL(fileURLWithPath: "/v")
+        let entries = [BrowserEntry(url: dir.appendingPathComponent("n.mp4"), name: "n.mp4", kind: .file),
+                       BrowserEntry(url: dir.appendingPathComponent("o.mp4"), name: "o.mp4", kind: .file,
+                                    date: Date(timeIntervalSinceReferenceDate: 1))]
+        let playlist = Playlist(current: entries[0].url, sort: BrowserSort(key: .date, ascending: true),
+                                listing: FolderListing(folder: dir, entries: entries))
+        #expect(playlist.files.map(\.lastPathComponent) == ["o.mp4", "n.mp4"])
+    }
+
+    @Test func defaultSortsFollowTheGridsFirstDirections() {
+        #expect(PlaylistSort.name.defaultSort == .standard)
+        #expect(PlaylistSort.date.defaultSort == BrowserSort(key: .date, ascending: false))
+        #expect(PlaylistSort.size.defaultSort == BrowserSort(key: .size, ascending: false))
+    }
+
+    @Test func neighbourStepsPastUnreadable() throws {
+        let dir = try folder(["a.mp4", "b.mp4", "c.mp4", "d.mp4"])
+        let playlist = Playlist(current: dir.appendingPathComponent("b.mp4"))
+        let broken: (URL) -> Bool = { ["a.mp4", "c.mp4"].contains($0.lastPathComponent) }
+        #expect(playlist.neighbour(1, skipping: broken)?.lastPathComponent == "d.mp4")
+        #expect(playlist.neighbour(-1, skipping: broken) == nil)
+        #expect(playlist.neighbour(-1, skipping: { _ in false })?.lastPathComponent == "a.mp4")
     }
 }

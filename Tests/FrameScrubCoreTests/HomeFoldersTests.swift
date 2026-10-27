@@ -63,15 +63,10 @@ import Testing
         let b = BrowserEntry(url: URL(filePath: "/v/b.mp4"), name: "b.mp4", kind: .file)
         let sub = BrowserEntry(url: URL(filePath: "/v/Sub"), name: "Sub", kind: .folder)
         let out = HomeFolders.withFacts([a, b, sub], resume: { $0 == a.url ? ResumeEntry(position: 30, duration: 120) : nil },
-                                        durations: ["/v/b.mp4": 65])
+                                        facts: ["/v/b.mp4": FileFacts(duration: 65)])
         #expect(out[0].subtitle == "0:30 / 2:00" && out[0].progress == 0.25)
         #expect(out[1].subtitle == "1:05" && out[1].progress == nil)
         #expect(out[2].subtitle == nil)
-    }
-
-    @Test func homeSortIsThePlaylistOrder() {
-        #expect(HomeFolders.playlistOrder(BrowserSort(key: .date, ascending: false)) == (.date, false))
-        #expect(HomeFolders.playlistOrder(.standard) == (.name, true))
     }
 
     @Test func folderFactsComeFromItsListing() {

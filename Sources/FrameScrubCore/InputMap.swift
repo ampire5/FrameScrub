@@ -160,6 +160,18 @@ public enum Command: Equatable, Sendable {
     case pluginAction(String)
     case ignore
 
+    /// Whether the command is about the window or the app, not the video: the only ones run while Home is in the
+    /// window (a space, an arrow or a wheel binding there must not pause, seek or show the player's icons).
+    public var worksWithoutPlayer: Bool {
+        switch self {
+        case .cycleFullscreen, .setFullscreen, .cycleOntop, .quit, .cycleMouseProfile, .toggleUpscaler, .cycleUpscaler,
+             .pluginAction, .ignore:
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Whether holding the key down repeats the command. Toggles and one-shot actions would
     /// flicker or fire many times; seeking, stepping, speed, volume and zoom are meant to repeat.
     public var repeatsWhenHeld: Bool {

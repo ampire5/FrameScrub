@@ -1,4 +1,5 @@
 import Foundation
+import HomeScreenModel
 
 /// The playlist's order: by name like Finder, or newest / largest first (ties by name).
 public enum PlaylistSort: String, CaseIterable, Sendable {
@@ -17,6 +18,16 @@ public enum PlaylistSort: String, CaseIterable, Sendable {
         }
     }
 
+    /// The folder order this stands for, in each key's first direction (as Home's sort capsule): names A–Z, the newest
+    /// and the largest first. `playlist-sort` is the order of a folder that has none of its own.
+    public var defaultSort: BrowserSort {
+        switch self {
+        case .name: .standard
+        case .date: BrowserSort(key: .date, ascending: false)
+        case .size: BrowserSort(key: .size, ascending: false)
+        }
+    }
+
     /// For the playlist panel's menu.
     public var shortTitle: String {
         switch self {
@@ -27,7 +38,8 @@ public enum PlaylistSort: String, CaseIterable, Sendable {
     }
 }
 
-/// The videos in the current file's folder, sorted, and narrowed by a name filter. The current file is always part of it.
+/// The videos in the current file's folder in the folder's `BrowserSort` order, the order Home's grid shows them in
+/// (`FolderPlaylist`), narrowed by a name filter. The current file is always part of it.
 public struct Playlist: Equatable, Sendable {
     public static let videoExtensions: Set<String> = [
         "mp4", "m4v", "mov", "mkv", "webm", "avi", "mts", "m2ts", "ts", "mpg", "mpeg", "wmv", "flv", "3gp",
@@ -39,43 +51,34 @@ public struct Playlist: Equatable, Sendable {
     public let totalCount: Int
 
     /// `filter`: a case- and accent-insensitive part of the name; blank keeps every file.
-    public init(current: URL, sort: PlaylistSort = .name, filter: String = "", fileManager: FileManager = .default) {
+    public init(current: URL, sort: BrowserSort = .standard, filter: String = "", fileManager: FileManager = .default) {
         self.init(current: current, sort: sort, filter: filter,
                   listing: FolderListing.read(current.standardizedFileURL.deletingLastPathComponent(), fileManager: fileManager))
     }
 
-    /// Sorts and filters a listing read earlier (`FolderListing.read` can take seconds on a NAS). `ascending` turns the
-    /// sort's own direction (names A–Z, the newest and the largest first) around, as Home's sort can; equal dates or
-    /// sizes stay by name either way.
-    public init(current: URL, sort: PlaylistSort = .name, ascending: Bool? = nil, filter: String = "",
-                listing: FolderListing) {
+    /// Orders and filters a listing read earlier (`FolderListing.read` can take seconds on a NAS): the grid's own
+    /// order of the same entries, so › and ‹ go where Home's next card is.
+    public init(current: URL, sort: BrowserSort = .standard, filter: String = "", listing: FolderListing) {
         let me = current.standardizedFileURL
-        let attributes = listing.videos
-        var videos = Array(attributes.keys)
-        if !videos.contains(me) { videos.append(me) }
-        let byName: (URL, URL) -> Bool = {
-            $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
-        }
-        switch sort {
-        case .name:
-            videos.sort(by: ascending ?? true ? byName : { byName($1, $0) })
-        case .date:
-            let date = { attributes[$0]?.date ?? .distantPast }, up = ascending ?? false
-            videos.sort { date($0) != date($1) ? (date($0) < date($1)) == up : byName($0, $1) }
-        case .size:
-            let size = { attributes[$0]?.size ?? 0 }, up = ascending ?? false
-            videos.sort { size($0) != size($1) ? (size($0) < size($1)) == up : byName($0, $1) }
-        }
-        totalCount = videos.count
+        let ordered = FolderPlaylist(folder: listing.folder, entries: listing.entries, sort: sort, current: me).urls
+        totalCount = ordered.count
         let needle = filter.trimmingCharacters(in: .whitespaces)
-        if !needle.isEmpty {
-            videos = videos.filter { $0 == me || $0.lastPathComponent.localizedStandardContains(needle) }
-        }
+        let videos = needle.isEmpty ? ordered
+            : ordered.filter { $0 == me || $0.lastPathComponent.localizedStandardContains(needle) }
         files = videos
         currentIndex = videos.firstIndex(of: me) ?? 0
     }
 
     public var current: URL { files[currentIndex] }
+
+    /// The next file (`direction` > 0) or the previous one that `skipping` does not refuse (a file known to be
+    /// unreadable); nil past the end.
+    public func neighbour(_ direction: Int, skipping: (URL) -> Bool) -> URL? {
+        let step = direction < 0 ? -1 : 1
+        var i = currentIndex + step
+        while files.indices.contains(i), skipping(files[i]) { i += step }
+        return files.indices.contains(i) ? files[i] : nil
+    }
     public var previous: URL? { currentIndex > 0 ? files[currentIndex - 1] : nil }
     public var next: URL? { currentIndex + 1 < files.count ? files[currentIndex + 1] : nil }
     public var isFiltered: Bool { files.count != totalCount }
@@ -89,42 +92,33 @@ public struct Playlist: Equatable, Sendable {
     public var neighbourAfterRemoval: URL? { next ?? previous }
 }
 
-/// The videos of one folder with their dates and sizes: the slow part of a playlist, read once and sorted later.
+/// The videos of one folder as Home lists them (`HomeFolders.entries`): the slow part of a playlist, read once and
+/// ordered later.
 public struct FolderListing: Equatable, Sendable {
     public let folder: URL
-    let videos: [URL: VideoAttributes]
+    /// The folder's videos, with their dates and sizes.
+    public let entries: [BrowserEntry]
 
-    struct VideoAttributes: Equatable, Sendable {
-        let date: Date
-        let size: Int
+    public init(folder: URL, entries: [BrowserEntry]) {
+        self.folder = folder.standardizedFileURL
+        self.entries = entries.filter(\.isFile)
     }
 
-    public var count: Int { videos.count }
+    public var count: Int { entries.count }
 
     /// A folder not read yet: a playlist made from it holds only its current file.
     public static func empty(_ folder: URL) -> FolderListing {
-        FolderListing(folder: folder.standardizedFileURL, videos: [:])
+        FolderListing(folder: folder, entries: [])
     }
 
     /// The same listing without `file` (moved to the Trash or deleted since the read).
     public func removing(_ file: URL) -> FolderListing {
-        var videos = videos
-        videos[file.standardizedFileURL] = nil
-        return FolderListing(folder: folder, videos: videos)
+        let gone = file.standardizedFileURL
+        return FolderListing(folder: folder, entries: entries.filter { $0.url.standardizedFileURL != gone })
     }
 
-    /// One directory read, also on a NAS; an unreadable folder gives an empty listing.
+    /// One directory read, also on a NAS, by the same code as Home's folders; an unreadable folder gives an empty listing.
     public static func read(_ folder: URL, fileManager: FileManager = .default) -> FolderListing {
-        let keys: [URLResourceKey] = [.contentModificationDateKey, .fileSizeKey]
-        let contents = (try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: keys,
-                                                             options: [.skipsHiddenFiles])) ?? []
-        // Dates and sizes come from the listing's own URLs, which carry the prefetched values.
-        var videos: [URL: VideoAttributes] = [:]
-        for url in contents where Playlist.videoExtensions.contains(url.pathExtension.lowercased()) {
-            let values = try? url.resourceValues(forKeys: Set(keys))
-            videos[url.standardizedFileURL] = VideoAttributes(date: values?.contentModificationDate ?? .distantPast,
-                                                             size: values?.fileSize ?? 0)
-        }
-        return FolderListing(folder: folder.standardizedFileURL, videos: videos)
+        FolderListing(folder: folder, entries: (try? HomeFolders.entries(in: folder, fileManager: fileManager)) ?? [])
     }
 }

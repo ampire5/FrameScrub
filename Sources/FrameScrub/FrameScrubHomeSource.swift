@@ -20,11 +20,15 @@ import HomeScreenModel
     /// without one. A folder's: a keyframe near a tenth of each video, kept apart (`posters`, more of them, smaller).
     private let recentPictures: PictureQueue
     private let folderPictures: PictureQueue
-    /// Lengths found while making pictures for files the position store has none for, by path; kept across runs.
-    private var durations: [String: Double] = [:]
-    private let durationStore = DurationStore()
-    private var durationSave: DispatchWorkItem?
+    /// Facts (size, codec, rate, length) found while making pictures, by path; kept across runs (`FileFactsStore`).
+    private var facts: [String: FileFacts] = [:]
+    private let factsStore = FileFactsStore()
+    private var factsSave: DispatchWorkItem?
+    /// The sorts of Recent and the app's lists, for this run; a folder's are kept (`folderSorts`).
     private var sorts: [BrowserLocation: BrowserSort] = [:]
+    private let folderSorts: FolderSorts
+    /// `playlist-sort`'s order, for a folder without one of its own.
+    private let defaultSort: () -> BrowserSort
     /// Each folder's last listing as read, for the way back and for re-listing with new lengths without a read.
     private var listings: [URL: [BrowserEntry]] = [:]
     /// Folder cards' facts and the videos their covers are made of, by folder, for this run; the run filling them.
@@ -36,8 +40,11 @@ import HomeScreenModel
     private var relistOnly = false
     private var relist: DispatchWorkItem?
 
-    init(recentURLs: @escaping () -> [URL], thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer,
-         stashPage: @escaping () -> NSView?, hasStash: @escaping () -> Bool) {
+    init(folderSorts: FolderSorts, defaultSort: @escaping () -> BrowserSort, recentURLs: @escaping () -> [URL],
+         thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer, stashPage: @escaping () -> NSView?,
+         hasStash: @escaping () -> Bool) {
+        self.folderSorts = folderSorts
+        self.defaultSort = defaultSort
         self.recentURLs = recentURLs
         self.stashPage = stashPage
         self.hasStash = hasStash
@@ -47,11 +54,11 @@ import HomeScreenModel
                                      limit: 2000, maxSide: 480)
         folderPictures = PictureQueue(store: posters, thumbnailer: RecentThumbnailer(store: posters), prefix: "",
                                       atPosition: false)
-        let store = durationStore
+        let store = factsStore
         Task { @MainActor [weak self] in   // the file is read off the main thread, once
             let kept = await Task.detached(priority: .utility) { store.all() }.value
             guard let self, !kept.isEmpty else { return }
-            self.durations.merge(kept) { now, _ in now }
+            self.facts.merge(kept) { now, _ in now }
             if case .folder? = self.view?.location {   // a folder shown before they came: its cards get them
                 self.relistOnly = true
                 self.view?.reload()
@@ -61,7 +68,8 @@ import HomeScreenModel
         folderPictures.onHave = { [weak self] url in self?.posterIn(url) }
         for queue in [recentPictures, folderPictures] {
             queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
-            queue.onDuration = { [weak self] url, duration in self?.lengthFound(url, duration) }
+            queue.onFacts = { [weak self] url, facts in self?.factsFound(url, facts) }
+            queue.hasFacts = { [weak self] url in self?.facts[url.path] != nil }
         }
     }
 
@@ -128,7 +136,7 @@ import HomeScreenModel
 
     private func withFacts(_ entries: [BrowserEntry]) -> [BrowserEntry] {
         let resume = ResumeStore()
-        return HomeFolders.withFacts(entries, resume: { resume.entry(for: $0) }, durations: durations)
+        return HomeFolders.withFacts(entries, resume: { resume.entry(for: $0) }, facts: facts)
     }
 
     func lastListing(for location: BrowserLocation) -> BrowserListing? {
@@ -282,17 +290,24 @@ import HomeScreenModel
         Task { @MainActor [weak self] in await self?.makeCover(card.id, folder: card.folder, from: facts.cover) }
     }
 
-    /// A length is new: the cards that show it are listed again from what is kept (no read), once for a burst.
-    private func lengthFound(_ url: URL, _ duration: Double) {
-        guard durations[url.path] == nil else { return }
-        durations[url.path] = duration
-        durationStore.set(duration, for: url.path)
-        durationSave?.cancel()
-        let store = durationStore
+    /// A file's facts are new: its card in view shows them at once (`setFacts`); a length new to it lists the cards
+    /// again from what is kept (no read), once for a burst, for the progress line.
+    private func factsFound(_ url: URL, _ found: FileFacts) {
+        guard facts[url.path] != found else { return }
+        let hadLength = facts[url.path]?.duration != nil
+        facts[url.path] = found
+        factsStore.set(found, for: url.path)
+        factsSave?.cancel()
+        let store = factsStore
         let save = DispatchWorkItem { store.save() }
-        durationSave = save
+        factsSave = save
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: save)   // once for a burst
-        guard ResumeStore().entry(for: url)?.duration == nil else { return }
+        if view?.location == .source(HomeRecent.source) {
+            view?.setFacts(["recent:" + url.path: found])
+        } else {
+            view?.setFacts([url.path: found])
+        }
+        guard !hadLength, found.duration != nil, ResumeStore().entry(for: url)?.duration == nil else { return }
         relist?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, let view = self.view else { return }
@@ -336,12 +351,16 @@ import HomeScreenModel
         listings[entry.url.deletingLastPathComponent()] = nil
     }
 
-    /// Recent: newest first; a folder: by name, or as the user last sorted it this run.
+    /// Recent: newest first, or as the user last sorted it this run; a folder: its own order, kept across runs and
+    /// shared with the player's list, else `playlist-sort`'s.
     func sort(for location: BrowserLocation) -> BrowserSort {
-        sorts[location] ?? (location == .source(HomeRecent.source) ? BrowserSort(key: .date, ascending: false) : .standard)
+        if case .folder(let folder) = location { return folderSorts.sort(for: folder) ?? defaultSort() }
+        return sorts[location] ?? (location == .source(HomeRecent.source) ? BrowserSort(key: .date, ascending: false) : .standard)
     }
 
-    func setSort(_ sort: BrowserSort, for location: BrowserLocation) { sorts[location] = sort }
+    func setSort(_ sort: BrowserSort, for location: BrowserLocation) {
+        if case .folder(let folder) = location { folderSorts.set(sort, for: folder) } else { sorts[location] = sort }
+    }
 
     func info(for source: String) -> HomeSourceInfo {
         source == HomeRecent.stash
@@ -385,8 +404,8 @@ import HomeScreenModel
     private func listRecent() -> AsyncThrowingStream<BrowserListing, Error> {
         let urls = recentURLs()
         let resume = ResumeStore()
-        let entries = { [durations] (dimmed: Set<String>) in
-            HomeRecent.entries(urls, resume: { resume.entry(for: $0) }, durations: durations, dimmed: dimmed)
+        let entries = { [facts] (dimmed: Set<String>) in
+            HomeRecent.entries(urls, resume: { resume.entry(for: $0) }, facts: facts, dimmed: dimmed)
         }
         return AsyncThrowingStream { continuation in
             continuation.yield(BrowserListing(entries: entries([]), complete: true))
@@ -408,7 +427,9 @@ import HomeScreenModel
 /// would cancel the file being made). Card ids are `prefix` + the file's path.
 @MainActor private final class PictureQueue {
     var onPicture: ((String, CGImage) -> Void)?
-    var onDuration: ((URL, Double) -> Void)?
+    var onFacts: ((URL, FileFacts) -> Void)?
+    /// Whether a file's facts are known: a kept picture without them gets a probe (no decode) after the pictures.
+    var hasFacts: ((URL) -> Bool)?
     /// A picture was made (after `onPicture`), whoever asked for it.
     var onMade: ((URL) -> Void)?
     /// A file has its picture: found kept, or just made.
@@ -421,6 +442,8 @@ import HomeScreenModel
     private let atPosition: Bool
     private var reading: Task<Void, Never>?
     private var pending: [URL] = []
+    /// Of `pending`, the files whose picture is kept: only their facts are wanted.
+    private var factsOnly: Set<URL> = []
 
     init(store: ThumbnailStore, thumbnailer: RecentThumbnailer, prefix: String, atPosition: Bool) {
         self.store = store
@@ -438,13 +461,14 @@ import HomeScreenModel
             .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
         reading?.cancel()
         reading = Task { @MainActor [weak self] in
-            var missing: [URL] = []
+            var missing: [URL] = [], probes: [URL] = []
             for url in urls {
                 let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
                 guard let self, !Task.isCancelled else { return }
                 if let image {
                     self.onPicture?(idPrefix + url.path, image)
                     self.onHave?(url)
+                    if self.hasFacts?(url) == false { probes.append(url) }   // a poster of a run before the facts
                 } else {
                     missing.append(url)
                 }
@@ -456,7 +480,9 @@ import HomeScreenModel
             for url in kept { self.onHave?(url) }
             missing += ahead.filter { !kept.contains($0) }
             let waiting = Set(self.pending)   // a folder can hold thousands: sets, not array scans
-            let new = missing.filter { !waiting.contains($0) }
+            let newProbes = probes.filter { !waiting.contains($0) }
+            self.factsOnly.formUnion(newProbes)
+            let new = missing.filter { !waiting.contains($0) } + newProbes   // the probes after the pictures in view
             guard !new.isEmpty else { return }
             let first = Set(new)
             self.pending = new + self.pending.filter { !first.contains($0) }   // what is in view first
@@ -467,10 +493,11 @@ import HomeScreenModel
     private func startPending() {
         let resume = atPosition ? ResumeStore() : nil
         let jobs = pending.map {
-            RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil })
+            RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil },
+                                  factsOnly: factsOnly.contains($0))
         }
-        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers) { [weak self] url, duration in
-            MainActor.assumeIsolated { self?.made(url, duration: duration) }
+        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers) { [weak self] url, facts in
+            MainActor.assumeIsolated { self?.made(url, facts: facts) }
         }
     }
 
@@ -485,12 +512,14 @@ import HomeScreenModel
         reading?.cancel()
         reading = nil
         pending = []
+        factsOnly = []
         thumbnailer.cancel()
     }
 
-    private func made(_ url: URL, duration: Double) {
+    private func made(_ url: URL, facts: FileFacts) {
         pending.removeAll { $0 == url }
-        onDuration?(url, duration)
+        onFacts?(url, facts)
+        if factsOnly.remove(url) != nil { return }   // the picture was there already
         let store = store, id = prefix + url.path
         Task { @MainActor [weak self] in
             let image = await Task.detached(priority: .utility) { store.image(for: url) }.value

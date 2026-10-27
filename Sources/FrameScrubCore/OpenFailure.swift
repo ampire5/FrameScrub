@@ -44,6 +44,10 @@ public struct OpenFailure: Equatable, Sendable {
         }
     }
 
+    /// The decoders cannot read the file (damaged, or no video in it), as against a read that failed or a file that is
+    /// gone: it is marked unreadable for the run (`UnreadableFiles`), and a step through the folder goes past it.
+    public var marksUnreadable: Bool { kind == .damaged || kind == .noVideo }
+
     public var reason: String {
         if let ownReason { return ownReason }
         return switch kind {

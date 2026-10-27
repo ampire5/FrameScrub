@@ -22,6 +22,16 @@ import CFFmpeg
         #expect(OpenFailure(error).kind == kind)
     }
 
+    @Test func damagedAndNoVideoMarkUnreadable() {   // a read that failed or a file gone is tried again
+        #expect(OpenFailure(FFmpegError(cff_averror_invaliddata(), "open a.mp4")).marksUnreadable)
+        #expect(OpenFailure(FFmpegError(cff_averror_stream_not_found(), "find video stream")).marksUnreadable)
+        for error: Error in [FFmpegError(-ENOENT, "open"), FFmpegError(-EIO, "read"), FFmpegError(-ETIMEDOUT, "read"),
+                             CocoaError(.fileReadUnknown)] {
+            #expect(!OpenFailure(error).marksUnreadable)
+        }
+        #expect(!OpenFailure(reason: "x", detail: "y").marksUnreadable)
+    }
+
     @Test func keepsTheTechnicalText() {
         let failure = OpenFailure(FFmpegError(-ENOENT, "open a.mp4"))
         #expect(failure.detail == "open a.mp4: No such file or directory")

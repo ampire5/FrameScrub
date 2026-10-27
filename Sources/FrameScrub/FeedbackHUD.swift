@@ -1,4 +1,5 @@
 import AppKit
+import HomeChrome
 import FrameScrubCore
 
 /// Transport icons over the video, frameless like QuickTime's: seeks back on the left, forward on the right,
@@ -32,7 +33,6 @@ final class FeedbackHUD: NSView {
         shadow.shadowBlurRadius = 5
         shadow.shadowOffset = .zero
         stack.shadow = shadow
-        icon.symbolConfiguration = .init(pointSize: 120, weight: .regular)   // drawn large, scaled down: crisp at any size
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.contentTintColor = NSColor(white: 1, alpha: 0.9)
         caption.textColor = NSColor(white: 1, alpha: 0.9)
@@ -75,7 +75,7 @@ final class FeedbackHUD: NSView {
 
     /// Shows `feedback`, then fades out; `hold: true` keeps it until the next `show` or `hide`.
     func show(_ feedback: Feedback, hold: Bool = false) {
-        icon.image = NSImage(systemSymbolName: feedback.symbolName, accessibilityDescription: nil)
+        icon.image = Icons.symbol(feedback.symbolName, pointSize: 96)   // a 120 pt box, scaled down: crisp at any size
         caption.stringValue = feedback.caption ?? ""
         placement = feedback.placement
         needsLayout = true

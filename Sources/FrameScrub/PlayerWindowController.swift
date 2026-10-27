@@ -46,11 +46,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var hasShownHome = false
     /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
     /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
-    private var folderReturn: (folder: URL, file: URL, order: (sort: PlaylistSort, ascending: Bool))?
+    private var folderReturn: (folder: URL, file: URL)?
+    /// Each folder's order, shared with Home's grid.
+    private let folderSorts: FolderSorts
+    /// The videos the decoders could not read in this run: Home draws them faint, the folder's steps go past them.
+    private let unreadable: UnreadableFiles
     /// Esc on Home (`makeHome`).
     private var homeKeys: Any?
-    /// Set while the window moves Home's browser itself: only the user's own moves change `home-tab`.
-    private var movingForApp = false
     /// Why a file did not open, in its place.
     private let failureView = OpenFailureView()
     /// The Stash WebUI (Stash spec §2.1), Home's Stash page, created the first time it is shown.
@@ -84,6 +86,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var statsPanel: InfoPanelController!
     /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
     private var slots: SlotsController!
+    /// Home's toolbar pills hidden under a shown slot (`updateToolbarUnderSlots`).
+    private let pillsUnderSlots = NSHashTable<NSView>.weakObjects()
     /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from the configured plugins.
     private var pluginPolicy = PluginPolicy()
     /// The video's edges in the window, set from the slots' layout (pinned slots take room from it).
@@ -102,7 +106,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var heldSegmentEvent: PluginEvent?
     private var pushPacing = PluginPushPacing()
     /// The open file's name and folder at once, its size and date once read off the main thread.
-    private var fileFacts: FileFacts?
+    private var fileFacts: StatsFile?
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
     private var statsTimer: Timer?
     private let hud = FeedbackHUD()
@@ -135,6 +139,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var previewLeading: NSLayoutConstraint!
     /// The OSD sits in the top left corner, below the back button while that is shown.
     private var osdTop: NSLayoutConstraint!
+    private var backButtonTop: NSLayoutConstraint!
+    /// In full screen, how far the title bar that slides in with the menu bar reaches down over the window (0 while it
+    /// is away): the back button and the OSD move down by it, not under it (`followFullScreenTitlebar`).
+    private var titlebarInset: CGFloat = 0
+    private var titlebarObserver: NSObjectProtocol?
+    private var isBackButtonShown = false
     /// Persists `sr-still=no` through the shared settings store (set by AppDelegate).
     var onDisableSRStill: (() -> Void)?
 
@@ -226,7 +236,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Where the effective colour came from at the last recompute (the stats mark it).
     private var colorOrigin = ColorOrigin.default
 
-    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors) {
+    init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors, folderSorts: FolderSorts,
+         unreadable: UnreadableFiles) {
+        self.folderSorts = folderSorts
+        self.unreadable = unreadable
         self.preferences = preferences
         let resumeStore = ResumeStore()   // one store: the core keeps the colour the edits write when it saves the position
         core = PlayerCore(config: config, resumeStore: resumeStore)
@@ -293,12 +306,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
-    /// `homeFolder`: the folder it was opened from in Home and Home's order of it (closing goes back there).
-    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: (URL, (sort: PlaylistSort, ascending: Bool))? = nil,
+    /// `homeFolder`: the folder it was opened from in Home (closing goes back there).
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
-        folderReturn = homeFolder.map { (folder: $0.0, file: url, order: $0.1) }
+        folderReturn = homeFolder.map { (folder: $0, file: url) }
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -325,8 +338,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// so a failed open or the user's next file never inherits it. Every file is read in the background (a file on a
     /// share can take seconds, and macOS may first ask whether the app may read the network volume); the previous file
     /// stops at once and `then` hears how the open ended.
+    /// `stepped`: the direction of the step through the folder that asked for it (‹ ›, autoadvance); a file the decoders
+    /// cannot read is then gone past, as a known one is, instead of showing why it did not open.
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
-                          landing: LinkTarget? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+                          landing: LinkTarget? = nil, stepped: Int? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         StartupTrace.beginOpen(url.lastPathComponent)
         abandonOpening()
         folderWait.cancel()   // a step or delete asked for the file before this one
@@ -393,10 +408,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             endOpening()
             switch result {
             case let .success(prepared):
+                unreadable.clear(url)
                 finishOpen(url, prepared, facts: facts ?? url, fallbackPosition: fallbackPosition, landing: landing)
                 done?(.opened)
             case let .failure(error):
-                showFailure(OpenFailure(error), url: url, facts: facts)
+                let failure = OpenFailure(error)
+                if failure.marksUnreadable {
+                    let entry = listedEntry(url)
+                    unreadable.mark(url, date: entry?.date, size: entry?.size)
+                    if let stepped, let next = playlist?.neighbour(stepped, skipping: isUnreadable) {
+                        showMessage("\(url.lastPathComponent): skipped", duration: 3)
+                        openFile(next, stepped: stepped, then: done)
+                        return
+                    }
+                }
+                showFailure(failure, url: url, facts: facts)
                 done?(.failed)
             }
         }
@@ -772,17 +798,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeHost.isHidden = false
         view.isParked = false
         // Home's toolbar lies over its content (the browser insets its grid by the toolbar's height), as in Loupe.
-        window.styleMask.insert(.fullSizeContentView)
-        window.titlebarAppearsTransparent = true
-        window.toolbar = view.browser.nsToolbar
-        window.titleVisibility = .hidden
+        keepingFrame(of: window) {
+            window.styleMask.insert(.fullSizeContentView)
+            window.titlebarAppearsTransparent = true
+            window.toolbar = view.browser.nsToolbar
+            window.titleVisibility = .hidden
+        }
+        DispatchQueue.main.async { [weak self] in self?.updateToolbarUnderSlots() }   // once the toolbar has its items laid out
         hideSeekBarWork?.cancel()
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
+        osd.hide()   // the player's messages and icons were about the video, now behind Home
+        hud.hide()
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
-        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0, order: r.order) : nil } ?? r }
+        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0) : nil } ?? r }
         let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
@@ -795,13 +826,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } else {
             location = view.browser.lastBrowsed
         }
-        movingForApp = true
         if view.browser.location == location, hasShownHome, selecting == nil {
             view.browser.reload()
         } else {
             view.browser.show(location, selecting: selecting)
         }
-        movingForApp = false
         hasShownHome = true
         updatePrecisionWheel()
         if core.url == nil {
@@ -825,10 +854,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeHost.isHidden = true
         home.isParked = true
         homeSource?.stopImages()
-        window?.toolbar = nil
-        window?.titleVisibility = .visible
-        window?.titlebarAppearsTransparent = false
-        if !isFullScreen { window?.styleMask.remove(.fullSizeContentView) }
+        if let window {
+            keepingFrame(of: window) {
+                window.toolbar = nil
+                window.titleVisibility = .visible
+                window.titlebarAppearsTransparent = false
+                if !isFullScreen { window.styleMask.remove(.fullSizeContentView) }
+            }
+        }
+        updateToolbarUnderSlots()   // the pills it hid are shown again for the next time Home has the toolbar
         if let titleBeforeHome { window?.title = titleBeforeHome }
         titleBeforeHome = nil
         window?.makeFirstResponder(videoView)
@@ -857,6 +891,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func makeHome() -> HomeView {
         let source = FrameScrubHomeSource(
+            folderSorts: folderSorts, defaultSort: { [weak self] in self?.core.config.playlistSort.defaultSort ?? .standard },
             recentURLs: { [weak self] in
                 RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths,
                                   limit: self?.core.config.recentCount ?? 50)
@@ -866,10 +901,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
         let view = HomeView(source: source)
         source.view = view.browser
+        view.browser.unreadable = unreadable
         source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
             guard let self else { return }
             if case .folder(let folder) = location {
-                self.open(url, homeFolder: (folder, HomeFolders.playlistOrder(sort)))   // the playlist in the grid's order
+                self.open(url, homeFolder: folder)   // the playlist in the grid's order: the folder's own (FolderSorts)
             } else {
                 self.open(url)
             }
@@ -885,19 +921,27 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         let browser = view.browser
         browser.files = .videos   // 16:9 slots, "videos" in the counts, the length and progress on each picture
-        browser.names = .below
+        // Square (posters fill their 16:9 slot, cropped) or Aspect (whole, fitted), and the names (⌥T, ⌥N and the
+        // toolbar's button): the user's last choice, kept across launches.
+        let defaults = UserDefaults.standard
+        browser.style = defaults.string(forKey: "homeGridStyle").flatMap(GridStyle.init) ?? .aspect
+        browser.names = defaults.string(forKey: "homeGridNames").flatMap(GridNames.init) ?? .auto
+        browser.onStyle = { [weak browser] style in
+            browser?.style = style
+            defaults.set(style.rawValue, forKey: "homeGridStyle")
+        }
+        browser.onNames = { [weak browser] names in
+            browser?.names = names
+            defaults.set(names.rawValue, forKey: "homeGridNames")
+        }
+        // The sidebar's width as the user left it (a drag of its divider), kept across launches.
+        let width = defaults.double(forKey: "homeSidebarWidth")
+        if width > 0 { view.sidebarWidth = CGFloat(width) }
+        view.onSidebarWidthChange = { width in defaults.set(Double(width.rounded()), forKey: "homeSidebarWidth") }
         browser.cardSizeRange = 60...480   // home-card-size's
         browser.onWindowText = { [weak self] title, _ in
             guard let self, self.showsHome else { return }
             self.window?.title = title
-        }
-        browser.onLocation = { [weak self] location in
-            guard let self, !self.movingForApp else { return }
-            let tab = HomeRecent.tab(of: location)
-            guard tab != self.core.config.homeTab else { return }
-            do { try self.preferences.update(["home-tab"]) { $0.homeTab = tab } } catch {
-                self.showMessage("Cannot save settings: \(error)", duration: 4)
-            }
         }
         browser.onResize = { [weak self] in self?.resizeHomeCards($0) }
         view.onSidebarToggle = { [weak self] in self?.toggleHomeSidebar() }
@@ -1350,6 +1394,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func showMessage(_ text: String, duration: Double = 1.5) {
+        // Over Home the OSD's corner is the toolbar's: Home's own toast says it, above its status line.
+        if showsHome, let browser = home?.browser {
+            browser.showToast(text, for: max(duration, 3))
+            return
+        }
         // Only the player's "Saved…" OSD is clickable; any other message must not keep its handler.
         osd.onClick = nil
         osd.show(text, duration: duration)
@@ -1405,11 +1454,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -12),
             seekBar.heightAnchor.constraint(equalToConstant: 44),
             backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
-            backButton.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
         ])
         previewLeading = previewView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16)
         previewLeading.isActive = true
+        backButtonTop = backButton.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16)
+        backButtonTop.isActive = true
         osdTop = osd.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16)
         osdTop.isActive = true
         buildStatsPanel(in: container)
@@ -1636,6 +1686,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return nil
     }
 
+    /// Home's toolbar put on or taken off with the frame kept: AppKit takes the toolbar's 32 pt from the top of a
+    /// full-size-content window when it gets one (and gives them back without it), so a window filling the screen
+    /// opened 32 pt below the menu bar and the frame saved over Home kept that.
+    private func keepingFrame(of window: NSWindow, _ change: () -> Void) {
+        let frame = window.frame
+        change()
+        if !isFullScreen, window.frame != frame { window.setFrame(frame, display: false) }
+    }
+
     /// Back on the start screen: the window keeps its size and place; only the video shape stops holding its aspect.
     private func applyStartScreenFrame() {
         guard let window, !isFullScreen else { return }
@@ -1688,7 +1747,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
               let command = inputMap.command(for: chord) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
-            guard holdKeyCode == nil, stillDown else { return }
+            guard holdKeyCode == nil, stillDown, !showsHome else { return }
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -1730,6 +1789,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `toggle-*` / `cycle-*` that switched something (no `.error` on the way; not `cycle pause`) plays `.toggle`. `fresh`: not a key's
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
+        if showsHome, !command.worksWithoutPlayer { return }   // the video behind Home is paused and stays so
         if case let .pluginAction(name) = command { runPluginAction(name); return }   // the page's, not the player's
         core.inputIsFresh = fresh
         haptics.from(source) {
@@ -1839,7 +1899,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .closeFile:
             closeFile()
         case .cyclePlaylistSort:
-            setPlaylistSort(core.config.playlistSort.next)
+            setPlaylistSort((playlistAnchor.flatMap { PlaylistSort(rawValue: folderSort(folder(of: $0)).key.rawValue) } ?? core.config.playlistSort).next)
         case .playlistFilter:
             beginPlaylistFilter()
         case .togglePlaylist:
@@ -2139,6 +2199,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                          heldButton: MouseButton? = nil) {
         for action in actions {
             switch action {
+            // `where` binds only to the last pattern of a case: each pattern carries its own.
+            case .scrubFrames where showsHome, .scrubEdge where showsHome:
+                continue   // the wheel over Home scrolls Home
             case let .scrubFrames(frames, ticks):
                 positionWillMove()
                 core.inputIsFresh = fresh
@@ -2350,12 +2413,44 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Fades the back button in or out and moves the OSD out of its way.
     private func showBackButton(_ show: Bool, duration: TimeInterval) {
+        isBackButtonShown = show
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.allowsImplicitAnimation = true
             backButton.animator().alphaValue = show ? 1 : 0
-            osdTop.animator().constant = show ? 16 + BackButton.height + 8 : 16
+            placeTopOverlays()
         }
+    }
+
+    /// The back button and the OSD at the top: 16 pt down, and below the full-screen title bar while it is in.
+    private func placeTopOverlays() {
+        backButtonTop.animator().constant = 16 + titlebarInset
+        osdTop.animator().constant = (isBackButtonShown ? 16 + BackButton.height + 8 : 16) + titlebarInset
+    }
+
+    /// In full screen the title bar (and the traffic lights) live in a window of their own that the system slides in
+    /// with the menu bar; each of its moves says how far it now reaches over the screen (measured 2026-10-27: away,
+    /// its bottom is the screen's top). The overlays follow it, so the back button is never under it.
+    private func followFullScreenTitlebar(_ on: Bool) {
+        if let titlebarObserver { NotificationCenter.default.removeObserver(titlebarObserver) }
+        titlebarObserver = nil
+        titlebarInset = 0
+        defer { placeTopOverlays() }
+        guard on, let window, let bar = window.standardWindowButton(.closeButton)?.window, bar !== window else { return }
+        let update = { [weak self, weak bar] in
+            guard let self, let bar, let window = self.window, let screen = window.screen else { return }
+            let inset = max(0, min(200, screen.frame.maxY - bar.frame.minY))
+            guard inset != self.titlebarInset else { return }
+            self.titlebarInset = inset
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.allowsImplicitAnimation = true
+                self.placeTopOverlays()
+            }
+        }
+        titlebarObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: bar,
+                                                                  queue: .main) { _ in MainActor.assumeIsolated { update() } }
+        update()
     }
 
     /// The wheel mode (`wheel-precision=yes`: free spin or ratchet, the user's choice in `wheelFreeSpin`) is wanted
@@ -2483,10 +2578,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func rebuildPlaylist(around url: URL) {
         let folder = folder(of: url)
         let listing = folderListing.flatMap { $0.folder == folder ? $0 : nil } ?? .empty(folder)
-        // A folder opened from Home goes in Home's order; any other in `playlist-sort`'s.
-        let order = homeOrder(around: url)
-        playlist = Playlist(current: url, sort: order?.sort ?? core.config.playlistSort, ascending: order?.ascending,
-                            filter: playlistFilter, listing: listing)
+        // The folder's order, as Home shows it, however the video was opened.
+        playlist = Playlist(current: url, sort: folderSort(folder), filter: playlistFilter, listing: listing)
         updatePlaylistPanel()
     }
 
@@ -2501,7 +2594,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         listRowIndices = []
-        playlistPanel.showSort(homeOrder(around: playlistAnchor)?.sort ?? core.config.playlistSort)
+        playlistPanel.showSort(playlistAnchor.map { folderSort(folder(of: $0)) } ?? core.config.playlistSort.defaultSort)
         guard let playlist else { return }
         playlistPanel.update(rows: playlist.files.map { PlaylistRow(file: $0) }, current: playlist.currentIndex)
     }
@@ -2517,10 +2610,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// < and > in the folder: the file before or after; at an end the window says so.
     private func stepFolder(_ direction: Int) {
-        if let target = direction > 0 ? playlist?.next : playlist?.previous {
+        if let target = playlist?.neighbour(direction, skipping: isUnreadable) {
             _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
             hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
-            openFile(target) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
+            openFile(target, stepped: direction) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
         } else {
             showMessage(direction > 0 ? "Last file" : "First file")
             if playlistEndBump.stepped(moved: false, direction: direction, fresh: core.inputIsFresh) { haptics.play(.end) }
@@ -2626,22 +2719,42 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file the playlist is built around (`FolderWait.anchor`).
     private var playlistAnchor: URL? { FolderWait.anchor(open: core.url, opening: openingURL, failed: failedURL) }
 
-    /// Home's order of the folder `file` is in, while that folder is the one opened from Home.
-    private func homeOrder(around file: URL?) -> (sort: PlaylistSort, ascending: Bool)? {
-        guard let r = folderReturn, let file, folder(of: file) == r.folder.standardizedFileURL else { return nil }
-        return r.order
+    /// `url` as the open folder's listing has it (its date and size), nil before the folder is read.
+    private func listedEntry(_ url: URL) -> BrowserEntry? {
+        let me = url.standardizedFileURL
+        return folderListing?.entries.first { $0.url.standardizedFileURL == me }
     }
 
+    /// Known to be unreadable, and not changed since.
+    private func isUnreadable(_ url: URL) -> Bool {
+        let entry = listedEntry(url)
+        return unreadable.contains(url, date: entry?.date, size: entry?.size)
+    }
+
+    /// `folder`'s order, the one Home's grid shows it in: its own (`FolderSorts`), else `playlist-sort`'s.
+    private func folderSort(_ folder: URL) -> BrowserSort {
+        folderSorts.sort(for: folder) ?? core.config.playlistSort.defaultSort
+    }
+
+    /// The panel's order menu and F9: the open folder's order, for Home's grid too. The field it has already turns
+    /// around, another starts in its first direction (`BrowserSortChoice`).
     private func setPlaylistSort(_ sort: PlaylistSort) {
-        if let anchor = playlistAnchor, homeOrder(around: anchor) != nil {   // the user's choice here replaces the order Home gave
-            folderReturn?.order = (sort, sort == .name)
-            rebuildPlaylist(around: anchor)
+        guard let anchor = playlistAnchor, let key = BrowserSort.Key(rawValue: sort.rawValue) else { return }
+        let folder = folder(of: anchor)
+        var choice = BrowserSortChoice(current: folderSort(folder))
+        let chosen = choice.choose(key)
+        folderSorts.set(chosen, for: folder)
+        rebuildPlaylist(around: anchor)
+        showMessage("Folder order: \(Self.orderTitle(chosen))")
+    }
+
+    /// "Name (A–Z)", "Date (newest first)", "Size (smallest first)".
+    private static func orderTitle(_ sort: BrowserSort) -> String {
+        switch sort.key {
+        case .name: sort.ascending ? "Name (A–Z)" : "Name (Z–A)"
+        case .date: sort.ascending ? "Date (oldest first)" : "Date (newest first)"
+        case .size: sort.ascending ? "Size (smallest first)" : "Size (largest first)"
         }
-        guard sort != core.config.playlistSort else { return }
-        do { try preferences.update(["playlist-sort"]) { $0.playlistSort = sort } } catch {   // applyConfig rebuilds the list
-            showMessage("Cannot save settings: \(error)", duration: 4)
-        }
-        showMessage("Folder order: \(sort.title)")
     }
 
     /// The other mouse profile, kept (`mouse-profile`); the settings' observers rebuild the bindings.
@@ -2898,6 +3011,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
         slots.onMessage = { [weak self] in self?.showMessage($0) }
+        slots.onSlotsPlaced = { [weak self] in self?.updateToolbarUnderSlots() }
         slots.onPagesChanged = { [weak self] in
             guard let self else { return }
             rebuildInputMap()   // a page's keys count while it is in a slot
@@ -2990,6 +3104,46 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         set(visibleEdges, visible)
         visibleVideoRect = visible
         statsPanel.place()
+    }
+
+    /// Over Home a slot goes the window's whole height, under the toolbar: the toolbar's pills it covers, and the
+    /// traffic lights, fade out and are hidden (no clicks land on them over the slot), and come back when it goes or
+    /// Home does. A pill is a child of the toolbar's full-width item container (macOS 26: `NSToolbarPlatterView`,
+    /// `NSToolbarItemViewer`); it is found from an item's own view, so AppKit's classes are not named.
+    private func updateToolbarUnderSlots() {
+        guard let window, let container = window.contentView else { return }
+        let covers = showsHome && !isFullScreen ? slots.shownFrames.map { container.convert($0, to: nil) } : []
+        var pills: [NSView] = []
+        if let toolbar = window.toolbar, window.toolbar === home?.browser.nsToolbar {
+            for case let view? in toolbar.items.map(\.view) {
+                var pill = view
+                while let parent = pill.superview, parent.frame.width < window.frame.width - 1 { pill = parent }
+                if let bar = pill.superview, bar.window === window { pills = bar.subviews; break }
+            }
+        }
+        pills += [.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }   // a left slot's top
+        for pill in pills {
+            let frame = pill.convert(pill.bounds, to: nil)
+            let covered = covers.contains { $0.intersects(frame) }
+            if covered, !pillsUnderSlots.contains(pill) {
+                pillsUnderSlots.add(pill)
+                NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; pill.animator().alphaValue = 0 }) { [weak self, weak pill] in
+                    MainActor.assumeIsolated {
+                        guard let self, let pill, self.pillsUnderSlots.contains(pill) else { return }
+                        pill.isHidden = true
+                    }
+                }
+            } else if !covered, pillsUnderSlots.contains(pill) {
+                showPill(pill)
+            }
+        }
+        for pill in pillsUnderSlots.allObjects where !pills.contains(pill) { showPill(pill) }   // the toolbar is gone
+    }
+
+    private func showPill(_ pill: NSView) {
+        pillsUnderSlots.remove(pill)
+        pill.isHidden = false
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; pill.animator().alphaValue = 1 }
     }
 
     private func persistSlot(_ edge: SlotEdge, _ setting: SlotSetting) {
@@ -3373,7 +3527,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// (its size and date follow the first picture, `readFileFacts`).
     private func statsFileChanged() {
         fileFacts = core.url.map {
-            FileFacts(name: $0.lastPathComponent, folder: $0.deletingLastPathComponent().path, size: nil, modified: nil)
+            StatsFile(name: $0.lastPathComponent, folder: $0.deletingLastPathComponent().path, size: nil, modified: nil)
         }
         statsPanel.isAvailable = core.url != nil
         refreshStats()
@@ -3382,7 +3536,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file's size and date, read off the main thread (a NAS can take a while); kept if the file is still open.
     private func readFileFacts(of url: URL) {
         Task { [weak self] in
-            let facts = await Task.detached(priority: .utility) { FileFacts.read(url) }.value
+            let facts = await Task.detached(priority: .utility) { StatsFile.read(url) }.value
             guard let self, core.url == url else { return }
             fileFacts = facts
             refreshStats()
@@ -3486,13 +3640,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
         whenFolderRead { [weak self] in
-            guard let self, let next = playlist?.next else { return }
-            openFile(next) { [weak self] outcome in
-                switch outcome {
-                case .opened: self?.core.play()
-                case .failed: self?.playerDidReachEnd(player)   // the playlist now follows the broken file: move past it
-                case .superseded: break
-                }
+            guard let self, let next = playlist?.neighbour(1, skipping: isUnreadable) else { return }
+            openFile(next, stepped: 1) { [weak self] outcome in   // a broken file is gone past by the open itself
+                if outcome == .opened { self?.core.play() }
             }
         }
     }
@@ -3551,8 +3701,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer() }
     func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer() }
-    func windowDidEnterFullScreen(_ notification: Notification) { updatePrecisionWheel() }
-    func windowDidExitFullScreen(_ notification: Notification) { updatePrecisionWheel() }
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        followFullScreenTitlebar(true)
+        updatePrecisionWheel()
+    }
+    func windowWillExitFullScreen(_ notification: Notification) { followFullScreenTitlebar(false) }
+    func windowDidExitFullScreen(_ notification: Notification) {
+        // Home shown, full screen, back to the video, out of full screen: the video's window has its title bar again,
+        // and its content (the back button, the OSD, the slots' tops) must start below it, not under it.
+        if !showsHome { window?.styleMask.remove(.fullSizeContentView) }
+        updatePrecisionWheel()
+    }
     func windowDidResize(_ notification: Notification) { rememberFrame() }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while

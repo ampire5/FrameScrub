@@ -1,5 +1,6 @@
 import CoreImage
 import Foundation
+import HomeScreenModel
 
 /// A picture for a recent file that has no saved one: the keyframe at or before where it was left, read with a
 /// decoder of its own (one seek, one decoded frame).
@@ -11,6 +12,8 @@ public enum KeyframeThumbnail {
         public let seconds: Double
         /// The file's length in seconds.
         public let duration: Double
+        /// The stream's facts for the file's card (size, codec, rate, length), from the same open.
+        public let facts: FileFacts
     }
 
     /// `seconds` nil looks 10 % into the file (the very first frame is often black). Nil when the file cannot be read.
@@ -25,26 +28,27 @@ public enum KeyframeThumbnail {
         let geometry = DisplayGeometry.resolve(mode: .auto, upright: upright, rotationClockwise: source.rotationClockwise,
                                                sampleAspect: source.sampleAspect, detectedCrop: nil)
         let image = FrameImageRenderer.image(for: frame, rotationClockwise: source.rotationClockwise, toneMapToSDR: true)
-        return Result(picture: geometry.applied(to: image), seconds: max(0, index.seconds(forPTS: frame.pts)), duration: duration)
+        return Result(picture: geometry.applied(to: image), seconds: max(0, index.seconds(forPTS: frame.pts)), duration: duration,
+                      facts: source.facts)
     }
 
-    /// Only the file's length (the header is read, nothing decoded).
-    public static func duration(url: URL) -> Double? {
-        (try? MediaSource(url: url)).map(\.durationSeconds)
-    }
 }
 
 /// Fills in the start screen's missing pictures one file at a time, in the background. Each picture goes to the
-/// `ThumbnailStore`; `completion` then gets the file and its length. A new `start` or `cancel` drops what is left.
+/// `ThumbnailStore`; `completion` then gets the file and its facts (its length among them). A job with `factsOnly`
+/// (its picture is kept already) only probes the file. A new `start` or `cancel` drops what is left.
 public final class RecentThumbnailer: @unchecked Sendable {
     public struct Job: Sendable {
         public let url: URL
         /// Where the file was left; nil when it has no position.
         public let seconds: Double?
+        /// The picture is kept already: only the facts are wanted (a probe, no decode).
+        public let factsOnly: Bool
 
-        public init(url: URL, seconds: Double?) {
+        public init(url: URL, seconds: Double?, factsOnly: Bool = false) {
             self.url = url
             self.seconds = seconds
+            self.factsOnly = factsOnly
         }
     }
 
@@ -62,7 +66,7 @@ public final class RecentThumbnailer: @unchecked Sendable {
 
     /// Files on this Mac's own disks are made `localWorkers` at a time; on a share (or a volume that does not say), one
     /// at a time, as its reads are the slow part.
-    public func start(_ jobs: [Job], localWorkers: Int = 1, completion: @escaping @Sendable (URL, Double) -> Void) {
+    public func start(_ jobs: [Job], localWorkers: Int = 1, completion: @escaping @Sendable (URL, FileFacts) -> Void) {
         let flag = CancellationFlag()
         lock.withLock {
             current?.cancel()
@@ -82,15 +86,15 @@ public final class RecentThumbnailer: @unchecked Sendable {
                     guard let i else { return }
                     let job = jobs[i]
                     // A pool per file: the picture holds the decoded frame (an IOSurface of VTDecoderXPCService).
-                    let duration: Double? = autoreleasepool {
-                        guard let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
-                            return KeyframeThumbnail.duration(url: job.url)   // no picture (no decoder), but the length is known
+                    let facts: FileFacts? = autoreleasepool {
+                        guard !job.factsOnly, let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
+                            return VideoFacts.probe(url: job.url)   // no picture wanted, or none (no decoder): the facts are known
                         }
                         store.save(result.picture, for: job.url, context: context)
-                        return result.duration
+                        return result.facts
                     }
-                    guard let duration else { continue }
-                    callbackQueue.async { if !flag.isCancelled { completion(job.url, duration) } }
+                    guard let facts else { continue }
+                    callbackQueue.async { if !flag.isCancelled { completion(job.url, facts) } }
                 }
             }
         }
