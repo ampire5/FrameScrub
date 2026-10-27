@@ -206,9 +206,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// What is asked of the Logitech mouse's wheel now (see `updatePrecisionWheel`): all off until the player is in
     /// front.
     private var wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
-    /// `playerInFront` at the last `updatePrecisionWheel`, to recheck the mouse when the player comes in front.
-    private var playerWasInFront = false
-    private var precisionCheckedAt = 0.0
     /// The pointer is hidden with `NSCursor.hide()` for a scrub (see `hideCursorForScrub`).
     private var cursorHiddenForScrub = false
     private var appObservers: [NSObjectProtocol] = []
@@ -280,13 +277,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 MainActor.assumeIsolated { self?.updatePrecisionWheel() }
             })
         }
-        // After a wake the mouse, or LinearMouse replaying its own setting, may have switched the mode off.
-        appObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                MainActor.assumeIsolated { self?.mouseBridge?.recheckHighResolutionWheel() }
-            }
-        })
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -2305,7 +2295,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         bridge.onSmartShift = { [weak self] pressed, time in self?.smartShiftButton(pressed: pressed, at: time) }
         wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
-        playerWasInFront = false
         updatePrecisionWheel()
     }
 
@@ -2474,13 +2463,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func updatePrecisionWheel() {
         guard let mouseBridge else { return }
         let inFront = playerInFront
-        if inFront && !playerWasInFront && core.config.wheelPrecision {
-            // Another LogiHIDPP app (Loupe) may have given back its own mode just after this one came forward: the
-            // package would believe a stale mode.
-            mouseBridge.recheckWheelMode()
-            mouseBridge.recheckHighResolutionWheel()
-        }
-        playerWasInFront = inFront
         let overVideo = isPointer(over: videoView) && !isPointer(over: seekBar)
             && !(slots?.isPointerOverShownSlot ?? false)
             && !(window.map { isPointerOnStats(at: $0.mouseLocationOutsideOfEventStream) } ?? false)
@@ -2488,22 +2470,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let freeSpin = UserDefaults.standard.object(forKey: Self.wheelFreeSpinKey) as? Bool ?? true
         let wants = WheelWants(precision: core.config.wheelPrecision, freeSpin: freeSpin, playerInFront: inFront,
                                overVideo: overVideo)
-        guard wants != wheelWants else {
-            // While the pointer moves, look at the mouse now and then: it may have slept, reconnected, or had its
-            // mode switched by LinearMouse, and a failed restore is retried.
-            let now = ProcessInfo.processInfo.systemUptime
-            if core.config.wheelPrecision, now - precisionCheckedAt > 2 {
-                precisionCheckedAt = now
-                mouseBridge.recheckHighResolutionWheel()
-                mouseBridge.recheckWheelMode()
-            }
-            return
+        if wants != wheelWants {
+            wheelWants = wants
+            mouseBridge.takeSmartShift(wants.wheelMode != nil)
         }
-        wheelWants = wants
-        precisionCheckedAt = ProcessInfo.processInfo.systemUptime
-        mouseBridge.takeSmartShift(wants.wheelMode != nil)
-        mouseBridge.wantWheelMode(wants.wheelMode)
-        mouseBridge.wantHighResolutionWheel(wants.highResolution)
+        // As areas of this window: MouseService applies them while the pointer is over it, and rechecks the mouse
+        // itself after a sleep or a reconnect. Sent on every call (the bridge drops an unchanged wish), so the video's
+        // rect follows a resize and full screen.
+        mouseBridge.wantWheel(window: window?.windowNumber, mode: wants.wheelMode,
+                              highResolutionRect: wants.highResolution ? videoView.convert(videoView.bounds, to: nil) : nil)
     }
 
     /// The app is active and this window is key, with no sheet and no start screen: the one definition of "in front"
@@ -3703,7 +3678,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if !showsHome { window?.styleMask.remove(.fullSizeContentView) }
         updatePrecisionWheel()
     }
-    func windowDidResize(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) {
+        rememberFrame()
+        if window?.inLiveResize != true { updatePrecisionWheel() }   // the video's rect (a live resize: at its end)
+    }
+    func windowDidEndLiveResize(_ notification: Notification) { updatePrecisionWheel() }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while
     /// the window is being built, before the panel exists.
