@@ -1,6 +1,11 @@
 import Foundation
 import HomeScreenModel
 
+/// How the playlist slot shows the playlist (`playlist-view`): a list of names, or a strip of pictures.
+public enum PlaylistView: String, CaseIterable, Sendable {
+    case list, strip
+}
+
 /// The playlist's order: by name like Finder, or newest / largest first (ties by name).
 public enum PlaylistSort: String, CaseIterable, Sendable {
     case name, date, size

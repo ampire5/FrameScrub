@@ -446,6 +446,8 @@ autoplay=no                     # yes: start playing every file as it opens
 activate-on-open=yes            # bring the window to the front when a file is opened from Finder or the Dock
 playlist-sort=name              # name | date | size — the folder's order (date: newest first, size: largest first)
 playlist-font-size=14           # 9…32 points, text size of the playlist panel (F8)
+playlist-view=list              # list | strip: the playlist as names, or as a vertical strip of pictures
+playlist-strip-return=3         # 0…30 seconds: the strip goes back to the playing video after browsing; 0 never
 home-card-size=220              # 60…480 points, width of Home's cards (⌘= / ⌘− / ⌘0 on Home)
 recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)

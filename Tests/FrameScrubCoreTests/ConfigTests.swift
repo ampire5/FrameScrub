@@ -97,6 +97,19 @@ import Testing
         #expect(Config.keys.contains("slot-reveal-distance"))
     }
 
+    @Test func parsesPlaylistStripKeys() {
+        let d = Config()
+        #expect(d.playlistView == .list && d.playlistStripReturn == 3)
+        let (c, warnings) = Config.parse("playlist-view=strip\nplaylist-strip-return=0")
+        #expect(warnings.isEmpty)
+        #expect(c.playlistView == .strip && c.playlistStripReturn == 0)
+        #expect(c.text(forKey: "playlist-view") == "strip" && c.text(forKey: "playlist-strip-return") == "0")
+        #expect(Config.parse("playlist-strip-return=31").0.playlistStripReturn == 3)
+        #expect(Config.parse("playlist-strip-return=-1").0.playlistStripReturn == 3)
+        #expect(Config.parse("playlist-view=grid").0.playlistView == .list)
+        #expect(Config.keys.contains("playlist-view") && Config.keys.contains("playlist-strip-return"))
+    }
+
     @Test func parsesPlaylistFontSize() {
         #expect(Config().playlistFontSize == 14)
         let (c, warnings) = Config.parse("playlist-font-size=18")

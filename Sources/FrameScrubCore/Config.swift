@@ -149,6 +149,10 @@ public struct Config: Equatable, Sendable {
     public var activateOnOpen = true
     public var playlistSort = PlaylistSort.name
     public var playlistFontSize = 14
+    /// `playlist-view`: the playlist slot's table of names, or the strip of pictures.
+    public var playlistView = PlaylistView.list
+    /// `playlist-strip-return`: seconds after browsing before the strip goes back to the playing video; 0: never.
+    public var playlistStripReturn = 3.0
     /// `home-card-size`: the width of Home's cards in points (⌘= / ⌘− / ⌘0 on Home).
     public var homeCardSize = 220.0
     /// `recent-count`: how many recent videos Home's Recent shows.
@@ -266,7 +270,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -291,6 +295,8 @@ public struct Config: Equatable, Sendable {
         case "activate-on-open": return yesNo(activateOnOpen)
         case "playlist-sort": return playlistSort.rawValue
         case "playlist-font-size": return String(playlistFontSize)
+        case "playlist-view": return playlistView.rawValue
+        case "playlist-strip-return": return formatNumber(playlistStripReturn)
         case "home-card-size": return formatNumber(homeCardSize)
         case "recent-count": return String(recentCount)
         case "home-sidebar": return yesNo(homeSidebar)
@@ -476,6 +482,8 @@ public struct Config: Equatable, Sendable {
         case "activate-on-open": guard let v = bool() else { return false }; activateOnOpen = v
         case "playlist-sort": guard let v = PlaylistSort(rawValue: value.lowercased()) else { return false }; playlistSort = v
         case "playlist-font-size": guard let v = int(9...32) else { return false }; playlistFontSize = v
+        case "playlist-view": guard let v = PlaylistView(rawValue: value.lowercased()) else { return false }; playlistView = v
+        case "playlist-strip-return": guard let v = double(0...30) else { return false }; playlistStripReturn = v
         case "home-card-size": guard let v = double(60...480) else { return false }; homeCardSize = v
         case "recent-count": guard let v = int(1...200) else { return false }; recentCount = v
         case "home-sidebar": guard let v = bool() else { return false }; homeSidebar = v
