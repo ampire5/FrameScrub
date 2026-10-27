@@ -2157,7 +2157,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                          heldButton: MouseButton? = nil) {
         for action in actions {
             switch action {
-            case .scrubFrames, .scrubEdge where showsHome:
+            // `where` binds only to the last pattern of a case: each pattern carries its own.
+            case .scrubFrames where showsHome, .scrubEdge where showsHome:
                 continue   // the wheel over Home scrolls Home
             case let .scrubFrames(frames, ticks):
                 positionWillMove()
