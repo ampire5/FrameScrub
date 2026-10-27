@@ -3482,6 +3482,24 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The style `H` and the menu last chose, shared by the windows (in memory only).
     private static var subjectFocusStyle = SubjectFocusStyle.studio
     private static var focusFromEnvironmentDone = false
+
+    /// Bench: `FRAMESCRUB_FOCUS_SCRUB=<frames a step>,<steps a second>` pauses and scrubs like the wheel, 40 steps
+    /// forward and 20 back, round, for a minute (Subject Focus's scrub masks, `FRAMESCRUB_FOCUS_LOG=1`).
+    private func startScrubBench() {
+        let parts = (ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SCRUB"] ?? "").split(separator: ",").compactMap { Int($0) }
+        guard parts.count == 2, parts[1] > 0 else { return }
+        let step = parts[0], interval = 1 / Double(parts[1])
+        var n = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            if !core.isPaused { core.pause() }
+            Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
+                guard let self, n < Int(60 / interval) else { timer.invalidate(); return }
+                core.scrub(by: n % 60 < 40 ? step : -step, ticks: false)
+                n += 1
+            }
+        }
+    }
     /// The style on screen; nil: off.
     var subjectFocus: SubjectFocusStyle? { videoView.subjectFocus }
 
@@ -3567,8 +3585,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if !Self.focusFromEnvironmentDone, let name = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS"] {
             Self.focusFromEnvironmentDone = true
             if let style = SubjectFocusStyle(rawValue: name) { setSubjectFocus(style) }
+            startScrubBench()
         }
-        videoView.show(frame)
+        videoView.show(frame, playing: !core.isPaused)
         lastFrame = frame
         checkSceneCut(frame)
         pushPluginState(force: false)

@@ -64,6 +64,7 @@ final class SubjectMasker: @unchecked Sendable {
         let image: CIImage?             // the upright picture, when the frame is turned (Vision then takes the image)
         let frame: Int
         let accurate: Bool
+        var scrub = false               // stepped to while paused: RVM's finer model (`SubjectMatting`)
         var rvm = false                 // RVM's matte (when its models are there), else Vision's mask
         var mainPeople = false          // only the big people (`SubjectSelection`)
     }
@@ -268,7 +269,7 @@ extension SubjectMasker {
     fileprivate func makeMatte(_ job: Job) -> SubjectMask? {
         let continuous = lastFrame != .min && abs(job.frame - lastFrame) <= 4
         let picture = job.image ?? CIImage(cvPixelBuffer: job.pixelBuffer)
-        guard var (bytes, w, h) = matting.alpha(of: picture, still: job.accurate, continuous: continuous) else { return nil }
+        guard var (bytes, w, h) = matting.alpha(of: picture, still: job.accurate, scrub: job.scrub, continuous: continuous) else { return nil }
         if job.mainPeople { bytes = select(bytes, w, h, job: job, continuous: continuous) }
         if !job.accurate { lastFrame = job.frame }
         var change: Double?

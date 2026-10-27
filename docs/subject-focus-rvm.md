@@ -37,7 +37,10 @@ neural engine and the GPU and takes 20 ms a frame. The edge is refined in the ap
   pass, the recurrent state carried from frame to frame. A seek, a jump of more than 4 frames or a cut starts it over
   (a cut: the frame's luma on a 32×18 grid changed by more than 20/255 on average; walking, zooms and pans reach 12, hard
   cuts 28–61; the state settles again within ~1 s, and starts close: 1–1.6/255 from the settled alpha).
-- A still frame (after 250 ms on pause): 768×432, 4 passes from a fresh state.
+- Scrubbing (paused, the wheel or a step brings a frame): the 768×432 model, its state carried from step to step (a
+  step of up to 4 frames, either way), 2 passes after a jump or the switch from playback.
+- A still frame (after 250 ms on pause): 768×432, 4 passes from a fresh state of its own (the scrubbing's state goes on
+  after it).
 - The edge: a fast guided filter (He & Sun 2015) in Core Image. On the matte's grid every 5×5 window fits the matte as
   a·luma + b of the picture; a and b, smoothed and scaled up, are applied to the full frame's luma, so the edge follows
   the picture's own edges at the frame's resolution. No erosion or feathering as for Vision's masks.
@@ -79,6 +82,21 @@ Every frame was drawn with its own mask in all runs. The draw times in this tabl
 so then): the main thread's own CPU time (`CLOCK_THREAD_CPUTIME_ID`, measured since) is the same for both, 1080p: Vision
 3.1–3.3 ms, RVM 3.1–3.4 ms without the edge refinement and 3.3–3.4 ms with it (~0.1–0.2 ms for the guided filter). The still frame's 4 passes: 41–63 ms (the first use of the
 768 model on a machine also compiles it: ~0.8 s once).
+
+Scrubbing: the error against the pause's mask (768×432, 6 passes; of 255) and the share off by more than a quarter,
+measured outside the app (`rvmscrub`, scratchpad), runway 1080p:
+
+| Scrub | Before: 512×288, state over ≤ 4 frames, 1 pass after a jump | Now: 768×432, 2 passes after a jump | 3 passes after a jump |
+|---|---|---|---|
+| ±1 frame a step | 0.70 / 2.2 ‰, 4.3 ms | **0.32 / 0.9 ‰, 6.7 ms** | 0.32 / 0.9 ‰ |
+| 2 frames a step | 2.53 / 11.2 ‰ | **2.10 / 9.6 ‰** | 2.09 / 9.6 ‰ |
+| fast, 8 frames a step | 1.49 / 5.7 ‰ | **0.57 / 1.6 ‰, 12 ms** | 0.35 / 0.9 ‰, 18 ms |
+| fast, 16 frames a step | 1.35 / 5.2 ‰ | **0.55 / 1.9 ‰** | 0.36 / 1.1 ‰ |
+
+Carrying the state over a jump instead of starting it over: 0.96 at 8 frames a step. 3 passes come close to the 20 ms a
+frame waits for its mask, so 2. In the app (`FRAMESCRUB_FOCUS_SCRUB=<frames>,<steps a second>`, 20 s, machine load 5–12):
+1 frame × 30/s 8.8 ms a mask, 13 ms after the frame; 1 × 60/s 8 ms, 16 ms; 8 × 30/s 14–15 ms, 23–26 ms; every frame was
+drawn with its own mask.
 
 What it looks like: the audience at the runway's edge is no longer in the mask (Vision includes it); hair is whole; a
 model far down the runway can come out half transparent, and once in a while a small false blob shows for a frame or two.

@@ -94,6 +94,7 @@ final class VideoView: NSView {
     private var focusMask: SubjectMask?
     private var frameShownAt: CFTimeInterval = 0
     private var stillToken = 0
+    private var framePlaying = true                 // the frame on screen came while playing (not stepped, scrubbed)
     private static let focusFade = 0.25
     /// How long a new frame waits for its own mask before it is drawn with the newest one: Vision balanced takes
     /// ~10 ms a 1080p frame on the ANE (M4 Max), so at 30–60 fps the frame's own mask is normally in.
@@ -173,13 +174,15 @@ final class VideoView: NSView {
         needsRender = blank
     }
 
-    func show(_ frame: DecodedFrame) {
+    /// `playing`: false while paused, so a frame stepped or scrubbed to gets a finer mask.
+    func show(_ frame: DecodedFrame, playing: Bool = true) {
         skipCounter.frameArrived()
         currentFrame = frame
         enhanced = nil
         enhancedFrame = nil
         rebuildImage()
         needsRender = true
+        framePlaying = playing
         if subjectFocus != nil { requestMask(for: frame, accurate: false) }
     }
 
@@ -245,7 +248,7 @@ final class VideoView: NSView {
     private func requestMask(for frame: DecodedFrame, accurate: Bool) {
         if !accurate { frameShownAt = CACurrentMediaTime() }
         masker.submit(.init(pixelBuffer: frame.pixelBuffer, image: rotationClockwise == 0 ? nil : image,
-                            frame: frame.number, accurate: accurate, rvm: Self.usesMatting,
+                            frame: frame.number, accurate: accurate, scrub: !framePlaying, rvm: Self.usesMatting,
                             mainPeople: Self.mainPeopleOnly))
         guard !accurate else { return }
         // a frame that stays: its accurate mask (one-shot per frame, dropped when the next frame comes)

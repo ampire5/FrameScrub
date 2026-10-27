@@ -21,6 +21,12 @@ final class SubjectMatting {
     /// same frame from a fresh state (the state settles in 4–6, change per pass ≤ 0.2/255 on photos).
     private static let live = (512, 288), still = (768, 432)
     private static let stillPasses = 4
+    /// Scrubbing (paused, the wheel stepping frames): the still frame's 768×432 model with the state carried from step to
+    /// step, and `scrubJumpPasses` passes after a jump. Measured (rvmscrub, scratchpad; runway 1080p, M4 Max), the error
+    /// against the pause's mask (of 255) and the time a step: ±1 frame 512 0.70 → 768 0.32 (4.3 → 6.7 ms); fast ×8
+    /// 512 fresh 1.49, 768 fresh 1 pass 0.88, 2 passes 0.57 (12 ms), 3 passes 0.35 (18 ms, past the 20 ms a frame
+    /// waits for its mask); carrying the state over a jump instead: 0.96.
+    private static let scrubJumpPasses = 2
 
     /// Whether the models are there (checked once per launch; the menu greys Mask: RVM without them).
     static let isAvailable: Bool = {
@@ -117,10 +123,11 @@ final class SubjectMatting {
     }
 
     /// The alpha of `picture` (upright, any size) at the model's size, 8-bit rows top first; nil without the models.
-    /// `continuous`: the frame follows the one before (playback), so the state carries over.
-    func alpha(of picture: CIImage, still: Bool, continuous: Bool) -> (Data, Int, Int)? {
+    /// `continuous`: the frame follows the one before (playback, a scrub step), so the state carries over. `scrub`: a
+    /// frame stepped to while paused, the finer model.
+    func alpha(of picture: CIImage, still: Bool, scrub: Bool = false, continuous: Bool) -> (Data, Int, Int)? {
         let landscape = picture.extent.width >= picture.extent.height
-        let base = still ? Self.still : Self.live
+        let base = still || scrub ? Self.still : Self.live
         guard let m = load(landscape ? base : (base.1, base.0)) else { return nil }
         let key = "\(m.width)x\(m.height)"
         // the picture stretched to the model's frame (16:9 or 9:16; other shapes are off by a little)
@@ -141,19 +148,26 @@ final class SubjectMatting {
             }
             signature = sig
         }
-        if still || !continuous || cut || stateModel != key {
-            state = freshState(m)
+        // a still frame's passes run on a state of their own: the playback's or the scrubbing's carries on after it
+        var passes = 1
+        var own = state
+        if still {
+            own = freshState(m)
+            passes = Self.stillPasses
+        } else if !continuous || cut || stateModel != key {
+            own = freshState(m)
             stateModel = key
+            if scrub { passes = Self.scrubJumpPasses }
         }
         var pha: MLMultiArray?
-        for _ in 0..<(still ? Self.stillPasses : 1) {
-            var inputs = state
+        for _ in 0..<passes {
+            var inputs = own
             inputs["src"] = MLFeatureValue(pixelBuffer: m.input)
             guard let r = try? m.model.prediction(from: MLDictionaryFeatureProvider(dictionary: inputs)) else { return nil }
-            for i in 1...4 { if let v = r.featureValue(for: "r\(i)o") { state["r\(i)i"] = v } }
+            for i in 1...4 { if let v = r.featureValue(for: "r\(i)o") { own["r\(i)i"] = v } }
             pha = r.featureValue(for: "pha")?.multiArrayValue
         }
-        if still { state = [:]; stateModel = "" }   // the passes over one frame are no history for the playback after it
+        if !still { state = own }
         guard let a = pha, a.shape.count == 4 else { return nil }
         let h = a.shape[2].intValue, w = a.shape[3].intValue, ys = a.strides[2].intValue, xs = a.strides[3].intValue
         var out = Data(count: w * h)
