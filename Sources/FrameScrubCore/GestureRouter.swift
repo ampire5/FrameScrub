@@ -161,6 +161,12 @@ public final class GestureRouter {
         return actions
     }
 
+    /// Whether a pinch with `modifiers` is the continuous zoom (`PINCH_IN zoom`, `PINCH_OUT zoom`): the view then takes
+    /// the whole gesture, its phases and the fingers' place included.
+    public func pinchZooms(modifiers: Modifiers) -> Bool {
+        ["PINCH_IN", "PINCH_OUT"].contains { inputMap.command(for: KeyChord(key: $0, modifiers: modifiers)) == .zoom(nil) }
+    }
+
     /// Call when a pinch gesture ends so the next one starts from zero travel.
     public func endPinch() {
         pinchTravel = 0

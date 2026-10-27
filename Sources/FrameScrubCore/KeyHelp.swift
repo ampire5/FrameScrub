@@ -138,7 +138,10 @@ public enum KeyHelp {
         case .cycleMute: return (.audio, 2, "Mute")
         case .toggleScrubAudio: return (.audio, 3, "Scrub audio on / off")
         case .toggleScrubAudioPitch: return (.audio, 4, "Scrub pitch: tape / natural")
-        case .setFullscreen(true), .zoom, .zoomReset, .ignore: return nil   // zoom is bound but not available yet
+        case let .zoom(step?): return (.picture, step < 0 ? 14 : 13, step < 0 ? "Zoom out" : "Zoom in")
+        case .zoom(nil): return (.picture, 15, "Zoom")
+        case .zoomReset: return (.picture, 16, "Zoom: fit")
+        case .setFullscreen(true), .ignore: return nil
         case .pluginAction: return nil   // the plugin section lists them under the page's labels
         }
     }

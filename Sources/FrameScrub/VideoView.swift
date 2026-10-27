@@ -45,7 +45,13 @@ final class VideoView: NSView {
     var scaleMode = ScaleMode.auto { didSet { if scaleMode != oldValue { needsRender = true } } }
     var sharpen = 0.3 { didSet { if sharpen != oldValue { needsRender = true } } }
     /// Crop and pixel aspect of the upright picture (aspect spec); the neural-network still gets the same crop.
-    var geometry = DisplayGeometry.identity { didSet { if geometry != oldValue { needsRender = true } } }
+    var geometry = DisplayGeometry.identity {
+        didSet {
+            guard geometry != oldValue else { return }
+            needsRender = true
+            syncPictureSize()
+        }
+    }
     /// Applied to the upright picture before scaling, so the neural-network still gets it too.
     private(set) var colorCorrection = ColorCorrection.identity
     private var previousColor: ColorCorrection?   // faded out over `colorFadeDuration`
@@ -54,6 +60,15 @@ final class VideoView: NSView {
     private var skipCounter = SkippedFrameCounter()
     private var scaler: DisplayScaler!
     private var enhancedScaler: DisplayScaler!   // own MetalFX cache: the two layers differ in size
+    /// The zoomed picture's own scalers, so zooming in and back to Fit never throws away the fit scaler's cache.
+    private var zoomScaler: DisplayScaler!
+    private var enhancedZoomScaler: DisplayScaler!
+    /// Zoom and pan inside the picture (Loupe's gestures).
+    let zoomPan = ZoomPan()
+    /// Whether the zoom gestures may act now: a video is open and nothing (Home) covers it.
+    var zoomAllowed: () -> Bool = { false }
+    /// The left press is a pan of the zoomed picture, not a window drag.
+    private var panPress = false
     private var imageIsHDR = false
     private var currentFrame: DecodedFrame?
     private var headroom = 1.0
@@ -70,6 +85,9 @@ final class VideoView: NSView {
         super.init(frame: .zero)
         scaler = DisplayScaler(device: device, context: context)
         enhancedScaler = DisplayScaler(device: device, context: context)
+        zoomScaler = DisplayScaler(device: device, context: context)
+        enhancedZoomScaler = DisplayScaler(device: device, context: context)
+        zoomPan.onChange = { [weak self] in self?.needsRender = true }
         metalLayer.device = device
         metalLayer.pixelFormat = .rgba16Float
         metalLayer.wantsExtendedDynamicRangeContent = true
@@ -122,6 +140,7 @@ final class VideoView: NSView {
         enhancedFrame = nil
         imageIsHDR = false
         skipCounter.reset()
+        zoomPan.reset()
         needsRender = blank
     }
 
@@ -149,6 +168,13 @@ final class VideoView: NSView {
         let plan = ToneMapPlan.resolve(range: frame.dynamicRange, displayHeadroom: headroom)
         image = FrameImageRenderer.displayImage(for: frame, rotationClockwise: rotationClockwise, plan: plan)
         imageIsHDR = plan != .none && plan != .toSDR
+        syncPictureSize()
+    }
+
+    /// The zoom's picture: the shown part of the frame in square pixels.
+    private func syncPictureSize() {
+        guard let image else { return }
+        zoomPan.setPictureSize(geometry.displaySize(of: image.extent.size))
     }
 
     private func refreshHeadroom() {
@@ -212,6 +238,7 @@ final class VideoView: NSView {
         let scale = window?.backingScaleFactor ?? 2
         metalLayer.contentsScale = scale
         metalLayer.drawableSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        zoomPan.setViewSize(metalLayer.drawableSize)
         needsRender = true
     }
 
@@ -231,6 +258,7 @@ final class VideoView: NSView {
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
         onTick?()
+        zoomPan.tick(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         headroomCheck += 1
         if headroomCheck % 30 == 0 { refreshHeadroom() }   // about twice a second at 60 Hz
         render()
@@ -262,7 +290,11 @@ final class VideoView: NSView {
             guard let previousColor else { return colorCorrection.apply(to: source) }
             return ColorCorrection.transition(from: previousColor, to: colorCorrection, progress: colorProgress, image: source)
         }
-        func place(_ full: CIImage, using scaler: DisplayScaler) -> CIImage {
+        let atFit = zoomPan.isAtFit, refine = !zoomPan.isMoving
+        func place(_ full: CIImage, using scaler: DisplayScaler, zoomScaler: DisplayScaler) -> CIImage {
+            if !atFit {
+                return placeZoomed(full, using: zoomScaler, refine: refine, colored: colored, commandBuffer: commandBuffer)
+            }
             let source = geometry.cropped(full)
             let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: sharpen, hdr: imageIsHDR,
                                        commandBuffer: commandBuffer)
@@ -273,11 +305,11 @@ final class VideoView: NSView {
         var placed: CIImage
         if let enhanced {
             let t = min(1, (CACurrentMediaTime() - fadeStart) / Self.fadeDuration)
-            let target = place(enhanced, using: enhancedScaler)
+            let target = place(enhanced, using: enhancedScaler, zoomScaler: enhancedZoomScaler)
             if t >= 1 {
                 placed = target
             } else {
-                placed = place(image, using: scaler)
+                placed = place(image, using: scaler, zoomScaler: zoomScaler)
                 let dissolve = CIFilter.dissolveTransition()
                 dissolve.inputImage = placed
                 dissolve.targetImage = target
@@ -286,7 +318,7 @@ final class VideoView: NSView {
                 needsRender = true    // keep drawing until the fade is done
             }
         } else {
-            placed = place(image, using: scaler)
+            placed = place(image, using: scaler, zoomScaler: zoomScaler)
         }
         let composed = placed.composited(over: CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size)))
         let destination = CIRenderDestination(width: Int(size.width), height: Int(size.height),
@@ -305,6 +337,39 @@ final class VideoView: NSView {
         skipCounter.frameDrawn()
     }
 
+    /// The zoomed picture: only the part in view is cut from the frame (with a margin of two pixels, so the filters
+    /// see real neighbours at the cut), coloured and scaled to where it lands on screen. In motion it is drawn the cheap
+    /// way (one bilinear transform, exact to the sub-pixel); at rest it is refined with the scaler, whose MetalFX cache
+    /// then holds while the video plays at that zoom.
+    private func placeZoomed(_ full: CIImage, using scaler: DisplayScaler, refine: Bool,
+                             colored colorCorrected: (CIImage) -> CIImage, commandBuffer: MTLCommandBuffer) -> CIImage {
+        let empty = CIImage.empty()
+        let t = zoomPan.transform
+        let source = geometry.cropped(full)
+        let picture = t.imageSize, size = metalLayer.drawableSize
+        guard picture.width > 0, picture.height > 0, source.extent.width > 0, source.extent.height > 0 else { return empty }
+        // Picture units (square pixels, y down) to source pixels (y up).
+        let kx = source.extent.width / picture.width, ky = source.extent.height / picture.height
+        let visible = t.visibleRect.intersection(CGRect(origin: .zero, size: picture))
+        guard !visible.isNull, visible.width > 0, visible.height > 0 else { return empty }
+        let wanted = CGRect(x: visible.minX * kx, y: (picture.height - visible.maxY) * ky,
+                            width: visible.width * kx, height: visible.height * ky)
+        let cut = wanted.insetBy(dx: -2, dy: -2).integral.intersection(source.extent)
+        guard !cut.isNull, cut.width >= 1, cut.height >= 1 else { return empty }
+        let s = t.drawnScale, sx = s / kx, sy = s / ky
+        let topLeft = t.viewPoint(forImage: CGPoint(x: cut.minX / kx, y: picture.height - cut.maxY / ky))
+        let x = topLeft.x, y = size.height - topLeft.y - cut.height * sy
+        let piece = source.cropped(to: cut).transformed(by: CGAffineTransform(translationX: -cut.minX, y: -cut.minY))
+        let colored = colorCorrected(piece)
+        guard refine else { return colored.transformed(by: CGAffineTransform(a: sx, b: 0, c: 0, d: sy, tx: x, ty: y)) }
+        let out = CGSize(width: max(1, (cut.width * sx).rounded()), height: max(1, (cut.height * sy).rounded()))
+        // MetalFX only up to 4×: past it the scaler may not be made, which would turn MetalFX off for the zoom.
+        let mode = sx > 4 && (scaleMode == .auto || scaleMode == .metalfx) ? ScaleMode.lanczos : scaleMode
+        let scaled = scaler.scaled(colored, to: out, mode: mode, sharpen: sharpen, hdr: imageIsHDR,
+                                   commandBuffer: commandBuffer)
+        return scaled.transformed(by: CGAffineTransform(translationX: x.rounded(), y: y.rounded()))
+    }
+
     // MARK: Input
 
     /// Edit > Undo / Redo (⌘Z / ⇧⌘Z) for the cut marks. Answered here, by the first responder: NSWindow, later in the
@@ -321,14 +386,63 @@ final class VideoView: NSView {
     override func scrollWheel(with event: NSEvent) {
         // Only real scrolling cancels the right click: not zero-delta phase events or momentum.
         if NSEvent.pressedMouseButtons & 0b10 != 0, event.momentumPhase.isEmpty,
-           event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 { rightUsedAsModifier = true }
+           event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 {
+            rightUsedAsModifier = true
+            zoomPan.rightUp()   // the held right button scrubs now: it zooms no more
+        }
         onScroll?(event)
     }
     override func magnify(with event: NSEvent) { onMagnify?(event) }
-    override func rightMouseDown(with event: NSEvent) { rightUsedAsModifier = false }
 
-    /// MBTN_RIGHT fires on release, and not when the button was used as a modifier (scroll or another button).
+    /// A pinch bound to the continuous zoom (`PINCH_IN/OUT zoom`), about the fingers.
+    func zoomMagnify(_ event: NSEvent) { zoomPan.magnify(event, at: drawablePoint(event)) }
+
+    /// Two-finger double tap (the system's "Smart zoom"): Fit ↔ 100 % at the fingers.
+    override func smartMagnify(with event: NSEvent) {
+        guard zoomAllowed() else { return }
+        zoomPan.smartZoom(at: drawablePoint(event))
+    }
+
+    /// `zoom N` (a key, or ⌘+scroll, which zooms about the pointer).
+    func zoom(by log2Step: Double, atPointer: Bool) {
+        zoomPan.zoom(by: log2Step, at: atPointer ? pointerDrawablePoint : nil)
+    }
+
+    func zoomToFit() { zoomPan.zoomToFit() }
+
+    /// Event location in the zoom's space: drawable pixels, origin top-left, y down.
+    private func drawablePoint(_ event: NSEvent) -> CGPoint {
+        drawablePoint(viewPoint: convert(event.locationInWindow, from: nil))
+    }
+
+    private func drawablePoint(viewPoint: CGPoint) -> CGPoint {
+        let p = convertToBacking(viewPoint)
+        return CGPoint(x: p.x, y: metalLayer.drawableSize.height - p.y)
+    }
+
+    /// The pointer, when it is over the view.
+    private var pointerDrawablePoint: CGPoint? {
+        guard let window else { return nil }
+        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        return bounds.contains(p) ? drawablePoint(viewPoint: p) : nil
+    }
+
+    /// A right drag up or down zooms about the press point (`ZoomPan`); a click stays `MBTN_RIGHT`.
+    override func rightMouseDown(with event: NSEvent) {
+        rightUsedAsModifier = false
+        if zoomAllowed() { zoomPan.rightDown(at: drawablePoint(event)) }
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        guard !rightUsedAsModifier || zoomPan.rmbDragging else { return }
+        if zoomPan.rightDragged(to: drawablePoint(event), backing: window?.backingScaleFactor ?? 2) {
+            rightUsedAsModifier = true
+        }
+    }
+
+    /// MBTN_RIGHT fires on release, and not when the button was used as a modifier (scroll, another button, a zoom).
     override func rightMouseUp(with event: NSEvent) {
+        zoomPan.rightUp()
         if !rightUsedAsModifier { onMouseButton?("MBTN_RIGHT") }
     }
     override func mouseMoved(with event: NSEvent) {
@@ -337,7 +451,10 @@ final class VideoView: NSView {
 
     /// A button the Logitech mouse reported went down while the right one is held: like an AppKit button then, the
     /// right release is no `MBTN_RIGHT`.
-    func noteRightUsedAsModifier() { rightUsedAsModifier = true }
+    func noteRightUsedAsModifier() {
+        rightUsedAsModifier = true
+        zoomPan.rightUp()
+    }
     override func mouseEntered(with event: NSEvent) { onEnterExit?() }
     override func mouseExited(with event: NSEvent) { onEnterExit?() }
 
@@ -354,15 +471,31 @@ final class VideoView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // A zoomed picture larger than the view is grabbed: the drag pans it instead of moving the window.
+        panPress = zoomAllowed() && zoomPan.canPan
+        if panPress { zoomPan.leftDown(at: drawablePoint(event), time: event.timestamp) }
         if event.clickCount == 1 { onLeftClick?() }
         if event.clickCount == 2 { onMouseButton?("MBTN_LEFT_DBL") }
     }
 
-    /// Dragging anywhere on the picture moves the window (like other players), except in full screen.
-    /// `performDrag` instead of `isMovableByWindowBackground`, which would swallow the double click.
+    /// Dragging anywhere on the picture moves the window (like other players), except in full screen; on a zoomed
+    /// picture it pans (`ZoomPan`). `performDrag` instead of `isMovableByWindowBackground`, which would swallow the
+    /// double click.
     override func mouseDragged(with event: NSEvent) {
+        if panPress {
+            if zoomPan.isDragging { NSCursor.closedHand.set() }
+            zoomPan.leftDragged(to: drawablePoint(event), time: event.timestamp)
+            return
+        }
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         window.performDrag(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard panPress else { return }
+        panPress = false
+        if zoomPan.isDragging { NSCursor.arrow.set() }
+        zoomPan.leftUp(time: event.timestamp)
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

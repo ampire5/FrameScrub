@@ -1566,6 +1566,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
         videoView.onLeftClick = { [weak self] in self?.slots.hideOverlays() }
+        videoView.zoomAllowed = { [weak self] in self.map { !$0.showsHome && $0.core.info != nil } ?? false }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
         }
@@ -1849,6 +1850,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             applyWindowSize(.scale(scale))
         case .windowFit:
             applyWindowSize(.fitScreen)
+        case let .zoom(step):
+            // ⌘+scroll zooms about the pointer, a key about the middle.
+            if videoView.zoomAllowed() { videoView.zoom(by: step ?? 0.25, atPointer: NSApp.currentEvent?.type == .scrollWheel) }
+        case .zoomReset:
+            videoView.zoomToFit()
         case .revealFrames:
             revealFrames()
         case .showKeys:
@@ -2189,6 +2195,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func handleMagnify(_ event: NSEvent) {
+        if gestures.pinchZooms(modifiers: Modifiers(event.modifierFlags)) {
+            if videoView.zoomAllowed() { videoView.zoomMagnify(event) }
+            return
+        }
         perform(gestures.routePinch(magnification: Double(event.magnification), modifiers: Modifiers(event.modifierFlags)),
                 from: .trackpad, fresh: true)
         if event.phase == .ended || event.phase == .cancelled { gestures.endPinch() }
@@ -2208,7 +2218,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 haptics.from(source) { core.scrub(by: frames, ticks: ticks) }
             case let .command(command): runInput(command, from: source, fresh: fresh)
             case let .scrubEdge(edge, frames): scrubEdge(edge, by: frames, heldButton: heldButton, from: source, fresh: fresh)
-            case .zoomBy: break   // zoom view arrives with v1.1 Plan B
+            case .zoomBy: break   // `handleMagnify` gives the continuous zoom's pinch to the view
             }
         }
     }

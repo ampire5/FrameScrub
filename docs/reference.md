@@ -20,8 +20,12 @@ The mouse and trackpad work the same in both.
 | Hold right mouse button + side wheel | Playback speed down / up (`step-speed`: only changes the speed, never starts or reverses playback) |
 | Shift+side wheel, Shift+⌥+side wheel | Step frames, fast (what Shift turns a plain mouse's wheel into) |
 | Trackpad vertical swipe, ⌥+wheel | Volume |
-| ⌘+scroll, pinch | Zoom (bound, not available yet) |
-| Right click | Play / pause (acts on release, and not after a scroll) |
+| Pinch | Zoom about the fingers; halts at Fill (black bars gone) and 100 %, stretches past the limits and springs back. Never smaller than Fit |
+| ⌘+scroll, ⌘= / ⌘− | Zoom in / out (√√2 a step; about the pointer for ⌘+scroll), animated; ⌘0 back to Fit |
+| Two-finger double tap (Smart zoom) | Fit ↔ 100 % at the fingers (twice Fit where 100 % is not much larger) |
+| Drag on a zoomed picture | Pan: the picture follows the cursor, glides on after release, rubber band at the edges (otherwise a drag moves the window) |
+| Right-button drag up / down | Zoom in / out about the press point (a right click without moving stays play / pause) |
+| Right click | Play / pause (acts on release, and not after a scroll or a zoom) |
 | Double click | Full screen |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
