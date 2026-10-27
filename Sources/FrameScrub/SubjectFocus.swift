@@ -49,6 +49,9 @@ struct SubjectMask {
     let accurate: Bool
     /// Playback masks: the mean change of the mask against the previous frame's (of 255), the flicker on a still scene.
     var change: Double? = nil
+    /// RVM's alpha matte (`SubjectMatting`): soft already, refined along the picture's own edges instead of eroded and
+    /// feathered.
+    var matte = false
 }
 
 /// Makes the masks off the main thread, one at a time: a frame that comes while one is being made waits in a single
@@ -61,6 +64,7 @@ final class SubjectMasker: @unchecked Sendable {
         let image: CIImage?             // the upright picture, when the frame is turned (Vision then takes the image)
         let frame: Int
         let accurate: Bool
+        var rvm = false                 // RVM's matte (when its models are there), else Vision's mask
     }
 
     var onMask: ((SubjectMask, _ visionMs: Double) -> Void)?
@@ -79,6 +83,7 @@ final class SubjectMasker: @unchecked Sendable {
     private var lastFrame = Int.min
     private var previous: [UInt8] = []
     private var previousLuma: [UInt8] = []
+    private let matting = SubjectMatting()
     /// The picture's own change (of 255) taken as motion, when the frame's luma can be read: a mask change where the
     /// picture stands still is flicker and is smoothed hard (`stillKeep`); where the picture moved it follows at once.
     private static let lumaMotion: Float = 10, stillKeep: Float = 0.85
@@ -118,7 +123,7 @@ final class SubjectMasker: @unchecked Sendable {
     func reset() {
         generation += 1
         waiting = nil
-        queue.async { [self] in smooth = []; lastFrame = .min }
+        queue.async { [self] in smooth = []; lastFrame = .min; matting.reset() }
     }
 
     private func start(_ job: Job) {
@@ -157,6 +162,7 @@ final class SubjectMasker: @unchecked Sendable {
     }
 
     private func make(_ job: Job) -> SubjectMask? {
+        if job.rvm, let mask = makeMatte(job) { return mask }
         let request = job.accurate ? accurate : balanced
         do {
             if let image = job.image {
@@ -242,6 +248,28 @@ final class SubjectMasker: @unchecked Sendable {
     }
 }
 
+extension SubjectMasker {
+    /// RVM's matte for `job`: its state carries over while the frames follow each other (a few skipped still count).
+    fileprivate func makeMatte(_ job: Job) -> SubjectMask? {
+        let continuous = lastFrame != .min && abs(job.frame - lastFrame) <= 4
+        let picture = job.image ?? CIImage(cvPixelBuffer: job.pixelBuffer)
+        guard let (bytes, w, h) = matting.alpha(of: picture, still: job.accurate, continuous: continuous) else { return nil }
+        if !job.accurate { lastFrame = job.frame }
+        var change: Double?
+        if !job.accurate {
+            let b = [UInt8](bytes)
+            if continuous, previous.count == b.count {
+                var sum = 0
+                for i in 0..<b.count { sum += abs(Int(b[i]) - Int(previous[i])) }
+                change = Double(sum) / Double(b.count)
+            }
+            previous = b
+        }
+        let image = CIImage(bitmapData: bytes, bytesPerRow: w, size: CGSize(width: w, height: h), format: .L8, colorSpace: nil)
+        return SubjectMask(image: image, frame: job.frame, accurate: job.accurate, change: change, matte: true)
+    }
+}
+
 /// The effect: `image` (the upright frame, any extent) with its background changed by `look`, `amount` 0…1 of it
 /// (the fades). Core Image only; the costly parts (blur, colour carried over the edge) work at a quarter of the frame.
 enum SubjectFocusEffect {
@@ -249,20 +277,66 @@ enum SubjectFocusEffect {
     kernel vec4 divideByWeight(__sample a, __sample w) { float d = max(w.r, 0.0005); return vec4(a.rgb / d, 1.0); }
     """)!
 
+    // Fast guided filter (He & Sun 2015) for RVM's matte: on the matte's own grid each window fits the matte as a
+    // linear function of the picture's luma (a·I + b); a and b, smoothed and scaled up, are applied to the full-size luma,
+    // so the edge follows the picture's edges at full resolution for the cost of the small grid.
+    private static let guidePack = CIColorKernel(source: """
+    kernel vec4 guidePack(__sample c, __sample m) {
+        float i = dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)); float p = m.r;
+        return vec4(i, p, i * p, i * i);
+    }
+    """)!
+    private static let guideCoefficients = CIColorKernel(source: """
+    kernel vec4 guideCoefficients(__sample s, float eps) {
+        float a = (s.b - s.r * s.g) / (s.a - s.r * s.r + eps);
+        return vec4(a, s.g - a * s.r, 0.0, 1.0);
+    }
+    """)!
+    private static let guideApply = CIColorKernel(source: """
+    kernel vec4 guideApply(__sample ab, __sample c) {
+        float q = clamp(ab.r * dot(c.rgb, vec3(0.2126, 0.7152, 0.0722)) + ab.g, 0.0, 1.0);
+        return vec4(q, q, q, 1.0);
+    }
+    """)!
+    /// Window radius on the matte's grid (2 of 512 px: ~8 px of a 1080p frame) and the regulariser: a smaller one
+    /// follows weaker edges of the picture (and its noise).
+    private static let guideRadius = 2.0, guideEps = 0.0004
+
+    /// RVM's small `matte` refined along the edges of `image` (the frame it was made of), at the frame's size.
+    static func refined(_ matte: CIImage, guide image: CIImage) -> CIImage {
+        let ext = image.extent, small = matte.extent
+        let sx = small.width / ext.width, sy = small.height / ext.height
+        let guideSmall = image.applyingFilter("CILanczosScaleTransform", parameters: [
+            kCIInputScaleKey: sy, kCIInputAspectRatioKey: sx / sy])
+        let g = guideSmall.transformed(by: .init(translationX: small.minX - guideSmall.extent.minX, y: small.minY - guideSmall.extent.minY))
+            .cropped(to: small)
+        func box(_ i: CIImage) -> CIImage {
+            i.clampedToExtent().applyingFilter("CIBoxBlur", parameters: [kCIInputRadiusKey: guideRadius]).cropped(to: small)
+        }
+        let stats = box(guidePack.apply(extent: small, arguments: [g, matte])!)
+        let ab = box(guideCoefficients.apply(extent: small, arguments: [stats, guideEps])!)
+        let up = ab.clampedToExtent()
+            .transformed(by: .init(translationX: -small.minX, y: -small.minY))
+            .transformed(by: .init(scaleX: 1 / sx, y: 1 / sy))
+            .transformed(by: .init(translationX: ext.minX, y: ext.minY)).cropped(to: ext)
+        return guideApply.apply(extent: ext, arguments: [up, image])!
+    }
+
     private static func scaled(_ img: CIImage, by f: Double, bias: Double = 0) -> CIImage {
         img.applyingFilter("CIColorMatrix", parameters: [
             "inputRVector": CIVector(x: f, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: f, z: 0, w: 0),
             "inputBVector": CIVector(x: 0, y: 0, z: f, w: 0), "inputBiasVector": CIVector(x: bias, y: bias, z: bias, w: 0)])
     }
 
-    static func apply(to image: CIImage, mask raw: CIImage, look: SubjectFocusStyle.Look, amount: Double) -> CIImage {
+    static func apply(to image: CIImage, mask raw: CIImage, matte: Bool = false, look: SubjectFocusStyle.Look,
+                      amount: Double) -> CIImage {
         let ext = image.extent
         guard amount > 0, ext.width >= 8, ext.height >= 8 else { return image }
         let toFrame = CGAffineTransform(scaleX: ext.width / raw.extent.width, y: ext.height / raw.extent.height)
             .concatenating(.init(translationX: ext.minX, y: ext.minY))
         // feathered, the edge pulled in a little, on the small mask; then scaled to the frame
         let sigma = 0.3 * raw.extent.width * 0.008
-        let m = raw.clampedToExtent()
+        let m = matte ? refined(raw, guide: image) : raw.clampedToExtent()
             .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: sigma * 1.5])
             .applyingGaussianBlur(sigma: sigma)
             .transformed(by: toFrame).cropped(to: ext)

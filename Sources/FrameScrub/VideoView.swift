@@ -86,6 +86,9 @@ final class VideoView: NSView {
     private var focusFadeStart: CFTimeInterval?     // nil: no fade running (or waiting for the first mask)
     private var focusFadeIn = true
     private let masker = SubjectMasker()
+    /// The masks from RVM (`SubjectMatting`, when the user prepared its models) or from Vision; shared by the windows.
+    /// `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision (benches).
+    static var usesMatting = SubjectMatting.isAvailable && ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_QUALITY"] == nil
     private var focusMask: SubjectMask?
     private var frameShownAt: CFTimeInterval = 0
     private var stillToken = 0
@@ -206,6 +209,14 @@ final class VideoView: NSView {
         needsRender = true
     }
 
+    /// Mask: RVM or Vision. The masks start over (the one on screen stays until the first new one is in).
+    func setSubjectMatting(_ rvm: Bool) {
+        guard rvm != Self.usesMatting else { return }
+        Self.usesMatting = rvm
+        masker.reset()
+        if subjectFocus != nil, let frame = currentFrame { requestMask(for: frame, accurate: false) }
+    }
+
     /// 0…1: how much of the effect is drawn at `now`.
     private func focusAmount(at now: CFTimeInterval) -> Double {
         guard focusDrawn != nil else { return 0 }
@@ -218,7 +229,7 @@ final class VideoView: NSView {
     private func requestMask(for frame: DecodedFrame, accurate: Bool) {
         if !accurate { frameShownAt = CACurrentMediaTime() }
         masker.submit(.init(pixelBuffer: frame.pixelBuffer, image: rotationClockwise == 0 ? nil : image,
-                            frame: frame.number, accurate: accurate))
+                            frame: frame.number, accurate: accurate, rvm: Self.usesMatting))
         guard !accurate else { return }
         // a frame that stays: its accurate mask (one-shot per frame, dropped when the next frame comes)
         stillToken += 1
@@ -423,11 +434,12 @@ final class VideoView: NSView {
             }
         }
         func focused(_ full: CIImage) -> CIImage {
-            guard let style = focusDrawn, let mask = focusMask?.image, amount > 0 else { return full }
+            guard let style = focusDrawn, let focusMask, amount > 0 else { return full }
+            let mask = focusMask.image, matte = focusMask.matte
             let crossFade = focusFrom != nil && focusFadeStart != nil
-            let out = SubjectFocusEffect.apply(to: full, mask: mask, look: style.look, amount: crossFade ? 1 : amount)
+            let out = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: style.look, amount: crossFade ? 1 : amount)
             guard crossFade, let from = focusFrom else { return out }
-            let before = SubjectFocusEffect.apply(to: full, mask: mask, look: from.look, amount: 1)
+            let before = SubjectFocusEffect.apply(to: full, mask: mask, matte: matte, look: from.look, amount: 1)
             return before.applyingFilter("CIDissolveTransition", parameters: [kCIInputTargetImageKey: out, kCIInputTimeKey: amount])
                 .cropped(to: full.extent)
         }

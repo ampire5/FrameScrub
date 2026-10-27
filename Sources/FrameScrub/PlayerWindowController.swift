@@ -3492,6 +3492,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
     }
 
+    /// View › Subject Focus › Mask: RVM (the user's models) or Vision, for every window.
+    func setSubjectMatting(_ rvm: Bool) {
+        videoView.setSubjectMatting(rvm)
+        showMessage(rvm ? "Subject Focus mask: RVM" : "Subject Focus mask: Vision")
+    }
+
     /// For Playback › Colour › Reset File / Folder Colour: whether there is anything to reset.
     func hasOwnColor(_ level: ColorLevel) -> Bool { colorMemory.hasOwn(level) }
 

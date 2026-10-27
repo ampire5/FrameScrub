@@ -516,12 +516,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             entry.target = self
             submenu.addItem(entry)
         }
+        // Mask: RVM needs the models the user prepares (docs/subject-focus-rvm.md); greyed without them.
+        submenu.addItem(.separator())
+        for (tag, title) in [(1, "Mask: RVM"), (0, "Mask: Vision")] {
+            let entry = NSMenuItem(title: title, action: #selector(setSubjectMatting(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
         item.submenu = submenu
         return item
     }
 
     @objc func setSubjectFocusStyle(_ sender: NSMenuItem) {
         controller?.setSubjectFocus(SubjectFocusStyle.allCases[sender.tag])
+    }
+
+    @objc func setSubjectMatting(_ sender: NSMenuItem) {
+        controller?.setSubjectMatting(sender.tag == 1)
     }
 
     private func makeUpscalerMenu() -> NSMenuItem {
@@ -586,6 +598,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if item.action == #selector(setSubjectFocusStyle(_:)) {
             item.state = controller?.subjectFocus == SubjectFocusStyle.allCases[item.tag] ? .on : .off
             return controller?.hasOpenFile == true && controller?.showsHome != true
+        }
+        if item.action == #selector(setSubjectMatting(_:)) {
+            item.state = (item.tag == 1) == VideoView.usesMatting ? .on : .off
+            return item.tag == 0 || SubjectMatting.isAvailable
         }
         if let box = item.representedObject as? CommandBox, box.command == .toggleSubjectFocus {
             item.state = controller?.subjectFocus != nil ? .on : .off
