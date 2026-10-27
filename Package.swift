@@ -70,6 +70,8 @@ let package = Package(
                 .product(name: "StashKitUI", package: "StashKit"),
                 .product(name: "HomeScreenKit", package: "HomeScreenKit"),
                 .product(name: "HomeChrome", package: "HomeScreenKit"),
+                .product(name: "Filmstrip", package: "HomeScreenKit"),
+                .product(name: "FilmstripModel", package: "HomeScreenKit"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
             ]
         ),

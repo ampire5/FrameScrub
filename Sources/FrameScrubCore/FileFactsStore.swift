@@ -6,6 +6,8 @@ import HomeScreenModel
 /// small JSON file; past `limit` entries the file keeps the newest half.
 public final class FileFactsStore: @unchecked Sendable {
     public static let defaultURL = ThumbnailStore.defaultDirectory.appendingPathComponent("posters/facts.json")
+    /// The app's one store: Home's cards and the playlist strip read and write the same file.
+    public static let shared = FileFactsStore()
 
     private let url: URL
     private let limit: Int

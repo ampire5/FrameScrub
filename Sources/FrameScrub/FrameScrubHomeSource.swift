@@ -22,7 +22,7 @@ import HomeScreenModel
     private let folderPictures: PictureQueue
     /// Facts (size, codec, rate, length) found while making pictures, by path; kept across runs (`FileFactsStore`).
     private var facts: [String: FileFacts] = [:]
-    private let factsStore = FileFactsStore()
+    private let factsStore = FileFactsStore.shared
     private var factsSave: DispatchWorkItem?
     /// The sorts of Recent and the app's lists, for this run; a folder's are kept (`folderSorts`).
     private var sorts: [BrowserLocation: BrowserSort] = [:]

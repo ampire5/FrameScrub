@@ -30,6 +30,16 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         }
     }
     private var updating = false
+    /// `playlist-view`: the table, or the strip (made the first time it is asked for).
+    var mode = PlaylistView.list {
+        didSet { if mode != oldValue { applyMode() } }
+    }
+    /// `playlist-strip-return`.
+    var stripReturn: Double = 3 {
+        didSet { strip?.returnDelay = stripReturn }
+    }
+    private var strip: PlaylistStripView?
+    private var current = -1
 
     init() {
         super.init(frame: .zero)
@@ -105,6 +115,27 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         }
     }
 
+    /// The strip under the bar instead of the table, or back.
+    private func applyMode() {
+        if mode == .strip, strip == nil {
+            let strip = PlaylistStripView()
+            strip.returnDelay = stripReturn
+            strip.onSelect = { [weak self] row in self?.onSelect?(row) }
+            strip.isTyping = { [weak self] in self?.isEditingFilter == true }
+            strip.translatesAutoresizingMaskIntoConstraints = false
+            addSubview(strip)
+            NSLayoutConstraint.activate([
+                strip.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+                strip.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+                strip.topAnchor.constraint(equalTo: scroll.topAnchor), strip.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
+            ])
+            strip.update(rows: rows, current: current)
+            self.strip = strip
+        }
+        strip?.isHidden = mode != .strip
+        scroll.isHidden = mode == .strip
+    }
+
     /// Whether the filter field has the keyboard (the panel stays while it does).
     var isEditingFilter: Bool {
         guard let editor = window?.firstResponder as? NSText else { return false }
@@ -150,7 +181,21 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            onSubmitFilter?()
+            if let strip, mode == .strip { strip.openBrowsed() } else { onSubmitFilter?() }
+            return true
+        case #selector(NSResponder.moveUp(_:)) where mode == .strip:
+            strip?.step(by: -1)
+            return true
+        case #selector(NSResponder.moveDown(_:)) where mode == .strip:
+            strip?.step(by: 1)
+            return true
+        case #selector(NSResponder.scrollPageUp(_:)) where mode == .strip,
+             #selector(NSResponder.pageUp(_:)) where mode == .strip:
+            strip.map { $0.step(by: -$0.pageRows) }
+            return true
+        case #selector(NSResponder.scrollPageDown(_:)) where mode == .strip,
+             #selector(NSResponder.pageDown(_:)) where mode == .strip:
+            strip.map { $0.step(by: $0.pageRows) }
             return true
         case #selector(NSResponder.cancelOperation(_:)):
             if !search.stringValue.isEmpty {
@@ -166,6 +211,8 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
 
     /// `current`: the row of the item playing; -1 when it is not shown.
     func update(rows: [PlaylistRow], current: Int) {
+        self.current = current
+        strip?.update(rows: rows, current: current)
         updating = true
         defer { updating = false }
         if rows != self.rows {   // unchanged list: only move the selection, no reload inside the table's own callback

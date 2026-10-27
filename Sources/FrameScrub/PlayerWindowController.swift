@@ -259,6 +259,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         super.init(window: window)
         restoreFrame(of: window)
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
+        playlistPanel.mode = config.playlistView
+        playlistPanel.stripReturn = config.playlistStripReturn
         applyHomeConfig(config)
         window.delegate = self
         core.delegate = self
@@ -1150,6 +1152,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if config.autoColor, let lastFrame { checkSceneCut(lastFrame) }   // turned on in Settings: a first frame is a cut
         window?.level = config.ontop ? .floating : .normal
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
+        playlistPanel.mode = config.playlistView
+        playlistPanel.stripReturn = config.playlistStripReturn
         applyHomeConfig(config)
         if stashChanged, let library = stashLibrary {   // a new address, key or rules: a new page and session
             stashSession?.leave()
