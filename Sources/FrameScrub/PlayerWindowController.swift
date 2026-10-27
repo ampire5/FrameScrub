@@ -587,7 +587,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         guard let home else { return }
         home.browser.cardSize = CGFloat(config.homeCardSize)
         if home.isSidebarVisible != config.homeSidebar { home.isSidebarVisible = config.homeSidebar }
-        home.browser.monochrome = config.monochrome
     }
 
     // MARK: Stash

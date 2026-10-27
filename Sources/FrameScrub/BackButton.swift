@@ -19,7 +19,7 @@ final class BackButton: NSView {
         super.init(frame: .zero)
         backdrop.translatesAutoresizingMaskIntoConstraints = false
         addSubview(backdrop)
-        chevron.image = Lucide.icon("chevron.left", pointSize: 16, weight: .semibold)
+        chevron.image = Icons.symbol("chevron.left", pointSize: 16, weight: .semibold)
         chevron.contentTintColor = .white
         label.font = .systemFont(ofSize: 17, weight: .semibold)
         label.textColor = .white

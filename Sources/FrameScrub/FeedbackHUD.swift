@@ -75,7 +75,7 @@ final class FeedbackHUD: NSView {
 
     /// Shows `feedback`, then fades out; `hold: true` keeps it until the next `show` or `hide`.
     func show(_ feedback: Feedback, hold: Bool = false) {
-        icon.image = Lucide.icon(feedback.symbolName, pointSize: 96)   // a 120 pt box, scaled down: crisp at any size
+        icon.image = Icons.symbol(feedback.symbolName, pointSize: 96)   // a 120 pt box, scaled down: crisp at any size
         caption.stringValue = feedback.caption ?? ""
         placement = feedback.placement
         needsLayout = true
