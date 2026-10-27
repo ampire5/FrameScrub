@@ -25,8 +25,10 @@ import HomeScreenModel
         }
     }
 
-    /// The plain row's picture width.
-    static let rowPicture = 96.0
+    /// A plain row's picture, of the strip's width; the browsed row's spans the strip.
+    static let rowPictureShare = 0.55
+
+    private var rowPicture: Double { max(80, (Double(bounds.width) * Self.rowPictureShare).rounded()) }
 
     private let strip = FilmstripRowsView()
     private let card = PlaylistCardView()
@@ -153,7 +155,10 @@ import HomeScreenModel
     }
 
     /// A screenful of plain rows, for ⇞ / ⇟.
-    var pageRows: Int { max(1, Int(Double(bounds.height) / (Self.rowPicture * 9 / 16 + 8)) - 1) }
+    var pageRows: Int {
+        let row = rowPicture * 9 / 16 + FilmstripRowsView.captionHeight + FilmstripRows.gapRatio * rowPicture
+        return max(1, Int(Double(bounds.height) / row) - 1)
+    }
 
     /// Whether the browsed row is the playing one (↩ then keeps today's "the first other match").
     var browsedIsPlaying: Bool { state.browsed != nil && state.browsed == playingRow }
@@ -197,14 +202,16 @@ import HomeScreenModel
     private func relayout() {
         relayoutPending = false
         let width = Double(bounds.width)
-        let currentPicture = max(Self.rowPicture, width - 2 * Double(FilmstripRowsView.padding))
+        let currentPicture = max(rowPicture, width - 2 * Double(FilmstripRowsView.padding))
         measureCard(width: currentPicture)
         let aspects: [Double?] = rows.map { row in
             guard let url = row.url, let f = facts[url], let w = f.width, let h = f.height, w > 0, h > 0 else { return nil }
             return Double(w) / Double(h)
         }
         let layout = FilmstripRows(itemCount: rows.count, aspects: aspects, length: Double(bounds.height), width: width,
-                                   rowPicture: Self.rowPicture, currentPicture: currentPicture, cardHeight: cardHeight)
+                                   rowPicture: rowPicture, currentPicture: currentPicture, cardHeight: cardHeight,
+                                   captionHeight: FilmstripRowsView.captionHeight,
+                                   currentCaptionHeight: FilmstripRowsView.currentCaptionHeight)
         if let browsed = state.browsed { scroll.layoutChanged(keeping: browsed, layout: layout) }
         strip.layout = layout
         place(animated: false)
@@ -235,7 +242,7 @@ import HomeScreenModel
     /// The card's height does not depend on its width (the name takes two lines, the rest one each): measured once.
     private func measureCard(width: Double) {
         guard cardHeight == 0 else { return }
-        card.fill(lines: ["Name\nName", "line", "line", "line"])
+        card.fill(lines: ["line", "line", "line"])
         let height = card.fittingHeight(width: CGFloat(width))
         cardHeight = Double(height) + Double(FilmstripRowsView.cardGap)
     }
@@ -244,7 +251,8 @@ import HomeScreenModel
     private func fillCard() {
         guard let browsed = state.browsed, rows.indices.contains(browsed) else { return }
         let row = rows[browsed]
-        var lines = [(browsed == playingRow ? "▶ " : "") + Self.title(row)]
+        // The name is the strip's, under the picture; the card has what follows it.
+        var lines: [String] = []
         if let url = row.url {
             let info = fileInfo[url]
             lines += PlaylistRowFacts(facts: facts[url], resume: info?.resume, size: info?.size, date: info?.date).card
@@ -527,7 +535,7 @@ import HomeScreenModel
     }
 }
 
-/// The browsed row's card: its name on up to two lines, then a line each of what is known; a click opens the row.
+/// The browsed row's card, under its name: a line each of what is known; a click opens the row.
 @MainActor final class PlaylistCardView: NSView {
     var onPress: (() -> Void)?
     private let stack = NSStackView()
@@ -541,7 +549,8 @@ import HomeScreenModel
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor), stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            // A label draws its text 2 pt in from its frame: the lines start on the caption's edge.
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -2), stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
         ])
     }
@@ -553,13 +562,13 @@ import HomeScreenModel
         guard lines != self.lines else { return }
         self.lines = lines
         for view in stack.arrangedSubviews { view.removeFromSuperview() }
-        for (i, line) in lines.enumerated() {
+        for line in lines {
             let field = NSTextField(wrappingLabelWithString: line)
             field.isSelectable = false   // a click opens the row; the keyboard stays with the video
-            field.maximumNumberOfLines = i == 0 ? 2 : 1
-            field.lineBreakMode = i == 0 ? .byTruncatingMiddle : .byTruncatingTail
-            field.font = i == 0 ? Chrome.Text.font(.label, weight: .semibold) : Chrome.Text.digits(.small)
-            field.textColor = i == 0 ? Chrome.Palette.overMedia.text : Chrome.Palette.overMedia.secondaryText
+            field.maximumNumberOfLines = 1
+            field.lineBreakMode = .byTruncatingTail
+            field.font = Chrome.Text.digits(.small)
+            field.textColor = Chrome.Palette.overMedia.secondaryText
             field.preferredMaxLayoutWidth = max(0, bounds.width)
             stack.addArrangedSubview(field)
         }

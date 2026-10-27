@@ -54,8 +54,9 @@ enum PlaylistStripBench {
             var scroll = FilmstripScroll()
             var browsed = count / 2
             func layout(_ n: Int) -> FilmstripRows {
-                FilmstripRows(itemCount: n, aspects: Array(aspects.prefix(n)), length: 900, width: 360, rowPicture: 96,
-                              currentPicture: 344, cardHeight: 90)
+                FilmstripRows(itemCount: n, aspects: Array(aspects.prefix(n)), length: 900, width: 360, rowPicture: 198,
+                              currentPicture: 344, cardHeight: 60, captionHeight: FilmstripRowsView.captionHeight,
+                              currentCaptionHeight: FilmstripRowsView.currentCaptionHeight)
             }
             func fillRows(_ n: Int) {
                 for item in strip.visibleItems where item < n {
