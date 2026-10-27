@@ -133,7 +133,7 @@ import FrameScrubCore
         maskNote.preferredMaxLayoutWidth = 300
         steadiness.target = self
         steadiness.action = #selector(changeSteadiness)
-        steadiness.isContinuous = true
+        steadiness.isContinuous = false   // each step makes the masks again: taken when let go
         steadinessValue.textColor = Self.secondary
         stillAccurate.target = self
         stillAccurate.action = #selector(changeStillAccurate)

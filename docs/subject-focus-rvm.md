@@ -63,6 +63,10 @@ It is an overlay card apart from the slots (they may all hold plugins), with the
 glass by default) and motion; it goes 150 ms after the pointer left it (past the window's right edge by up to 200 pt
 still counts as in), with ⌥H, ✕ or a click on the video. Built the first time it shows, kept after.
 
+The presets got the people's contrast Loupe's styles have (Studio 0.3, Lens 0.15, Black 0.2, White 0.1, Accent 0.5):
+the people's local contrast against their blur at a quarter of the frame. It costs ~0.05 ms of the main thread and
+~0.1 ms of the GPU a 1080p frame (Studio with it 2.62 / 4.95 ms, without 2.57 / 4.84 ms; RVM, 120 frames each).
+
 The mockup's "Applies to: this folder / everywhere" and Save as Default are left out (one set for everything, kept as
 it changes); "Largest person" and "Person under pointer" too (All / Main people is what the masks can do now).
 
