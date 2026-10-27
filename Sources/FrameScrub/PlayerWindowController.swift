@@ -911,7 +911,23 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         ])
         let browser = view.browser
         browser.files = .videos   // 16:9 slots, "videos" in the counts, the length and progress on each picture
-        browser.names = .auto   // names and facts under the posters from 160 pt, a band on hover on smaller ones
+        // Square (posters fill their 16:9 slot, cropped) or Aspect (whole, fitted), and the names (⌥T, ⌥N and the
+        // toolbar's button): the user's last choice, kept across launches.
+        let defaults = UserDefaults.standard
+        browser.style = defaults.string(forKey: "homeGridStyle").flatMap(GridStyle.init) ?? .aspect
+        browser.names = defaults.string(forKey: "homeGridNames").flatMap(GridNames.init) ?? .auto
+        browser.onStyle = { [weak browser] style in
+            browser?.style = style
+            defaults.set(style.rawValue, forKey: "homeGridStyle")
+        }
+        browser.onNames = { [weak browser] names in
+            browser?.names = names
+            defaults.set(names.rawValue, forKey: "homeGridNames")
+        }
+        // The sidebar's width as the user left it (a drag of its divider), kept across launches.
+        let width = defaults.double(forKey: "homeSidebarWidth")
+        if width > 0 { view.sidebarWidth = CGFloat(width) }
+        view.onSidebarWidthChange = { width in defaults.set(Double(width.rounded()), forKey: "homeSidebarWidth") }
         browser.cardSizeRange = 60...480   // home-card-size's
         browser.onWindowText = { [weak self] title, _ in
             guard let self, self.showsHome else { return }
