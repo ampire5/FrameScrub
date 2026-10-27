@@ -37,4 +37,13 @@ for size in 512x288 288x512 768x432 432x768; do
     rm -rf "$dest/rvm_mnv3_$size.mlpackage"
     mv "$work/rvm_mnv3_$size.mlpackage" "$dest/"
 done
+# Photos (Loupe): the frame at 1536×1024 (portrait 1024×1536), the network at half of it, RVM's own refiner back to full
+# size; ~22 ms a pass, 5 passes a photo. Cleaner than without the refiner at full size (a wall taken for a person) and
+# than ResNet50 (a blanket kept, a lamp in the hand lost) on the test shoot.
+for size in 1536x1024 1024x1536; do
+    w=${size%x*}; h=${size#*x}
+    (cd "$work" && .venv/bin/python export.py mobilenetv3 "$w" "$h" 0.5 "$work/rvm_mnv3_${size}_ds0.5.mlpackage" 2>&1 | grep -E "^saved|Error")
+    rm -rf "$dest/rvm_mnv3_${size}_ds0.5.mlpackage"
+    mv "$work/rvm_mnv3_${size}_ds0.5.mlpackage" "$dest/"
+done
 echo "Models in $dest"
