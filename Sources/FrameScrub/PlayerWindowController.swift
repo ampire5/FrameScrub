@@ -86,6 +86,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var statsPanel: InfoPanelController!
     /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
     private var slots: SlotsController!
+    /// Home's toolbar pills hidden under a shown slot (`updateToolbarUnderSlots`).
+    private let pillsUnderSlots = NSHashTable<NSView>.weakObjects()
     /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from the configured plugins.
     private var pluginPolicy = PluginPolicy()
     /// The video's edges in the window, set from the slots' layout (pinned slots take room from it).
@@ -797,10 +799,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeHost.isHidden = false
         view.isParked = false
         // Home's toolbar lies over its content (the browser insets its grid by the toolbar's height), as in Loupe.
-        window.styleMask.insert(.fullSizeContentView)
-        window.titlebarAppearsTransparent = true
-        window.toolbar = view.browser.nsToolbar
-        window.titleVisibility = .hidden
+        keepingFrame(of: window) {
+            window.styleMask.insert(.fullSizeContentView)
+            window.titlebarAppearsTransparent = true
+            window.toolbar = view.browser.nsToolbar
+            window.titleVisibility = .hidden
+        }
+        DispatchQueue.main.async { [weak self] in self?.updateToolbarUnderSlots() }   // once the toolbar has its items laid out
         hideSeekBarWork?.cancel()
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
@@ -850,10 +855,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeHost.isHidden = true
         home.isParked = true
         homeSource?.stopImages()
-        window?.toolbar = nil
-        window?.titleVisibility = .visible
-        window?.titlebarAppearsTransparent = false
-        if !isFullScreen { window?.styleMask.remove(.fullSizeContentView) }
+        if let window {
+            keepingFrame(of: window) {
+                window.toolbar = nil
+                window.titleVisibility = .visible
+                window.titlebarAppearsTransparent = false
+                if !isFullScreen { window.styleMask.remove(.fullSizeContentView) }
+            }
+        }
+        updateToolbarUnderSlots()   // the pills it hid are shown again for the next time Home has the toolbar
         if let titleBeforeHome { window?.title = titleBeforeHome }
         titleBeforeHome = nil
         window?.makeFirstResponder(videoView)
@@ -1675,6 +1685,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return frame
         }
         return nil
+    }
+
+    /// Home's toolbar put on or taken off with the frame kept: AppKit takes the toolbar's 32 pt from the top of a
+    /// full-size-content window when it gets one (and gives them back without it), so a window filling the screen
+    /// opened 32 pt below the menu bar and the frame saved over Home kept that.
+    private func keepingFrame(of window: NSWindow, _ change: () -> Void) {
+        let frame = window.frame
+        change()
+        if !isFullScreen, window.frame != frame { window.setFrame(frame, display: false) }
     }
 
     /// Back on the start screen: the window keeps its size and place; only the video shape stops holding its aspect.
@@ -2993,6 +3012,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
         slots.onMessage = { [weak self] in self?.showMessage($0) }
+        slots.onSlotsPlaced = { [weak self] in self?.updateToolbarUnderSlots() }
         slots.onPagesChanged = { [weak self] in
             guard let self else { return }
             rebuildInputMap()   // a page's keys count while it is in a slot
@@ -3085,6 +3105,46 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         set(visibleEdges, visible)
         visibleVideoRect = visible
         statsPanel.place()
+    }
+
+    /// Over Home a slot goes the window's whole height, under the toolbar: the toolbar's pills it covers, and the
+    /// traffic lights, fade out and are hidden (no clicks land on them over the slot), and come back when it goes or
+    /// Home does. A pill is a child of the toolbar's full-width item container (macOS 26: `NSToolbarPlatterView`,
+    /// `NSToolbarItemViewer`); it is found from an item's own view, so AppKit's classes are not named.
+    private func updateToolbarUnderSlots() {
+        guard let window, let container = window.contentView else { return }
+        let covers = showsHome && !isFullScreen ? slots.shownFrames.map { container.convert($0, to: nil) } : []
+        var pills: [NSView] = []
+        if let toolbar = window.toolbar, window.toolbar === home?.browser.nsToolbar {
+            for case let view? in toolbar.items.map(\.view) {
+                var pill = view
+                while let parent = pill.superview, parent.frame.width < window.frame.width - 1 { pill = parent }
+                if let bar = pill.superview, bar.window === window { pills = bar.subviews; break }
+            }
+        }
+        pills += [.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }   // a left slot's top
+        for pill in pills {
+            let frame = pill.convert(pill.bounds, to: nil)
+            let covered = covers.contains { $0.intersects(frame) }
+            if covered, !pillsUnderSlots.contains(pill) {
+                pillsUnderSlots.add(pill)
+                NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; pill.animator().alphaValue = 0 }) { [weak self, weak pill] in
+                    MainActor.assumeIsolated {
+                        guard let self, let pill, self.pillsUnderSlots.contains(pill) else { return }
+                        pill.isHidden = true
+                    }
+                }
+            } else if !covered, pillsUnderSlots.contains(pill) {
+                showPill(pill)
+            }
+        }
+        for pill in pillsUnderSlots.allObjects where !pills.contains(pill) { showPill(pill) }   // the toolbar is gone
+    }
+
+    private func showPill(_ pill: NSView) {
+        pillsUnderSlots.remove(pill)
+        pill.isHidden = false
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; pill.animator().alphaValue = 1 }
     }
 
     private func persistSlot(_ edge: SlotEdge, _ setting: SlotSetting) {

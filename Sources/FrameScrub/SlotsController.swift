@@ -20,6 +20,8 @@ import FrameScrubCore
     var onFocusVideo: (() -> Void)?
     /// A page left its slot for good (cleared, replaced, its plugin gone): what it declared is void.
     var onPageDropped: ((PluginPanel) -> Void)?
+    /// The shown slots were laid out again (one shown, hidden or resized, the window resized): see `shownFrames`.
+    var onSlotsPlaced: (() -> Void)?
 
     let playlistView: PlaylistPanelView
 
@@ -373,7 +375,11 @@ import FrameScrubCore
             report()
         }
         if modesChanged { onPagesChanged?() }
+        onSlotsPlaced?()
     }
+
+    /// The frames of the shown slots (and of one sliding in), in the container.
+    var shownFrames: [CGRect] { orderedSlots.filter(\.view.isShown).map(\.view.frame) }
 
     private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : slot.setting.mode }
 
