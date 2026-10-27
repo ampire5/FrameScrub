@@ -16,11 +16,13 @@ import HomeScreenModel
 @MainActor final class PlaylistStripView: NSView {
     /// A row was opened (a click, ↩): its index among the rows.
     var onSelect: ((Int) -> Void)?
-    /// Whether the filter field is being typed in: the strip stays where it is meanwhile.
-    var isTyping: (() -> Bool)?
     /// `playlist-strip-return`.
     var returnDelay: Double = 3 {
-        didSet { if returnDelay != oldValue { state = PlaylistStripState(returnDelay: returnDelay); refreshState() } }
+        didSet {
+            guard returnDelay != oldValue else { return }
+            state.setReturnDelay(returnDelay, now: now)
+            armReturn()
+        }
     }
 
     /// The plain row's picture width.
@@ -39,6 +41,8 @@ import HomeScreenModel
     /// Files whose picture was looked for in the stores (found or not), and those that have one.
     private var looked: Set<URL> = []
     private var hasPicture: Set<URL> = []
+    /// Files given to the poster queue since the rows last changed.
+    private var asked: Set<URL> = []
     private var reading: Task<Void, Never>?
     private var restTimer: Timer?
     private var returnTimer: Timer?
@@ -100,20 +104,31 @@ import HomeScreenModel
         let playing = rows.indices.contains(current) ? current : nil
         guard rows != self.rows || playing != playingRow else { return }
         let changed = rows != self.rows
-        let map = changed ? FilmstripItems.indexMap(from: self.rows.map(Self.identity), to: rows.map(Self.identity)) : identityMap
+        let map = changed ? FilmstripItems.indexMap(from: PlaylistRow.identities(self.rows), to: PlaylistRow.identities(rows))
+            : identityMap
+        // The video left: its position and last frame are new, read them again when its row is in view.
+        if let old = playingRow, old != playing, self.rows.indices.contains(old), let url = self.rows[old].url {
+            looked.remove(url)
+            fileInfo[url] = nil
+        }
         self.rows = rows
         playingRow = playing
         let wasBrowsed = state.browsed
         state.rowsChanged(count: rows.count, playing: playing, map: map)
         if changed {
             strip.remap(map)
+            // A file filtered out loses its picture in the strip: when it comes back, it is looked at again.
+            let present = Set(rows.compactMap(\.url))
+            looked.formIntersection(present)
+            hasPicture.formIntersection(present)
             dwell.reset()
+            asked = []
             relayout()
         }
         strip.playing = playing
         if scroll.isMoving, state.browsed != wasBrowsed { scroll.settle() }
         place(animated: !changed && window != nil)
-        armReturn()
+        refreshState()
     }
 
     /// A file's name without its extension; a page's own title as it gave it.
@@ -123,11 +138,6 @@ import HomeScreenModel
     }
 
     private var identityMap: [Int: Int] { Dictionary(uniqueKeysWithValues: rows.indices.map { ($0, $0) }) }
-
-    /// A row's identity across list changes: its file, else its title.
-    private static func identity(_ row: PlaylistRow) -> URL {
-        row.url ?? URL(string: "playlist-row:" + (row.title.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""))!
-    }
 
     /// ↑ / ↓ (and ⇞ / ⇟) in the filter field: the browsed row moves by `rows`.
     func step(by count: Int) {
@@ -141,6 +151,14 @@ import HomeScreenModel
     /// A screenful of plain rows, for ⇞ / ⇟.
     var pageRows: Int { max(1, Int(Double(bounds.height) / (Self.rowPicture * 9 / 16 + 8)) - 1) }
 
+    /// Whether the browsed row is the playing one (↩ then keeps today's "the first other match").
+    var browsedIsPlaying: Bool { state.browsed != nil && state.browsed == playingRow }
+
+    /// The filter's text changed or it lost the keyboard: the return waits from now.
+    func filterEdited() {
+        refreshState()
+    }
+
     /// ↩ in the filter field: the browsed row opens.
     func openBrowsed() {
         guard let browsed = state.browsed else { return }
@@ -150,6 +168,12 @@ import HomeScreenModel
     private func open(_ row: Int) {
         guard rows.indices.contains(row) else { return }
         scroll.settle()
+        // The playing row: nothing to open (the table never reloaded the open video either).
+        guard row != playingRow else {
+            refreshState()
+            place(animated: true)
+            return
+        }
         state.opened(row)
         playingRow = row
         strip.playing = row
@@ -276,7 +300,7 @@ import HomeScreenModel
     // MARK: Going back
 
     private func refreshState() {
-        state.activity(now: now, inGesture: pointerInside || isTyping?() == true || scroll.isMoving)
+        state.activity(now: now, inGesture: pointerInside || scroll.isMoving)
         armReturn()
     }
 
@@ -291,7 +315,7 @@ import HomeScreenModel
 
     private func returnFired() {
         returnTimer = nil
-        if isTyping?() == true || pointerInside {
+        if pointerInside {
             refreshState()
             return
         }
@@ -361,6 +385,7 @@ import HomeScreenModel
             posters.stop()
             state.cancel()
             dwell.reset()
+            asked = []
             if scroll.end() || scroll.isMoving { scroll.settle() }
             return
         }
@@ -451,8 +476,16 @@ import HomeScreenModel
                   Playlist.videoExtensions.contains(url.pathExtension.lowercased()) else { return nil }
             return url
         }
+        let inView = candidates.compactMap { $0 }
+        // What the queue makes is only what is in view now: rows that left are dropped from it.
+        posters.retain(Set(inView))
         let due = dwell.visible(candidates, now: now)
-        if !due.isEmpty { posters.want(due.map(\.path)) }
+        if !due.isEmpty {
+            // With the files asked before and still missing: a new ask cancels the last one's reading.
+            asked.formUnion(due)
+            let wanted = inView.filter { asked.contains($0) }.prefix(PosterDwell.cap)
+            posters.want(wanted.map(\.path))
+        }
         if let deadline = dwell.nextDeadline {
             dwellTimer = Timer.scheduledTimer(withTimeInterval: max(0.01, deadline - now), repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkDwell() }
@@ -489,6 +522,7 @@ import HomeScreenModel
         for view in stack.arrangedSubviews { view.removeFromSuperview() }
         for (i, line) in lines.enumerated() {
             let field = NSTextField(wrappingLabelWithString: line)
+            field.isSelectable = false   // a click opens the row; the keyboard stays with the video
             field.maximumNumberOfLines = i == 0 ? 2 : 1
             field.lineBreakMode = i == 0 ? .byTruncatingMiddle : .byTruncatingTail
             field.font = i == 0 ? Chrome.Text.font(.label, weight: .semibold) : Chrome.Text.digits(.small)
@@ -508,6 +542,20 @@ import HomeScreenModel
         for case let field as NSTextField in stack.arrangedSubviews { field.preferredMaxLayoutWidth = newSize.width }
     }
 
-    override func mouseDown(with event: NSEvent) {}
-    override func mouseUp(with event: NSEvent) { onPress?() }
+    /// Where a press began, in window coordinates: a press that moved is not a click.
+    private var pressStart: NSPoint?
+
+    /// The card takes its clicks itself: none reaches its labels.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        super.hitTest(point) == nil ? nil : self
+    }
+
+    override func mouseDown(with event: NSEvent) { pressStart = event.locationInWindow }
+
+    override func mouseUp(with event: NSEvent) {
+        defer { pressStart = nil }
+        guard let start = pressStart else { return }
+        let end = event.locationInWindow
+        if hypot(end.x - start.x, end.y - start.y) < 3 { onPress?() }
+    }
 }

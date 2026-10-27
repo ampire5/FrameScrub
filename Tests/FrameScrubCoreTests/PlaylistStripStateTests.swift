@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import FrameScrubCore
 
@@ -93,5 +94,39 @@ private func state(_ count: Int = 20, playing: Int? = 4, delay: Double = 3) -> P
         var s = state()
         s.rowsChanged(count: 20, playing: 6, map: Dictionary(uniqueKeysWithValues: (0..<20).map { ($0, $0) }))
         #expect(s.browsed == 6)
+    }
+}
+
+@Suite struct PlaylistStripStateLiveTests {
+    /// `playlist-strip-return` changed in Settings: the rows and the browsed row stay.
+    @Test func returnDelayChangeKeepsRows() {
+        var s = state()
+        s.browse(to: 7, now: 10, inGesture: false)
+        s.setReturnDelay(5, now: 10)
+        #expect(s.browsed == 7 && s.playing == 4 && s.returnDeadline == 15)
+        s.setReturnDelay(0, now: 11)
+        #expect(s.returnDeadline == nil && s.browsed == 7)
+    }
+
+    /// The playing video was filtered out, then the filter clears: the next activity arms the return to it.
+    @Test func returnAfterFilterClears() {
+        var s = state()
+        s.rowsChanged(count: 5, playing: nil, map: [:])
+        s.rowsChanged(count: 20, playing: 4, map: [0: 0])
+        #expect(s.browsed == 0 && s.playing == 4)
+        s.activity(now: 30, inGesture: false)
+        #expect(s.returnDeadline == 33)
+    }
+}
+
+@Suite struct PlaylistRowIdentityTests {
+    /// Every row gets its own identity, even the same file twice or two streams of one name.
+    @Test func identitiesAreUnique() {
+        let file = URL(fileURLWithPath: "/v/a.mp4")
+        let rows = [PlaylistRow(file: file), PlaylistRow(file: file), PlaylistRow(title: "master.m3u8"),
+                    PlaylistRow(title: "master.m3u8"), PlaylistRow(file: URL(fileURLWithPath: "/v/b.mp4"))]
+        let ids = PlaylistRow.identities(rows)
+        #expect(Set(ids).count == rows.count)
+        #expect(ids[0] == file && ids[4] == URL(fileURLWithPath: "/v/b.mp4"))
     }
 }

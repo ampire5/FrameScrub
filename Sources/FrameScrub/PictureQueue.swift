@@ -88,6 +88,16 @@ import HomeScreenModel
         startPending()
     }
 
+    /// Only `urls` are still wanted (the rows in view): the others waiting are dropped and the run restarts on what
+    /// is left (which also restarts the file being made); nothing happens while every waiting file is still wanted.
+    func retain(_ urls: Set<URL>) {
+        let kept = pending.filter { urls.contains($0) }
+        guard kept.count != pending.count else { return }
+        pending = kept
+        factsOnly.formIntersection(urls)
+        if pending.isEmpty { thumbnailer.cancel() } else { startPending() }
+    }
+
     func stop() {
         reading?.cancel()
         reading = nil

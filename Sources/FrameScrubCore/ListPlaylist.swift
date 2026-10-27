@@ -116,6 +116,23 @@ public struct PlaylistRow: Equatable, Sendable {
     }
 }
 
+extension PlaylistRow {
+    /// Each row's identity across list changes (`FilmstripItems.indexMap`): its file, else its title; a second row of
+    /// the same file or title gets its occurrence after a `#`, so no two rows share one.
+    public static func identities(_ rows: [PlaylistRow]) -> [URL] {
+        var seen: [URL: Int] = [:]
+        return rows.map { row in
+            let base = row.url ?? URL(string: "playlist-row:" + (row.title.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""))!
+            let n = seen[base, default: 0]
+            seen[base] = n + 1
+            guard n > 0 else { return base }
+            var parts = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+            parts.fragment = String(n)
+            return parts.url!
+        }
+    }
+}
+
 private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }

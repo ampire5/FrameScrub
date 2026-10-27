@@ -7,7 +7,7 @@ public struct PlaylistStripState: Equatable, Sendable {
     public private(set) var browsed: Int?
     /// When the strip goes back to `playing`; nil: nothing armed.
     public private(set) var returnDeadline: Double?
-    private let returnDelay: Double
+    private var returnDelay: Double
     private var count = 0
     /// A gesture, the pointer or typing holds the strip where it is: no return is armed meanwhile.
     private var holding = false
@@ -66,6 +66,12 @@ public struct PlaylistStripState: Equatable, Sendable {
         browsed = playing
         returnDeadline = nil
         return true
+    }
+
+    /// `playlist-strip-return` changed: the rows stay; an armed return is re-armed with the new delay.
+    public mutating func setReturnDelay(_ delay: Double, now: Double) {
+        returnDelay = delay
+        arm(now: now)
     }
 
     /// The slot hid or the window is not visible: nothing stays armed.

@@ -121,7 +121,6 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             let strip = PlaylistStripView()
             strip.returnDelay = stripReturn
             strip.onSelect = { [weak self] row in self?.onSelect?(row) }
-            strip.isTyping = { [weak self] in self?.isEditingFilter == true }
             strip.translatesAutoresizingMaskIntoConstraints = false
             addSubview(strip)
             NSLayoutConstraint.activate([
@@ -171,7 +170,14 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         search.placeholderString = name.map { "Filter \($0) (⌘F)" } ?? "Filter (⌘F)"
     }
 
-    @objc private func filterChanged() { onFilter?(search.stringValue) }
+    @objc private func filterChanged() {
+        onFilter?(search.stringValue)
+        strip?.filterEdited()
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        strip?.filterEdited()
+    }
 
     @objc private func sortPicked() {
         guard let raw = sortButton.selectedItem?.representedObject as? String, let sort = PlaylistSort(rawValue: raw) else { return }
@@ -181,7 +187,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
-            if let strip, mode == .strip { strip.openBrowsed() } else { onSubmitFilter?() }
+            if let strip, mode == .strip, !strip.browsedIsPlaying { strip.openBrowsed() } else { onSubmitFilter?() }
             return true
         case #selector(NSResponder.moveUp(_:)) where mode == .strip:
             strip?.step(by: -1)
