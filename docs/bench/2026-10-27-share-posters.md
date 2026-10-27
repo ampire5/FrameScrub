@@ -21,3 +21,7 @@ time, the most threads seen (sampled every 20 ms).
 load. What else runs while a NAS folder is open is the next thing to measure, in the app (`sample` of FrameScrub with
 the folder on screen): the folder cards' summaries and covers (a listing and four posters per subfolder), the posters
 ahead for the rest of the folder, Recent's queue, the facts probes.
+
+**In the app (2026-10-27, 04:00–04:10).** FrameScrub watched every 2 s with folders open on the NAS: at most 97 % of
+one core for a moment, 25–40 threads, otherwise under 10 %; never more than a core. The owner withdrew the report
+("показалось"). Nothing changed in the queue.
