@@ -137,6 +137,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var previewLeading: NSLayoutConstraint!
     /// The OSD sits in the top left corner, below the back button while that is shown.
     private var osdTop: NSLayoutConstraint!
+    private var backButtonTop: NSLayoutConstraint!
+    /// In full screen, how far the title bar that slides in with the menu bar reaches down over the window (0 while it
+    /// is away): the back button and the OSD move down by it, not under it (`followFullScreenTitlebar`).
+    private var titlebarInset: CGFloat = 0
+    private var titlebarObserver: NSObjectProtocol?
+    private var isBackButtonShown = false
     /// Persists `sr-still=no` through the shared settings store (set by AppDelegate).
     var onDisableSRStill: (() -> Void)?
 
@@ -1422,11 +1428,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -12),
             seekBar.heightAnchor.constraint(equalToConstant: 44),
             backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
-            backButton.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
         ])
         previewLeading = previewView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16)
         previewLeading.isActive = true
+        backButtonTop = backButton.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16)
+        backButtonTop.isActive = true
         osdTop = osd.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16)
         osdTop.isActive = true
         buildStatsPanel(in: container)
@@ -2371,12 +2378,44 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Fades the back button in or out and moves the OSD out of its way.
     private func showBackButton(_ show: Bool, duration: TimeInterval) {
+        isBackButtonShown = show
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.allowsImplicitAnimation = true
             backButton.animator().alphaValue = show ? 1 : 0
-            osdTop.animator().constant = show ? 16 + BackButton.height + 8 : 16
+            placeTopOverlays()
         }
+    }
+
+    /// The back button and the OSD at the top: 16 pt down, and below the full-screen title bar while it is in.
+    private func placeTopOverlays() {
+        backButtonTop.animator().constant = 16 + titlebarInset
+        osdTop.animator().constant = (isBackButtonShown ? 16 + BackButton.height + 8 : 16) + titlebarInset
+    }
+
+    /// In full screen the title bar (and the traffic lights) live in a window of their own that the system slides in
+    /// with the menu bar; each of its moves says how far it now reaches over the screen (measured 2026-10-27: away,
+    /// its bottom is the screen's top). The overlays follow it, so the back button is never under it.
+    private func followFullScreenTitlebar(_ on: Bool) {
+        if let titlebarObserver { NotificationCenter.default.removeObserver(titlebarObserver) }
+        titlebarObserver = nil
+        titlebarInset = 0
+        defer { placeTopOverlays() }
+        guard on, let window, let bar = window.standardWindowButton(.closeButton)?.window, bar !== window else { return }
+        let update = { [weak self, weak bar] in
+            guard let self, let bar, let window = self.window, let screen = window.screen else { return }
+            let inset = max(0, min(200, screen.frame.maxY - bar.frame.minY))
+            guard inset != self.titlebarInset else { return }
+            self.titlebarInset = inset
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.2
+                context.allowsImplicitAnimation = true
+                self.placeTopOverlays()
+            }
+        }
+        titlebarObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: bar,
+                                                                  queue: .main) { _ in MainActor.assumeIsolated { update() } }
+        update()
     }
 
     /// The wheel mode (`wheel-precision=yes`: free spin or ratchet, the user's choice in `wheelFreeSpin`) is wanted
@@ -3586,7 +3625,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer() }
     func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer() }
-    func windowDidEnterFullScreen(_ notification: Notification) { updatePrecisionWheel() }
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        followFullScreenTitlebar(true)
+        updatePrecisionWheel()
+    }
+    func windowWillExitFullScreen(_ notification: Notification) { followFullScreenTitlebar(false) }
     func windowDidExitFullScreen(_ notification: Notification) {
         // Home shown, full screen, back to the video, out of full screen: the video's window has its title bar again,
         // and its content (the back button, the OSD, the slots' tops) must start below it, not under it.
