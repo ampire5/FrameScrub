@@ -63,7 +63,15 @@ else
 fi
 # Document icons per video format, one picture per size.
 cp Resources/DocumentIcons/*.icns "$app/Contents/Resources/"
-codesign --force --sign - "$app"
+# Signed with the local identity "Local Code Signing" (login keychain) when present: the designated requirement is then
+# the bundle ID and the certificate, the same for every build, so TCC grants (network volumes, Accessibility) survive
+# rebuilds; ad hoc it is the build's own hash, and every new build must be allowed again.
+if security find-identity -p codesigning | grep -q '"Local Code Signing"'; then
+    codesign --force --sign "Local Code Signing" "$app"
+else
+    echo "warning: no \"Local Code Signing\" identity: signed ad hoc, TCC grants must be given again" >&2
+    codesign --force --sign - "$app"
+fi
 echo "Built $app"
 if [[ "${1:-}" == "--install" ]]; then
     mkdir -p "$HOME/Applications"
