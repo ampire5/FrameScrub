@@ -114,12 +114,8 @@ public struct Config: Equatable, Sendable {
     public var mouseHaptics = true
     /// `haptic-*`: the pattern each event plays.
     public var haptics = HapticSettings()
-    /// `haptic-strength`: the mouse's normal haptic strength in percent; nil = keep what the mouse has.
-    public var hapticStrength: Int? = nil
     /// `haptic-strong-strength`: the strength a `strong` pattern plays at, in percent.
     public var hapticStrongStrength = 80
-    /// `mx-panel-force`: how hard the haptic panel must be pressed.
-    public var mxPanelForce = PanelForceSetting.percent(0)
     /// `mx-side-buttons`: how back / forward reach FrameScrub.
     public var mxSideButtons = SideButtonsMode.watch
     public var frameFormat = ImageFormat.jpeg
@@ -268,7 +264,7 @@ public struct Config: Equatable, Sendable {
     public static let keys = [
         "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
-        "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons",
+        "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strong-strength", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
         "export-mode", "export-every", "export-fps", "export-scale", "export-sharp", "export-skip-blurry", "export-sharp-threshold", "export-sharp-neighbours",
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
@@ -324,9 +320,7 @@ public struct Config: Equatable, Sendable {
         case "wheel-precision-time": return formatNumber(scrub.precisionMsPerNotch)
         case "mouse-long-press": return String(mouseLongPress)
         case "mouse-haptics": return yesNo(mouseHaptics)
-        case "haptic-strength": return hapticStrength.map(String.init) ?? "keep"
         case "haptic-strong-strength": return String(hapticStrongStrength)
-        case "mx-panel-force": return mxPanelForce.text
         case "mx-side-buttons": return mxSideButtons.rawValue
         case _ where hapticEvent(forKey: key) != nil: return HapticChoice.text(haptics.choice(for: hapticEvent(forKey: key)!))
         case "scrub-fast-multiplier": return formatNumber(scrub.fastMultiplier)
@@ -395,6 +389,10 @@ public struct Config: Equatable, Sendable {
         try ConfigText.setting(values, in: existing).write(to: url, atomically: true, encoding: .utf8)
     }
 
+    /// The mouse's own settings, written by MouseService alone since FrameScrub became its client: a line with one of
+    /// these keys is ignored and reported.
+    static let movedToMouseService: Set<String> = ["haptic-strength", "mx-panel-force"]
+
     /// Parses config text. Lines with unknown keys or invalid values are ignored and reported.
     public static func parse(_ text: String) -> (Config, [String]) {
         var config = Config()
@@ -409,7 +407,9 @@ public struct Config: Equatable, Sendable {
             }
             let key = line[..<equals].trimmingCharacters(in: .whitespaces).lowercased()
             let value = line[line.index(after: equals)...].trimmingCharacters(in: .whitespaces)
-            if !config.set(key, value) {
+            if movedToMouseService.contains(key) {
+                warnings.append("\(location): \(key): now in MouseService's settings")
+            } else if !config.set(key, value) {
                 warnings.append("\(location): bad option '\(key)=\(value)'")
             }
         }
@@ -447,10 +447,7 @@ public struct Config: Equatable, Sendable {
         case "wheel-precision-time": guard let v = double(20...250) else { return false }; scrub.precisionMsPerNotch = v
         case "mouse-long-press": guard let v = int(150...2000) else { return false }; mouseLongPress = v
         case "mouse-haptics": guard let v = bool() else { return false }; mouseHaptics = v
-        case "haptic-strength":
-            if value.lowercased() == "keep" { hapticStrength = nil } else { guard let v = int(0...100) else { return false }; hapticStrength = v }
         case "haptic-strong-strength": guard let v = int(0...100) else { return false }; hapticStrongStrength = v
-        case "mx-panel-force": guard let v = PanelForceSetting.parse(value) else { return false }; mxPanelForce = v
         case "mx-side-buttons": guard let v = SideButtonsMode(rawValue: value.lowercased()) else { return false }; mxSideButtons = v
         case _ where hapticEvent(forKey: key) != nil:
             guard let v = HapticChoice.parse(value) else { return false }

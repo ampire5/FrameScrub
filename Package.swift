@@ -22,6 +22,8 @@ let package = Package(
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.7.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.7.0"),
+        // The Logitech mouse goes through MouseService (local only for now: a path next to this repository).
+        .package(path: "../MouseService"),
     ],
     targets: [
         .systemLibrary(
@@ -71,6 +73,7 @@ let package = Package(
                 .product(name: "HomeScreenKit", package: "HomeScreenKit"),
                 .product(name: "HomeChrome", package: "HomeScreenKit"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "MouseClient", package: "MouseService"),
             ]
         ),
         .testTarget(

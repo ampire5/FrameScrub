@@ -243,11 +243,11 @@ the trackpad or menu items.
 | `haptic-done` | completed | a frame or clip is written to disk |
 | `haptic-error` | angry-alert | a command refused (no mark before / after, no exact index) or a write failed |
 
-`haptic-strength` (0…100, default `keep`) is the strength of ordinary patterns; `keep` leaves the mouse's own setting.
-`mx-panel-force` (0…100 across the mouse's range, default `0` — the lightest press, as in Loupe; `default` for the
-factory value, `keep` to leave it) is how hard the panel must be pressed. Pressing and releasing a button never buzzes
-by itself. Settings → Mouse & Trackpad has the toggle, a pattern per event, both strengths, the panel force and the
-side buttons.
+The mouse reaches FrameScrub through MouseService, which must be running; without it the mouse works as an ordinary
+one. The mouse's own settings, the normal haptic strength and how hard the panel must be pressed, are MouseService's
+(its Settings…); `haptic-strength` and `mx-panel-force` in this file are ignored with a warning. Pressing and releasing
+a button never buzzes by itself. Settings → Mouse & Trackpad has the toggle, a pattern per event, the strong strength
+and the side buttons.
 
 **Back / forward and Mac Mouse Fix.** `mx-side-buttons=watch` (default) listens to the buttons over HID++ without taking
 them from the system, so Mac Mouse Fix keeps its own Back / Forward actions (a swipe with Back held, say) and FrameScrub
@@ -423,9 +423,7 @@ haptic-keyframe=whisper-collision # pattern for a plain wheel scrub or an edge d
 haptic-mark=subtle-collision    # pattern for a plain wheel scrub passing the edge of a mark or A / B
 haptic-done=completed           # pattern for a frame or clip written to disk
 haptic-error=angry-alert        # pattern for a refused command or a failed write
-haptic-strength=keep            # 0…100 | keep: the mouse's normal haptic strength in percent (keep leaves what the mouse has)
 haptic-strong-strength=80       # 0…100: the strength patterns marked "strong" play at
-mx-panel-force=0                # 0…100 | default | keep: how hard the haptic panel must be pressed (0 the lightest; keep: never written)
 mx-side-buttons=watch           # watch | take | system — back / forward: listen to the mouse, divert them while in front, or AppKit's events only
 frame-format=jpeg               # jpeg | png | heic | tiff
 jpeg-quality=95                 # 1…100, JPEG quality of saved frames

@@ -27,23 +27,6 @@ import LogiHIDPP
         #expect(settings.choices[.step] != nil)   // present, and nothing
     }
 
-    @Test func panelForceIsLinearOverTheMouseRange() {
-        let range: ClosedRange<UInt16> = 3799...6316
-        #expect(PanelForceSetting.percent(0).value(range: range, defaultValue: 4749) == 3799)
-        #expect(PanelForceSetting.percent(100).value(range: range, defaultValue: 4749) == 6316)
-        #expect(PanelForceSetting.percent(50).value(range: range, defaultValue: 4749) == 5058)   // 3799 + 1258.5 rounded
-        #expect(PanelForceSetting.factoryDefault.value(range: range, defaultValue: 4749) == 4749)
-        #expect(PanelForceSetting.keep.value(range: range, defaultValue: 4749) == nil)
-        #expect(PanelForceSetting.percent(250).value(range: range, defaultValue: 4749) == 6316)
-    }
-
-    @Test func panelForceTextRoundTrips() {
-        for s in [PanelForceSetting.keep, .factoryDefault, .percent(0), .percent(42), .percent(100)] {
-            #expect(PanelForceSetting.parse(s.text) == s)
-        }
-        #expect(PanelForceSetting.parse("DEFAULT") == .factoryDefault)
-        #expect(PanelForceSetting.parse("101") == nil && PanelForceSetting.parse("-1") == nil && PanelForceSetting.parse("firm") == nil)
-    }
 
     @Test func sideButtonsModeRawValues() {
         #expect(SideButtonsMode.allCases.map(\.rawValue) == ["watch", "take", "system"])
