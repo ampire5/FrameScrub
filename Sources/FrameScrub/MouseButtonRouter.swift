@@ -29,6 +29,8 @@ import FrameScrubCore
     private var armedDeadline: Double?
     /// The movement monitors, set while a bound button is held (`watchMoves`).
     private var moveMonitors: [Any] = []
+    /// MouseService's "a held back button is a swipe now" (`init`).
+    private var swipeObserver: Any?
 
     /// What `gestures` was made from: a reload that changes none of it keeps the presses in flight (a panel held
     /// for `add auto-color-strength` saves framescrub.conf with each wheel step).
@@ -44,6 +46,17 @@ import FrameScrubCore
                         doubleInterval: NSEvent.doubleClickInterval)
         gestures = ButtonGestures(map: map, longPress: Double(longPressMilliseconds) / 1000,
                                   doubleInterval: NSEvent.doubleClickInterval)
+        // MouseService turned a held back button into a swipe (Spaces, Mission Control, App Exposé): the press is the
+        // system's gesture, not ours. Its release would be a tap otherwise, as the moves stop coming once Mission
+        // Control takes the pointer.
+        swipeObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("local.mouseservice.swipeBegan"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.cancelAll() }
+        }
+    }
+
+    isolated deinit {
+        if let swipeObserver { DistributedNotificationCenter.default().removeObserver(swipeObserver) }
     }
 
     /// The bindings a button recogniser reads: those on a mouse input; a keyboard binding changing (a plugin page's keys
