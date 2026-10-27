@@ -227,7 +227,7 @@ final class TransportControls: NSView {
     }
 
     private static func image(_ symbol: String, label: String) -> NSImage {
-        Lucide.icon(symbol, pointSize: 12, weight: .medium, description: label) ?? NSImage()
+        Icons.symbol(symbol, pointSize: 12, weight: .medium, description: label) ?? NSImage()
     }
 
     /// What the controls show: whether there is an item before / after, the volume (0…100) and mute.

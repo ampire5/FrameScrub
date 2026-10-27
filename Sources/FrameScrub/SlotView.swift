@@ -98,7 +98,7 @@ import QuartzCore
         buildHeader()
         // A symbol in a round plate: a "+" typed as a title sits off-centre in a circular bezel.
         plusButton.isBordered = false
-        plusButton.image = Lucide.icon("plus", pointSize: 20, weight: .light, description: "Choose what this slot shows")
+        plusButton.image = Icons.symbol("plus", pointSize: 20, weight: .light, description: "Choose what this slot shows")
         plusButton.imagePosition = .imageOnly
         plusButton.imageScaling = .scaleNone
         plusButton.contentTintColor = .labelColor
@@ -178,7 +178,7 @@ import QuartzCore
     private static let plusSize: CGFloat = 44
 
     private static func symbolButton(_ symbol: String, _ tip: String) -> NSButton {
-        let button = NSButton(image: Lucide.icon(symbol, pointSize: 13, description: tip) ?? NSImage(),
+        let button = NSButton(image: Icons.symbol(symbol, pointSize: 13, description: tip) ?? NSImage(),
                               target: nil, action: nil)
         button.isBordered = false
         button.toolTip = tip
@@ -268,7 +268,7 @@ import QuartzCore
         applyTextShadow(look == .clear)
         separator.isHidden = overlay
         backdropButton.isHidden = !overlay
-        pinButton.image = Lucide.icon(overlay ? "pin" : "pin.fill", pointSize: 13, description: "Pin / Float")
+        pinButton.image = Icons.symbol(overlay ? "pin" : "pin.fill", pointSize: 13, description: "Pin / Float")
         needsLayout = true
     }
 
