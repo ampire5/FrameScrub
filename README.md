@@ -42,7 +42,7 @@ FrameScrub is built for folders of hundreds of videos on a NAS.
 - **A folder is a playlist.** `F8` shows it, `⌘F` filters it by name, `F9` sorts it by name, newest or largest, and the next video opens on its own at the end.
 - **Cull without leaving the player.** `⌘⌫` moves the video to the Trash and opens the next one (on a share without a Trash it asks first).
 - **Shares are first-class.** One read cache per file for every decoder keeps seeks fast over SMB; a share that is asleep or gone gets a clear message, and Return tries again.
-- **Black bars are found and cropped** across the whole file, so letterboxed videos fill the window.
+- **Black bars are found and cropped** across the whole file; the window keeps its size, so switching videos never resizes it.
 - **Your Stash library** in Home's sidebar, with progress reported back (see [Stash](#stash)).
 
 ## Numbers

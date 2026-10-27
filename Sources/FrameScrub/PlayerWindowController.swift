@@ -1642,7 +1642,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             MainActor.assumeIsolated {
                 guard let self, self.cropSampler === sampler, let crop else { return }
                 self.detectedCrop = crop
-                if self.aspectMode == .auto { self.updateGeometry(reshapeWindow: true) }
+                // The window keeps its size, as on open: bars found later only change how the picture fits into it.
+                if self.aspectMode == .auto { self.updateGeometry(reshapeWindow: false) }
             }
         }
     }
