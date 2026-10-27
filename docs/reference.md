@@ -26,7 +26,8 @@ The mouse and trackpad work the same in both.
 | Drag on a zoomed picture | Pan: the picture follows the cursor, glides on after release, rubber band at the edges (otherwise a drag moves the window) |
 | Right-button drag up / down | Zoom in / out about the press point (a right click without moving stays play / pause) |
 | Right click | Play / pause (acts on release, and not after a scroll or a zoom) |
-| Double click | Full screen |
+| Double click | Show the video in its folder (Home's Folders, the video selected; as ↩ and ⌘↑) |
+| Middle click | Full screen |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
 | … gesture button tap / hold | Save a frame / save the clips |
@@ -67,7 +68,8 @@ What each action does in detail is in the classic table below.
 | `1` / `2` | Previous / next video in the folder | PgUp / PgDn, `<` / `>` |
 | `3` / `4` / `5` | Speed −/+ `speed-step`, reset | `[` `]` `Backspace` |
 | `Tab` / F9 / ⌘F | Playlist panel / folder order / filter | F8 |
-| `` ` `` | Full screen (Esc leaves it) | double click |
+| `` ` `` | Full screen (Esc leaves it) | middle click |
+| ↩ / ⌘↑ | Show the video in its folder | double click |
 | ⌘T | Float on top | |
 | `⌥a` / `⌥v` / `⌥⇧v` | Aspect / vibrance / auto colour (this file; saving for the folder or as default: Playback > Colour) | |
 | `u` / `U` | Still-frame upscaling on / off / upscaler for saved frames | |
@@ -97,6 +99,7 @@ modes and Play Marks Only work mirrored.
 | ⌘F | Filter the playlist by name (part of the name, any case); Return opens the first match, Esc clears it. While a filter is on, PgUp / PgDn move through the matches and the title shows `3 / 7 (48)` |
 | F9 | Folder order: name → newest first → largest first (also the menu at the top of the playlist; saved as `playlist-sort`) |
 | ⌘⌫ | Move the video to the Trash and open the next one. On a volume without a Trash (most SMB shares) it asks first, then deletes for good |
+| ↩, ⌘↑, double click | Show the video in its folder: Home's Folders on it, the video selected, wherever it was opened from (`show-in-folder`; also File › Show in Folder). ⌘[ / Esc come back to it, and from then on Back goes to that folder |
 | ⌘W | Close the video and go back to where it was opened from — Home's Recent or Stash (`close-file`; also the ‹ Recent / ‹ Stash button in the top left corner). With no video open it closes the window |
 | ⌘, | Settings |
 | `←` `→` / `↑` `↓` | Seek ∓5 s / ±60 s (keyframes when `seek-mode=keyframe`) |
@@ -153,7 +156,7 @@ Actions: `scrub`, `scrub fast`, `scrub invert`, `seek N [exact|keyframes]`, `add
 per notch.
 
 `MBTN_RIGHT+` holds the right mouse button: by default `MBTN_RIGHT+WHEEL_…` and `MBTN_RIGHT+TRACKPAD_…` are
-`scrub fast`. The middle button is `MBTN_MID`: by default a click is `cycle fullscreen` (like `MBTN_LEFT_DBL`), and the
+`scrub fast`. The middle button is `MBTN_MID`: by default a click is `cycle fullscreen` (`MBTN_LEFT_DBL` is `show-in-folder`), and the
 wheel turned while the wheel is held down (`MBTN_MID+WHEEL_UP` / `_DOWN`) is `add volume 5` / `-5`; with that chord
 bound, the click acts on the release, and not at all after a scroll. A button with a `_DBL` binding runs its single
 action only after the double-click interval. The right button released after it served as a modifier does not play /

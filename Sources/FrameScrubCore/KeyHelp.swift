@@ -125,6 +125,7 @@ public enum KeyHelp {
         case .playlistFilter: return (.navigation, 100_006, "Find in the folder")
         case .cyclePlaylistSort: return (.navigation, 100_007, "Folder order: name, date, size")
         case .deleteFile: return (.navigation, 100_008, "Move the video to the Trash")
+        case .showInFolder: return (.navigation, 100_009, "Show the video in its folder")
         case .showProgress: return (.window, 103, "Progress")
         case .stats: return (.window, 104, "Stats")
         case .showKeys: return (.window, 105, "These keys")

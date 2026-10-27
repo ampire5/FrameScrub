@@ -101,7 +101,9 @@ import Testing
         #expect(map.command(for: KeyChord(key: "BS")) == .setSpeed(1))
         #expect(map.command(for: KeyChord(key: "0")) == .addVolume(2))
         #expect(map.command(for: KeyChord(key: "m")) == .cycleMute)
-        #expect(map.command(for: KeyChord(key: "MBTN_LEFT_DBL")) == .cycleFullscreen)
+        #expect(map.command(for: KeyChord(key: "MBTN_LEFT_DBL")) == .showInFolder)
+        #expect(map.command(for: KeyChord(key: "ENTER")) == .showInFolder)
+        #expect(map.command(for: KeyChord(key: "UP", modifiers: .meta)) == .showInFolder)
         #expect(map.command(for: KeyChord(key: "MBTN_MID")) == .cycleFullscreen)
         #expect(map.command(for: KeyChord.parse("MBTN_MID+WHEEL_UP")!) == .addVolume(5))
         #expect(map.command(for: KeyChord.parse("MBTN_MID+WHEEL_DOWN")!) == .addVolume(-5))
@@ -351,7 +353,7 @@ import Testing
         #expect(map.command(for: KeyChord(key: "k")) == .markSnap)
         #expect(map.command(for: KeyChord.parse("Meta+C")!) == .saveClip)
         #expect(map.command(for: KeyChord(key: "q")) == .quit)
-        #expect(map.bindings.count == 130)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W
+        #expect(map.bindings.count == 132)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)
@@ -379,7 +381,8 @@ import Testing
             ("u", .toggleUpscaler), ("U", .cycleUpscaler), ("9", .addVolume(-2)), ("0", .addVolume(2)),
             ("m", .cycleMute), ("i", .stats), ("o", .showProgress), ("?", .showKeys),
             ("Meta+c", .copyFrame), ("Meta+O", .revealFrames), ("Meta+g", .goTo), ("Meta+BS", .deleteFile),
-            ("ESC", .setFullscreen(false)), ("MBTN_LEFT_DBL", .cycleFullscreen), ("MBTN_MID", .cycleFullscreen),
+            ("ESC", .setFullscreen(false)), ("MBTN_LEFT_DBL", .showInFolder), ("MBTN_MID", .cycleFullscreen),
+            ("ENTER", .showInFolder), ("Meta+UP", .showInFolder),
             ("MBTN_RIGHT", .cyclePause),
             // the right-half aliases
             ("LEFT", .seek(-5, .byConfig)), ("RIGHT", .seek(5, .byConfig)), ("UP", .seek(60, .byConfig)),

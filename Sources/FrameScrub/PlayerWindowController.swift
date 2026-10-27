@@ -1853,6 +1853,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             videoView.zoomToFit()
         case .revealFrames:
             revealFrames()
+        case .showInFolder:
+            showInFolder()
         case .showKeys:
             if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
         case .goTo:
@@ -3589,6 +3591,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .volume, .mute: updateTransport()   // a key's change shows on the slider
         default: break
         }
+    }
+
+    /// `show-in-folder` (a double click, ↩, ⌘↑, File › Show in Folder): Home's Folders on the video's folder, the
+    /// video selected, wherever it was opened from; Back from the video goes to that folder from now on.
+    private func showInFolder() {
+        guard let url = core.url, url.isFileURL else { showMessage("No video open"); return }
+        returnTab = .folders
+        folderReturn = (folder: folder(of: url), file: url)
+        showHome(tab: .folders)
     }
 
     private func revealFrames() {

@@ -667,6 +667,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         fileMenu.addItem(withTitle: "Larger Cards", action: #selector(largerCards(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Smaller Cards", action: #selector(smallerCards(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Default Card Size", action: #selector(defaultCardSize(_:)), keyEquivalent: "").target = self
+        // No key on the item: ↩ types in the text fields and ⌘↑ goes up a folder in Home (input.conf binds them).
+        fileMenu.addItem(commandItem("Show in Folder", .showInFolder, key: ""))
         fileMenu.addItem(commandItem("Show Saved Frames in Finder", .revealFrames, key: "o", modifiers: [.command, .shift]))
         let copyPath = fileMenu.addItem(withTitle: "Copy Path", action: #selector(copyPath(_:)), keyEquivalent: "c")
         copyPath.keyEquivalentModifierMask = [.command, .option]

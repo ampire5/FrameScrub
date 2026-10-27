@@ -140,6 +140,8 @@ public enum Command: Equatable, Sendable {
     case zoom(Double?), zoomReset
     case playlistPrev, playlistNext, togglePlaylist, cyclePlaylistSort, playlistFilter
     case deleteFile, closeFile
+    /// `show-in-folder`: Home's Folders on the video's folder, the video selected.
+    case showInFolder
     case toggleUpscaler, cycleUpscaler
     /// The other mouse profile (`MouseProfile`).
     case cycleMouseProfile
@@ -244,6 +246,7 @@ public enum Command: Equatable, Sendable {
         case .playlistFilter: return "playlist-filter"
         case .deleteFile: return "delete-file"
         case .closeFile: return "close-file"
+        case .showInFolder: return "show-in-folder"
         case .toggleUpscaler: return "toggle-upscaler"
         case .cycleMouseProfile: return "cycle-mouse-profile"
         case .cycleUpscaler: return "cycle-upscaler"
@@ -345,6 +348,7 @@ public enum Command: Equatable, Sendable {
         case ("playlist-filter", nil): return .playlistFilter
         case ("delete-file", nil): return .deleteFile
         case ("close-file", nil): return .closeFile
+        case ("show-in-folder", nil): return .showInFolder
         case ("toggle-upscaler", nil): return .toggleUpscaler
         case ("cycle-mouse-profile", nil): return .cycleMouseProfile
         case ("cycle-upscaler", nil): return .cycleUpscaler
@@ -444,7 +448,7 @@ public struct InputMap: Equatable {
     0 add volume 2
     m cycle mute
     f cycle fullscreen
-    MBTN_LEFT_DBL cycle fullscreen
+    MBTN_LEFT_DBL show-in-folder
     MBTN_MID cycle fullscreen
     MBTN_MID+WHEEL_UP add volume 5
     MBTN_MID+WHEEL_DOWN add volume -5
@@ -504,6 +508,8 @@ public struct InputMap: Equatable {
     Meta+f playlist-filter
     Meta+BS delete-file
     Meta+w close-file
+    ENTER show-in-folder
+    Meta+UP show-in-folder
     u toggle-upscaler
     U cycle-upscaler
     v toggle-vibrance
@@ -575,6 +581,8 @@ public struct InputMap: Equatable {
     Meta+f playlist-filter
     Meta+BS delete-file
     Meta+w close-file
+    ENTER show-in-folder
+    Meta+UP show-in-folder
     ` cycle fullscreen
     ESC set fullscreen no
     Meta+t cycle ontop
