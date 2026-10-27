@@ -88,6 +88,8 @@ final class VideoView: NSView {
     private let masker = SubjectMasker()
     /// The masks from RVM (`SubjectMatting`, when the user prepared its models) or from Vision; shared by the windows.
     /// `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision (benches).
+    /// Subject: All People / Main People (`SubjectSelection`), shared by the windows.
+    static var mainPeopleOnly = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_MAIN"] == "1"   // benches
     static var usesMatting = SubjectMatting.isAvailable && ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_QUALITY"] == nil
     private var focusMask: SubjectMask?
     private var frameShownAt: CFTimeInterval = 0
@@ -215,6 +217,14 @@ final class VideoView: NSView {
         return Double(t.tv_sec) + Double(t.tv_nsec) / 1e9
     }
 
+    /// Subject: all people, or only the main ones. The masks start over.
+    func setSubjectMainPeople(_ on: Bool) {
+        guard on != Self.mainPeopleOnly else { return }
+        Self.mainPeopleOnly = on
+        masker.reset()
+        if subjectFocus != nil, let frame = currentFrame { requestMask(for: frame, accurate: false) }
+    }
+
     /// Mask: RVM or Vision. The masks start over (the one on screen stays until the first new one is in).
     func setSubjectMatting(_ rvm: Bool) {
         guard rvm != Self.usesMatting else { return }
@@ -235,7 +245,8 @@ final class VideoView: NSView {
     private func requestMask(for frame: DecodedFrame, accurate: Bool) {
         if !accurate { frameShownAt = CACurrentMediaTime() }
         masker.submit(.init(pixelBuffer: frame.pixelBuffer, image: rotationClockwise == 0 ? nil : image,
-                            frame: frame.number, accurate: accurate, rvm: Self.usesMatting))
+                            frame: frame.number, accurate: accurate, rvm: Self.usesMatting,
+                            mainPeople: Self.mainPeopleOnly))
         guard !accurate else { return }
         // a frame that stays: its accurate mask (one-shot per frame, dropped when the next frame comes)
         stillToken += 1

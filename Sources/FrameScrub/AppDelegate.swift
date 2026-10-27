@@ -524,8 +524,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             entry.target = self
             submenu.addItem(entry)
         }
+        submenu.addItem(.separator())
+        for (tag, title) in [(0, "Subject: All People"), (1, "Subject: Main People")] {
+            let entry = NSMenuItem(title: title, action: #selector(setSubjectMainPeople(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
         item.submenu = submenu
         return item
+    }
+
+    @objc func setSubjectMainPeople(_ sender: NSMenuItem) {
+        controller?.setSubjectMainPeople(sender.tag == 1)
     }
 
     @objc func setSubjectFocusStyle(_ sender: NSMenuItem) {
@@ -598,6 +609,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if item.action == #selector(setSubjectFocusStyle(_:)) {
             item.state = controller?.subjectFocus == SubjectFocusStyle.allCases[item.tag] ? .on : .off
             return controller?.hasOpenFile == true && controller?.showsHome != true
+        }
+        if item.action == #selector(setSubjectMainPeople(_:)) {
+            item.state = (item.tag == 1) == VideoView.mainPeopleOnly ? .on : .off
         }
         if item.action == #selector(setSubjectMatting(_:)) {
             item.state = (item.tag == 1) == VideoView.usesMatting ? .on : .off

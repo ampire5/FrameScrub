@@ -86,4 +86,8 @@ model far down the runway can come out half transparent, and once in a while a s
 ## Open
 
 - One model with enumerated sizes instead of four files (the weights are the same).
-- "The main person only": RVM's matte times Vision's person-instance mask of the chosen person.
+- Subject: Main People (View › Subject Focus; `FRAMESCRUB_FOCUS_MAIN=1`), `SubjectSelection`: the mask's connected
+  regions (≥ 128) on its own grid, kept when at least 25 % of the largest one, or 12 % when kept the frame before (no
+  blinking at the line); the rest cleared outside the kept regions grown by 6 px. ~1 ms a 512×288 mask, no extra model.
+  Vision's person-instance masks separate people too (17 ms a 1080p frame, runway: the two models, the audience's heads
+  and a far model each apart), but every frame is too dear and fewer lag behind the motion. Thresholds to be agreed.

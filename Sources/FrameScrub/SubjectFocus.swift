@@ -65,6 +65,7 @@ final class SubjectMasker: @unchecked Sendable {
         let frame: Int
         let accurate: Bool
         var rvm = false                 // RVM's matte (when its models are there), else Vision's mask
+        var mainPeople = false          // only the big people (`SubjectSelection`)
     }
 
     var onMask: ((SubjectMask, _ visionMs: Double) -> Void)?
@@ -84,6 +85,7 @@ final class SubjectMasker: @unchecked Sendable {
     private var previous: [UInt8] = []
     private var previousLuma: [UInt8] = []
     private let matting = SubjectMatting()
+    private var selection = SubjectSelection()
     /// The picture's own change (of 255) taken as motion, when the frame's luma can be read: a mask change where the
     /// picture stands still is flicker and is smoothed hard (`stillKeep`); where the picture moved it follows at once.
     private static let lumaMotion: Float = 10, stillKeep: Float = 0.85
@@ -123,7 +125,7 @@ final class SubjectMasker: @unchecked Sendable {
     func reset() {
         generation += 1
         waiting = nil
-        queue.async { [self] in smooth = []; lastFrame = .min; matting.reset() }
+        queue.async { [self] in smooth = []; lastFrame = .min; matting.reset(); selection.reset() }
     }
 
     private func start(_ job: Job) {
@@ -232,6 +234,7 @@ final class SubjectMasker: @unchecked Sendable {
                 ob[i] = UInt8(o * 255 + 0.5)
             }
         }
+        if job.mainPeople { out = select(out, w, h, job: job, continuous: continuous) }
         let image = CIImage(bitmapData: out, bytesPerRow: w, size: CGSize(width: w, height: h), format: .L8, colorSpace: nil)
         if !job.accurate, let luma { previousLuma = luma }
         var change: Double?
@@ -249,11 +252,24 @@ final class SubjectMasker: @unchecked Sendable {
 }
 
 extension SubjectMasker {
+    /// Only the main people of `bytes`: playback carries the choice from frame to frame, a still frame chooses afresh.
+    fileprivate func select(_ bytes: Data, _ w: Int, _ h: Int, job: Job, continuous: Bool) -> Data {
+        var mask = [UInt8](bytes)
+        if job.accurate {
+            var still = SubjectSelection()
+            still.apply(&mask, w, h, continuous: false)
+        } else {
+            selection.apply(&mask, w, h, continuous: continuous)
+        }
+        return Data(mask)
+    }
+
     /// RVM's matte for `job`: its state carries over while the frames follow each other (a few skipped still count).
     fileprivate func makeMatte(_ job: Job) -> SubjectMask? {
         let continuous = lastFrame != .min && abs(job.frame - lastFrame) <= 4
         let picture = job.image ?? CIImage(cvPixelBuffer: job.pixelBuffer)
-        guard let (bytes, w, h) = matting.alpha(of: picture, still: job.accurate, continuous: continuous) else { return nil }
+        guard var (bytes, w, h) = matting.alpha(of: picture, still: job.accurate, continuous: continuous) else { return nil }
+        if job.mainPeople { bytes = select(bytes, w, h, job: job, continuous: continuous) }
         if !job.accurate { lastFrame = job.frame }
         var change: Double?
         if !job.accurate {

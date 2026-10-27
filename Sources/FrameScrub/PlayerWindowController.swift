@@ -3492,6 +3492,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showMessage(style.map { "Subject Focus: \($0.title)" } ?? "Subject Focus: off")
     }
 
+    /// View › Subject Focus › Subject: All People / Main People, for every window.
+    func setSubjectMainPeople(_ on: Bool) {
+        videoView.setSubjectMainPeople(on)
+        showMessage(on ? "Subject Focus: main people" : "Subject Focus: all people")
+    }
+
     /// View › Subject Focus › Mask: RVM (the user's models) or Vision, for every window.
     func setSubjectMatting(_ rvm: Bool) {
         videoView.setSubjectMatting(rvm)
