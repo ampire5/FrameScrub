@@ -42,6 +42,11 @@ import Testing
     @Test func setDoesNotWaitForTheFirstRead() async throws {
         let url = try bigFile(50_000)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        // What a wait for the read costs here, so the bound holds on a loaded machine (a fixed 5 ms failed once in a
+        // full parallel run at 5.2 ms).
+        let readStart = DispatchTime.now().uptimeNanoseconds
+        _ = FileFactsStore(url: url, limit: 100_000).all()
+        let readTook = Double(DispatchTime.now().uptimeNanoseconds - readStart) / 1e6
         let store = FileFactsStore(url: url, limit: 100_000)
         let read = Task.detached { store.all().count }
         try await Task.sleep(nanoseconds: 2_000_000)
@@ -49,7 +54,7 @@ import Testing
         store.set(FileFacts(duration: 1), for: "/x.mp4")
         let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
         _ = await read.value
-        #expect(took < 5, "set took \(took) ms")
+        #expect(took < readTook / 4, "set took \(took) ms, a read \(readTook) ms")
         let all = store.all()
         #expect(all["/x.mp4"]?.duration == 1 && all["/f/49999.mp4"]?.duration == 49999)
     }
