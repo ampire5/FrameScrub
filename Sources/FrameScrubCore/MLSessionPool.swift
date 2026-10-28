@@ -8,10 +8,26 @@ protocol MLSession: AnyObject, Sendable {
     func end()
 }
 
+/// A serial queue that runs the ML upscale and its pool, so a thread that waits for the result (`runBlocking`) never
+/// waits for the cooperative pool it may itself be a thread of: with every pool thread waiting, nothing would run.
+final class MLExecutor: SerialExecutor, TaskExecutor, @unchecked Sendable {
+    static let shared = MLExecutor()
+    private let queue = DispatchQueue(label: "framescrub.ml-upscale", qos: .userInitiated)
+
+    func enqueue(_ job: consuming ExecutorJob) {
+        let job = UnownedJob(job)
+        queue.async { job.runSynchronously(isolatedTo: self.asUnownedSerialExecutor(), taskExecutor: self.asUnownedTaskExecutor()) }
+    }
+    func asUnownedSerialExecutor() -> UnownedSerialExecutor { UnownedSerialExecutor(ordinary: self) }
+    func asUnownedTaskExecutor() -> UnownedTaskExecutor { UnownedTaskExecutor(ordinary: self) }
+}
+
 /// Shares one session between everything that upscales (export threads, saved frames, the paused
 /// frame on screen). Calls run one at a time; the session closes after `idleSeconds` without
 /// work, so the model does not stay in memory.
 actor MLSessionPool {
+    nonisolated var unownedExecutor: UnownedSerialExecutor { MLExecutor.shared.asUnownedSerialExecutor() }
+
     private struct Size: Equatable { var width: Int; var height: Int }
 
     private let idleSeconds: Double

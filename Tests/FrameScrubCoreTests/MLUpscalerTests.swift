@@ -14,6 +14,19 @@ import VideoToolbox
         }
     }
 
+    /// `runBlocking` called from every thread of the cooperative pool at once (as parallel sync tests do) used to wait for
+    /// work that needed one of those threads: the run hung (2026-10-28).
+    @Test func runBlockingFromEveryPoolThreadDoesNotStarve() async throws {
+        let callers = ProcessInfo.processInfo.activeProcessorCount * 4
+        let sum = await withTaskGroup(of: Int.self) { group in
+            for i in 0..<callers {
+                group.addTask { (try? runBlocking { await Task.yield(); return i }) ?? -1 }
+            }
+            return await group.reduce(0, +)
+        }
+        #expect(sum == callers * (callers - 1) / 2)
+    }
+
     @Test func largeSourcesAreTooLarge() {
         #expect(MLUpscaler.availability(width: 3840, height: 2160) == .tooLarge)
     }
