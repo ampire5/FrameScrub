@@ -1,5 +1,5 @@
 {
-  "originHash" : "4bd0e5b890874248b68c9b8a7015d513f7362993d0564308e3355d85cd37dfea",
+  "originHash" : "8ecab2fd90c1da311febf72057df3d65001aa9eb707e9c053163dcc59543cee4",
   "pins" : [
     {
       "identity" : "homescreenkit",
@@ -26,6 +26,15 @@
       "state" : {
         "revision" : "0c6849480ac0ea46c0bf5e7727d9eb77b49c7ed0",
         "version" : "0.1.0"
+      }
+    },
+    {
+      "identity" : "mouseservice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ampire5/MouseService.git",
+      "state" : {
+        "revision" : "352b1380de8a79118e7e3a1f655631bf59e9c162",
+        "version" : "0.2.0"
       }
     },
     {
