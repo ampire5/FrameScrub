@@ -31,6 +31,9 @@ extension SettingsPanel {
                         symbol: "rectangle.lefthalf.inset.filled",
                         description: "How near the window's left or right edge the pointer brings a hidden slot "
                             + "(View › Slots sets what each holds). 2–60, default 12."),
+                .toggle("slot-flash", "Show the playlist when the video changes", symbol: "sparkles.rectangle.stack",
+                        description: "The playlist's slot shows for a moment when autoadvance or a key moves to "
+                            + "another video. Default off."),
             ]),
         ])
     }
