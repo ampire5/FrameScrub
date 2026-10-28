@@ -116,11 +116,16 @@ public enum SlotHover {
 /// the pointer left the slot, unless the slot is busy (typing in it, a popup of it open, its edge being dragged). A
 /// slot shown with the pointer elsewhere (a chord, a menu) waits for the pointer to come in first.
 public struct AutoHideClock: Sendable {
+    /// Zen's `sidebar-keep-hover.duration`.
     public static let mouseLeaveDelay = 0.15
+    /// The pointer left the window elsewhere than across the slot's edge (Zen: 1 s without its edge tracker).
+    public static let outsideDelay = 1.0
     private static let slack = 1e-9
 
     public let mode: SlotAutoHide
     private var leftAt: Double?
+    /// How long after `leftAt` the slot hides.
+    private var leaveDelay = AutoHideClock.mouseLeaveDelay
     /// The pointer has been in the slot since it was shown.
     private var entered = false
     private var busy = false
@@ -133,8 +138,27 @@ public struct AutoHideClock: Sendable {
             leftAt = nil
         } else if entered, leftAt == nil {
             leftAt = now
+            leaveDelay = Self.mouseLeaveDelay
         }
     }
+
+    /// The pointer is out of the window and not across the slot's edge (`SlotHover.counts` is false there): the
+    /// slot hides `outsideDelay` after it left, unless a leave inside the window already runs.
+    public mutating func pointerOutsideWindow(now: Double) {
+        guard entered, leftAt == nil else { return }
+        leftAt = now
+        leaveDelay = Self.outsideDelay
+    }
+
+    /// A menu of the slot closed: as after a show, with the pointer outside the slot waits for it to come in
+    /// (Zen waits for the mouse to come back after a popup).
+    public mutating func menuClosed(pointerInside inside: Bool, now: Double) {
+        shown(pointerInside: inside, now: now)
+    }
+
+    /// Whether a slot in `mode` hides when its window resigns key or the app deactivates (Zen collapses on window
+    /// deactivate): an overlay slot does, a pinned one is part of the window.
+    public static func hidesOnResign(mode: SlotMode) -> Bool { mode == .overlay }
 
     /// The slot came on screen: a leave from before it hid no longer counts.
     public mutating func shown(pointerInside inside: Bool, now: Double) {
@@ -147,9 +171,80 @@ public struct AutoHideClock: Sendable {
 
     public func shouldHide(now: Double) -> Bool {
         guard mode == .mouseLeaves, !busy, let leftAt else { return false }
-        return now - leftAt + Self.slack >= Self.mouseLeaveDelay
+        return now - leftAt + Self.slack >= leaveDelay
     }
 
     /// The slot hides once its page starts something playing.
     public var hidesOnChoice: Bool { mode == .afterChoice }
+}
+
+/// When the slot's capsule shows (spec "the capsule"): it fades in as the pointer enters the card and out
+/// `outDelay` after it left; held while busy (a menu of it open, its filter typed in, a tab hovered); shown by a key
+/// with the pointer elsewhere, it stays until the pointer has come in and left once.
+public struct CapsuleClock: Sendable {
+    public static let fadeIn = 0.15
+    public static let outDelay = 0.6
+    private static let slack = 1e-9
+
+    private var inside = false
+    private var leftAt: Double?
+    private var busy = false
+    private var byKey = false
+
+    public init() {}
+
+    public mutating func pointerInside(_ inside: Bool, now: Double) {
+        if inside {
+            leftAt = nil
+        } else if self.inside {
+            leftAt = now
+            byKey = false
+        }
+        self.inside = inside
+    }
+
+    /// Becoming free with the pointer outside starts the fade-out's delay from `now`.
+    public mutating func setBusy(_ busy: Bool, now: Double) {
+        if self.busy && !busy && !inside && leftAt != nil { leftAt = now }
+        self.busy = busy
+    }
+
+    public mutating func shownByKey() { byKey = true }
+
+    public func isVisible(now: Double) -> Bool {
+        if busy || inside || byKey { return true }
+        guard let leftAt else { return false }
+        return now + Self.slack < leftAt + Self.outDelay
+    }
+
+    /// When the visibility changes by itself next; nil when nothing is pending (no timer at rest).
+    public func nextChange(now: Double) -> Double? {
+        guard !busy, !inside, !byKey, let leftAt, now + Self.slack < leftAt + Self.outDelay else { return nil }
+        return leftAt + Self.outDelay
+    }
+}
+
+/// The slots' motion, as Zen's compact sidebar: in and out on the same spring translate, 0.25 s with about 1 %
+/// overshoot (Zen: `translate 0.25s linear(…)`, peak near 73 %); Reduce Motion fades both ways.
+/// Closed form (mass 1, stiffness 800, damping 46.4: damping ratio 0.82): peak 1.011 at 0.194 s, within 0.5 % from
+/// 0.252 s (SlotZenTimingTests samples it every millisecond).
+public enum SlotMotion {
+    public static let duration = 0.25
+    public static let mass = 1.0
+    public static let stiffness = 800.0
+    public static let damping = 46.4
+    /// Reduce Motion's fade, and the capsule's fades.
+    public static let fade = 0.15
+    /// `slot-flash`: how long the slot stays (Zen's `toolbar-flash-popup.duration`, 800 ms).
+    public static let flash = 0.8
+}
+
+/// Why the video changed, for `slot-flash`.
+public enum VideoChangeCause: Sendable { case autoadvance, key, playlistClick, open }
+
+public enum SlotFlash {
+    /// Only changes the user did not make in the playlist itself: autoadvance and the next / previous keys.
+    public static func shouldFlash(enabled: Bool, slotShown: Bool, cause: VideoChangeCause) -> Bool {
+        enabled && !slotShown && (cause == .autoadvance || cause == .key)
+    }
 }
