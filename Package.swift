@@ -54,12 +54,21 @@ let package = Package(
                 .product(name: "StashKit", package: "StashKit"),
             ]
         ),
+        // The slots' capsule (tabs, the view's tools, pin / backdrop / hide), apart from the app so the bench drives it.
+        .target(
+            name: "SlotChrome",
+            dependencies: [
+                "FrameScrubCore",
+                .product(name: "HomeChrome", package: "HomeScreenKit"),
+            ]
+        ),
         // Benches of the real windows (docs/bench): `FrameScrubBench settings`.
         .executableTarget(
             name: "FrameScrubBench",
             dependencies: [
                 "FrameScrubCore",
                 "FrameScrubSettings",
+                "SlotChrome",
                 .product(name: "SettingsKit", package: "SettingsKit"),
                 .product(name: "Filmstrip", package: "HomeScreenKit"),
                 .product(name: "FilmstripModel", package: "HomeScreenKit"),
@@ -72,6 +81,7 @@ let package = Package(
             dependencies: [
                 "FrameScrubCore",
                 "FrameScrubSettings",
+                "SlotChrome",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelKit", package: "InfoPanelKit"),
                 .product(name: "StashKitUI", package: "StashKit"),
