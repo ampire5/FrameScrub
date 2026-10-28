@@ -60,7 +60,13 @@ import Slots
         }
         return s
     }
-    func start() { host.start() }
+    func start() {
+        host.start()
+        // Preserve configured pages' bridge actions even before their first reveal, as the old host did.
+        for edge in SlotEdge.allCases {
+            if let id = host.activeTab(edge), id.rawValue.hasPrefix("plugin:") { host.prepare(id, edge: edge) }
+        }
+    }
     func containerDidLayout() { host.refreshLayout() }
     func toggle(_ edge: SlotEdge) { host.toggle(edge) }
     func togglePinOfCurrent() { host.togglePinOfCurrent() }
@@ -98,7 +104,7 @@ import Slots
     }
     func togglePlugin(focus: Bool = false) {
         for edge in SlotEdge.allCases {
-            let ids = host.configuration(edge).tabs.filter { $0.rawValue.hasPrefix("plugin:") }
+            let ids = host.tabIDs(in: edge).filter { $0.rawValue.hasPrefix("plugin:") }
             guard let first = ids.first else { continue }
             if host.isShown(edge), !focus, host.activeTab(edge)?.rawValue.hasPrefix("plugin:") == true { host.hide(edge); return }
             if host.activeTab(edge)?.rawValue.hasPrefix("plugin:") != true { host.select(first, edge: edge) }
@@ -112,7 +118,7 @@ import Slots
         guard PluginPageSource.link.accepts(url) else { return false }
         for shownOnly in [true, false] {
             for edge in SlotEdge.allCases {
-                let ids = shownOnly ? [host.activeTab(edge)].compactMap { $0 } : host.configuration(edge).tabs
+                let ids = shownOnly ? [host.activeTab(edge)].compactMap { $0 } : host.tabIDs(in: edge)
                 for id in ids {
                     guard id.rawValue.hasPrefix("plugin:") else { continue }
                     host.select(id, edge: edge); host.show(edge)
