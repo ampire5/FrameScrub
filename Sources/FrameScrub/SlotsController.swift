@@ -32,13 +32,16 @@ import SlotChrome
         let edge: SlotEdge
         let view: SlotView
         let tongue: SlotTongueView
+        /// `contents` is always `tabs` turned so the shown tab is first (`sync`), as it is saved.
         var setting: SlotSetting
-        var page: PluginPanel?
-        /// The plugin the page shows (its name in `plugins`) and the URL its entry had when the page loaded it.
-        var pageName: String?
-        var pageEntryURL: URL?
-        /// What the slot held before a link's page was put in: that is what is saved, the link's page is for this run.
-        var savedContent: SlotContent?
+        /// The tabs in the order the capsule shows them (stable while tabs are switched).
+        var tabs: [SlotContent]
+        var shownTab: SlotContent?
+        /// The plugin pages of its tabs by plugin name, made when a tab is first shown, and the URL its entry had when
+        /// the page loaded it.
+        var pages: [String: (panel: PluginPanel, entryURL: URL?)] = [:]
+        /// Tabs a `framescrub://` link added for this run: not saved.
+        var transient: Set<SlotContent> = []
         var reveal = EdgeReveal()
         var clock: AutoHideClock
         /// When the slot was last shown, for the layout's "newest demotes first".
@@ -50,7 +53,26 @@ import SlotChrome
             view = SlotView(edge: edge)
             tongue = SlotTongueView(edge: edge)
             self.setting = setting
+            tabs = setting.contents
+            shownTab = setting.contents.first
             clock = AutoHideClock(mode: setting.autoHide)
+        }
+
+        /// The shown tab's page.
+        var page: PluginPanel? {
+            guard case let .plugin(name) = shownTab else { return nil }
+            return pages[name]?.panel
+        }
+
+        func holds(_ page: PluginPanel) -> Bool { pages.values.contains { $0.panel === page } }
+
+        /// `setting.contents` from the tabs, the shown one first.
+        func sync() {
+            guard let shownTab, let i = tabs.firstIndex(of: shownTab) else {
+                setting.contents = tabs
+                return
+            }
+            setting.contents = Array(tabs[i...] + tabs[..<i])
         }
     }
 
@@ -84,8 +106,9 @@ import SlotChrome
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
-            if setting.content == .playlist {
-                if playlistTaken { setting.content = .empty }   // one playlist: the first slot that names it keeps it
+            if setting.contents.contains(.playlist) {
+                // One playlist: the first slot that names it keeps it.
+                if playlistTaken { setting.contents.removeAll { $0 == .playlist } }
                 playlistTaken = true
             }
             let slot = Slot(edge: edge, setting: setting)
@@ -99,7 +122,7 @@ import SlotChrome
     /// Puts each slot's view in (making the pages), and shows the pinned slots that were shown; overlay slots start
     /// hidden.
     func start() {
-        for slot in orderedSlots { install(slot.setting.content, in: slot) }
+        for slot in orderedSlots { refresh(slot) }
         for slot in orderedSlots {
             container.addSubview(slot.tongue)   // above everything: the tongue must take its click
             slot.tongue.onClick = { [weak self, weak slot] in
@@ -109,11 +132,11 @@ import SlotChrome
             }
         }
         for slot in orderedSlots where slot.setting.shown {
-            if slot.setting.mode == .pinned && slot.setting.content != .empty {
+            if slot.setting.mode == .pinned && !slot.tabs.isEmpty {
                 showCounter += 1
                 slot.shownOrder = showCounter
                 slot.view.setShown(true, animated: false)
-                slot.page?.isShownInSlot = true
+                updatePagesShown(slot)
             } else {
                 slot.setting.shown = false
             }
@@ -142,7 +165,7 @@ import SlotChrome
     // MARK: What the window asks
 
     /// Every page the slots hold, shown or not.
-    var pages: [PluginPanel] { orderedSlots.compactMap(\.page) }
+    var pages: [PluginPanel] { orderedSlots.flatMap { $0.pages.values.map(\.panel) } }
 
     /// The pages whose slot is on screen, oldest shown first.
     var shownPages: [PluginPanel] {
@@ -153,10 +176,10 @@ import SlotChrome
 
     /// Where `page` is shown, for its `panel` state.
     func panelInfo(for page: PluginPanel) -> PanelInfo? {
-        guard let slot = orderedSlots.first(where: { $0.page === page }) else { return nil }
+        guard let slot = orderedSlots.first(where: { $0.holds(page) }) else { return nil }
         let mode = effectiveMode(slot)
         return PanelInfo(slot: slot.edge, mode: mode, backdrop: mode == .pinned ? .dark : slot.setting.backdrop,
-                         shown: slot.view.isShown, focused: slot.view.holds(container.window?.firstResponder as? NSView))
+                         shown: slot.view.isShown && slot.page === page, focused: slot.view.holds(container.window?.firstResponder as? NSView))
     }
 
     /// The pointer is over a shown slot (not the video).
@@ -167,7 +190,7 @@ import SlotChrome
     }
 
     /// Whether the playlist is in a shown slot.
-    var isPlaylistShown: Bool { orderedSlots.contains { $0.setting.content == .playlist && $0.view.isShown } }
+    var isPlaylistShown: Bool { orderedSlots.contains { $0.shownTab == .playlist && $0.view.isShown } }
 
     // MARK: Showing and hiding
 
@@ -177,18 +200,17 @@ import SlotChrome
         if slot.view.isShown { hide(slot) } else { show(slot, focus: true) }
     }
 
-    /// F8 / TAB (`toggle-playlist`): the slot holding the playlist; without one, the playlist goes into the first empty
-    /// slot (right, left, bottom).
+    /// F8 / TAB (`toggle-playlist`): the slot holding the playlist, its tab shown; without one, the playlist becomes a tab
+    /// of the first empty slot (right, left, bottom), else of the right slot.
     func togglePlaylist() {
-        if let slot = orderedSlots.first(where: { $0.setting.content == .playlist }) {
-            if slot.view.isShown { hide(slot) } else { show(slot, focus: false) }
+        if let slot = orderedSlots.first(where: { $0.tabs.contains(.playlist) }) {
+            if slot.view.isShown && slot.shownTab == .playlist { hide(slot); return }
+            select(.playlist, in: slot)
+            show(slot, focus: false)
             return
         }
-        guard let slot = firstEmptySlot else {
-            onMessage?("Every slot is taken: choose Playlist in a slot's menu")
-            return
-        }
-        setContent(.playlist, of: slot)
+        guard let slot = firstEmptySlot ?? slots[.right] else { return }
+        addTab(.playlist, to: slot)
         show(slot, focus: false)
     }
 
@@ -199,10 +221,14 @@ import SlotChrome
         playlistView.beginFilter()
     }
 
-    /// ⌥⌘P: the first slot holding a plugin page; without one, the first plugin goes into the first empty slot.
+    /// ⌥⌘P: the first slot with a plugin tab, that tab shown; without one, the first plugin goes into the first empty slot.
     func togglePlugin(focus: Bool = false) {
-        if let slot = orderedSlots.first(where: { $0.page != nil }) {
-            if slot.view.isShown && !focus { hide(slot) } else { show(slot, focus: focus) }
+        if let slot = orderedSlots.first(where: { $0.tabs.contains(where: Self.isPlugin) }) {
+            if slot.view.isShown && !focus && slot.shownTab.map(Self.isPlugin) == true { hide(slot); return }
+            if slot.shownTab.map(Self.isPlugin) != true, let tab = slot.tabs.first(where: Self.isPlugin) {
+                select(tab, in: slot)
+            }
+            show(slot, focus: focus)
             return
         }
         guard let first = allPlugins.first else {
@@ -210,28 +236,36 @@ import SlotChrome
             return
         }
         guard let slot = firstEmptySlot else {
-            onMessage?("Every slot is taken: choose \(first.name) in a slot's menu")
+            onMessage?("Every slot is taken: choose \(first.name) in a slot's + menu")
             return
         }
-        setContent(.plugin(name: first.name), of: slot)
+        addTab(.plugin(name: first.name), to: slot)
         show(slot, focus: focus)
     }
 
-    /// A `framescrub://` link's page: shown in the first slot holding a page (or one put in an empty slot).
+    private static func isPlugin(_ content: SlotContent) -> Bool {
+        if case .plugin = content { return true }
+        return false
+    }
+
+    /// A `framescrub://` link's page: shown in the first page a slot holds (its tab shown), or in a tab of its own (for
+    /// this run) in an empty slot, else the right one.
     @discardableResult
     func showLinkPage(_ url: URL) -> Bool {
         guard PluginPageSource.link.accepts(url) else { return false }
-        if let slot = orderedSlots.first(where: { $0.page != nil }), let page = slot.page {
-            page.load(url, from: .link)
+        for slot in orderedSlots {
+            guard let (name, entry) = slot.pages.first(where: { slot.shownTab == .plugin(name: $0.key) })
+                    ?? slot.pages.first else { continue }
+            entry.panel.load(url, from: .link)
+            select(.plugin(name: name), in: slot)
             show(slot, focus: false)
             return true
         }
         linkPlugin = PluginEntry(name: SlotDefaults.linkPluginName, url: url)
         guard let slot = firstEmptySlot ?? slots[.right] else { return false }
-        let before = slot.setting.content
-        setContent(.plugin(name: SlotDefaults.linkPluginName), of: slot)
-        slot.savedContent = before
-        persist(slot)
+        let tab = SlotContent.plugin(name: SlotDefaults.linkPluginName)
+        if !slot.tabs.contains(tab) { slot.transient.insert(tab) }
+        addTab(tab, to: slot)
         slot.page?.load(url, from: .link)
         show(slot, focus: false)
         return true
@@ -258,13 +292,13 @@ import SlotChrome
     }
 
     func pageChosePlay(_ page: PluginPanel) {
-        guard let slot = orderedSlots.first(where: { $0.page === page }) else { return }
+        guard let slot = orderedSlots.first(where: { $0.holds(page) }) else { return }
         hideAfterChoice(slot)
     }
 
     /// The playlist opened a file: its overlay slot goes when it hides after a choice.
     func playlistChosePlay() {
-        guard let slot = orderedSlots.first(where: { $0.setting.content == .playlist }) else { return }
+        guard let slot = orderedSlots.first(where: { $0.tabs.contains(.playlist) }) else { return }
         hideAfterChoice(slot)
     }
 
@@ -282,7 +316,7 @@ import SlotChrome
     }
 
     private var firstEmptySlot: Slot? {
-        [SlotEdge.right, .left, .bottom].compactMap { slots[$0] }.first { $0.setting.content == .empty }
+        [SlotEdge.right, .left, .bottom].compactMap { slots[$0] }.first { $0.tabs.isEmpty }
     }
 
     private func show(_ slot: Slot, focus: Bool) {
@@ -290,7 +324,7 @@ import SlotChrome
             showCounter += 1
             slot.shownOrder = showCounter
             slot.setting.shown = true
-            slot.page?.isShownInSlot = true
+            updatePagesShown(slot)
             hideTongue(slot)
             slot.reveal.reset()
             applyLayout(revealing: slot)
@@ -299,13 +333,13 @@ import SlotChrome
             onPagesChanged?()
             updateAutoHideTimer()
         }
-        if slot.setting.content == .empty {
+        if slot.tabs.isEmpty {
             DispatchQueue.main.async { [weak self, weak slot] in
                 guard let self, let slot, slot.view.isShown else { return }
                 popUp(plusMenu(for: slot), from: nil, in: slot)
             }
         } else if focus {
-            if let page = slot.page { page.focus() } else if slot.setting.content == .playlist { playlistView.beginFilter() }
+            if let page = slot.page { page.focus() } else if slot.shownTab == .playlist { playlistView.beginFilter() }
         }
     }
 
@@ -314,7 +348,7 @@ import SlotChrome
         let hadFocus = holdsFocus(slot)
         slot.setting.shown = false
         slot.view.setShown(false, animated: true) { [weak self] in self?.onPagesChanged?() }
-        slot.page?.isShownInSlot = false
+        updatePagesShown(slot)
         applyLayout(revealing: nil)
         persist(slot)
         if hadFocus { onFocusVideo?() }
@@ -394,102 +428,147 @@ import SlotChrome
     func configChanged(_ config: Config) {
         plugins = config.plugins
         revealBand = CGFloat(config.slotRevealDistance)
-        for slot in orderedSlots { install(slot.setting.content, in: slot) }
-    }
-
-    private func setContent(_ content: SlotContent, of slot: Slot) {
-        let hadFocus = holdsFocus(slot)
-        slot.savedContent = nil   // the user's choice is kept
-        slot.setting.content = content
-        install(content, in: slot)
-        persist(slot)
-        if hadFocus { onFocusVideo?() }   // the view that had the keyboard left the window
-        onPagesChanged?()
+        for slot in orderedSlots { refresh(slot) }
     }
 
     private func holdsFocus(_ slot: Slot) -> Bool {
         slot.view.holds(container.window?.firstResponder as? NSView)
     }
 
-    /// Puts the view for `content` into the slot: the playlist, a page (kept when it already shows that plugin), or
-    /// nothing (the "+", with a note when the plugin is not in the config).
-    private func install(_ content: SlotContent, in slot: Slot) {
-        slot.view.note = nil
+    private static func tabID(_ content: SlotContent) -> String {
         switch content {
-        case .empty:
-            dropPage(of: slot)
-            show(nil, in: slot)
-        case .playlist:
-            dropPage(of: slot)
-            show(playlistView, in: slot)
-        case let .plugin(name):
-            if slot.view.shownView === playlistView { show(nil, in: slot) }
-            guard let entry = allPlugins.first(where: { $0.name == name }) else {
-                dropPage(of: slot)
-                show(nil, in: slot)
-                slot.view.note = "Plugin “\(name)” is not in framescrub.conf"
-                return
-            }
-            let page: PluginPanel
-            if let existing = slot.page, slot.pageName == name {
-                page = existing
-            } else {
-                dropPage(of: slot)
-                page = PluginPanel()
-                configurePage?(page)
-                slot.page = page
-                slot.pageName = name
-            }
-            page.isShownInSlot = slot.view.isShown
-            if page.url == nil || slot.pageEntryURL != entry.url {   // a link's page stays until the entry changes
-                slot.pageEntryURL = entry.url
-                if !page.load(entry.url, from: entry == linkPlugin ? .link : .settings) {
-                    slot.view.note = "Cannot show \(entry.url.absoluteString)"
-                }
-            }
-            show(page, in: slot)
+        case .empty: ""
+        case .playlist: "playlist"
+        case let .plugin(name): "plugin:" + name
         }
     }
 
-    /// The slot's one view (Task 7 makes these tabs), and its tab in the capsule.
-    private func show(_ view: NSView?, in slot: Slot) {
-        slot.view.setViews(view.map { ["view": $0] } ?? [:], shown: view == nil ? nil : "view")
-        slot.view.capsule.tabs = switch slot.setting.content {
-        case .empty: []
-        case .playlist: [SlotTab(id: "playlist", symbol: "play.rectangle", letter: nil, name: "Playlist", selected: true)]
-        case let .plugin(name): [SlotTab(id: "plugin:" + name, symbol: nil, letter: String(name.prefix(1)).uppercased(),
-                                         name: name, selected: true)]
+    private func content(ofTab id: String, in slot: Slot) -> SlotContent? { slot.tabs.first { Self.tabID($0) == id } }
+
+    /// Shows `content`'s tab (one the slot has).
+    private func select(_ content: SlotContent, in slot: Slot) {
+        guard slot.tabs.contains(content), slot.shownTab != content else { return }
+        let hadFocus = holdsFocus(slot)
+        slot.shownTab = content
+        changed(slot, hadFocus: hadFocus)
+    }
+
+    /// Adds `content` as a tab of `slot` (or finds it there) and shows it. The playlist leaves the slot that had it.
+    private func addTab(_ content: SlotContent, to slot: Slot) {
+        guard content != .empty else { return }
+        if content == .playlist {
+            for other in orderedSlots where other !== slot && other.tabs.contains(.playlist) {
+                removeTab(.playlist, from: other, dropPage: true)
+            }
         }
+        let hadFocus = holdsFocus(slot)
+        if !slot.tabs.contains(content) { slot.tabs.append(content) }
+        slot.shownTab = content
+        changed(slot, hadFocus: hadFocus)
     }
 
-    private func dropPage(of slot: Slot) {
-        guard let page = slot.page else { return }
-        if slot.view.shownView === page { show(nil, in: slot) }
-        slot.page = nil
-        slot.pageName = nil
-        slot.pageEntryURL = nil
-        onPageDropped?(page)
+    /// Closes a tab; the next one (or the one before the last) shows. Its page goes, unless it is being moved.
+    private func removeTab(_ content: SlotContent, from slot: Slot, dropPage: Bool) {
+        guard let i = slot.tabs.firstIndex(of: content) else { return }
+        let hadFocus = holdsFocus(slot)
+        if content == .playlist { slot.view.capsule.endFilter() }
+        slot.tabs.remove(at: i)
+        slot.transient.remove(content)
+        if slot.shownTab == content { slot.shownTab = slot.tabs.isEmpty ? nil : slot.tabs[min(i, slot.tabs.count - 1)] }
+        if dropPage, case let .plugin(name) = content, let page = slot.pages.removeValue(forKey: name) {
+            onPageDropped?(page.panel)
+        }
+        changed(slot, hadFocus: hadFocus)
     }
 
-    /// Moves the slot's live view to `target`; the views trade places when `target` holds one.
-    private func move(_ slot: Slot, to target: Slot) {
+    /// Every tab closed (View › Slots › Clear Slot).
+    private func clear(_ slot: Slot) {
+        for tab in slot.tabs { removeTab(tab, from: slot, dropPage: true) }
+    }
+
+    /// Moves a tab, with its live page, to `target`, where it shows.
+    private func moveTab(_ content: SlotContent, from slot: Slot, to target: Slot) {
         let hadFocus = holdsFocus(slot) || holdsFocus(target)
-        let mine = (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent)
-        let other = (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent)
-        show(nil, in: slot)
-        show(nil, in: target)
-        (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent) = other
-        (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent) = mine
-        install(target.setting.content, in: target)
-        install(slot.setting.content, in: slot)
-        slot.page?.isShownInSlot = slot.view.isShown
-        persist(slot)
-        persist(target)
-        if slot.setting.content == .empty, slot.view.isShown { hide(slot) }
-        // Taking the views out of the window took the keyboard from them: the moved one gets it back.
+        if case let .plugin(name) = content, let page = slot.pages.removeValue(forKey: name) {
+            if let theirs = target.pages[name], theirs.panel !== page.panel {
+                onPageDropped?(page.panel)   // the target has this plugin already: its page stays
+            } else {
+                target.pages[name] = page
+            }
+        }
+        let transient = slot.transient.contains(content)
+        removeTab(content, from: slot, dropPage: false)
+        if transient { target.transient.insert(content) }
+        addTab(content, to: target)
+        if slot.tabs.isEmpty, slot.view.isShown { hide(slot) }
+        // Taking the view out of the window took the keyboard from it: the moved one gets it back.
         if hadFocus { onFocusVideo?() }
         show(target, focus: hadFocus)
+    }
+
+    /// After the tabs changed: the views, the capsule, saving, the pages' state.
+    private func changed(_ slot: Slot, hadFocus: Bool) {
+        slot.sync()
+        refresh(slot)
+        persist(slot)
+        if hadFocus && !holdsFocus(slot) { onFocusVideo?() }
         onPagesChanged?()
+    }
+
+    /// Puts the slot's views in: the playlist if it is a tab, the pages made so far, and the shown tab's page (made and
+    /// loaded the first time, loaded again when its entry's URL changed); a note when the shown plugin is not in the
+    /// config. Pages of closed tabs go.
+    private func refresh(_ slot: Slot) {
+        slot.view.note = nil
+        for (name, page) in slot.pages where !slot.tabs.contains(.plugin(name: name)) {
+            slot.pages[name] = nil
+            onPageDropped?(page.panel)
+        }
+        if case let .plugin(name) = slot.shownTab { makePage(name, in: slot) }
+        var views: [String: NSView] = [:]
+        if slot.tabs.contains(.playlist) { views[Self.tabID(.playlist)] = playlistView }
+        for (name, page) in slot.pages { views[Self.tabID(.plugin(name: name))] = page.panel }
+        let shownID = slot.shownTab.map(Self.tabID)
+        slot.view.setViews(views, shown: shownID.flatMap { views[$0] == nil ? nil : $0 })
+        slot.view.capsule.tabs = slot.tabs.map { tab(for: $0, selected: $0 == slot.shownTab) }
+        updatePagesShown(slot)
+    }
+
+    private func tab(for content: SlotContent, selected: Bool) -> SlotTab {
+        switch content {
+        case .empty, .playlist:
+            SlotTab(id: Self.tabID(.playlist), symbol: "play.rectangle", letter: nil, name: "Playlist", selected: selected)
+        case let .plugin(name):
+            SlotTab(id: Self.tabID(content), symbol: nil, letter: name.first.map { String($0).uppercased() }, name: name,
+                    selected: selected)
+        }
+    }
+
+    private func makePage(_ name: String, in slot: Slot) {
+        guard let entry = allPlugins.first(where: { $0.name == name }) else {
+            if let page = slot.pages.removeValue(forKey: name) { onPageDropped?(page.panel) }
+            slot.view.note = "Plugin “\(name)” is not in framescrub.conf"
+            return
+        }
+        var record = slot.pages[name] ?? {
+            let page = PluginPanel()
+            configurePage?(page)
+            return (page, nil)
+        }()
+        if record.panel.url == nil || record.entryURL != entry.url {   // a link's page stays until the entry changes
+            record.entryURL = entry.url
+            if !record.panel.load(entry.url, from: entry == linkPlugin ? .link : .settings) {
+                slot.view.note = "Cannot show \(entry.url.absoluteString)"
+            }
+        }
+        slot.pages[name] = record
+    }
+
+    /// Only the shown tab's page of a shown slot counts as shown (its keys and state); the others wait hidden.
+    private func updatePagesShown(_ slot: Slot) {
+        for (name, page) in slot.pages {
+            page.panel.isShownInSlot = slot.view.isShown && slot.shownTab == .plugin(name: name)
+        }
     }
 
     // MARK: Menus
@@ -502,11 +581,15 @@ import SlotChrome
         }
         view.capsule.onCapsuleMenu = { [weak self, weak slot] in
             guard let self, let slot else { return nil }
-            return headerMenu(for: slot)
+            return capsuleMenu(for: slot)
         }
-        view.capsule.onTabMenu = { [weak self, weak slot] _ in
-            guard let self, let slot else { return nil }
-            return headerMenu(for: slot)
+        view.capsule.onTabMenu = { [weak self, weak slot] id in
+            guard let self, let slot, let content = content(ofTab: id, in: slot) else { return nil }
+            return tabMenu(for: slot, content: content)
+        }
+        view.capsule.onSelectTab = { [weak self, weak slot] id in
+            guard let self, let slot, let content = content(ofTab: id, in: slot) else { return }
+            select(content, in: slot)
         }
         view.capsule.onPlus = { [weak self, weak slot] button in
             guard let self, let slot else { return }
@@ -553,7 +636,7 @@ import SlotChrome
     /// View › Slots › Clear Slot.
     func clearCurrent() {
         guard let slot = currentSlot else { return }
-        setContent(.empty, of: slot)
+        clear(slot)
     }
 
     private func togglePin(_ slot: Slot) {
@@ -592,20 +675,15 @@ import SlotChrome
         }
     }
 
-    /// The "+" of an empty slot: the playlist (unless another slot has it) and the plugins.
+    /// The "+" (of an empty slot, or after the tabs): the playlist (moved here from another slot) and the plugins; a view the
+    /// slot has is ticked and shows.
     private func plusMenu(for slot: Slot) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        addContentItems(to: menu, for: slot)
-        return menu
-    }
-
-    private func addContentItems(to menu: NSMenu, for slot: Slot) {
-        let playlistElsewhere = orderedSlots.contains { $0 !== slot && $0.setting.content == .playlist }
+        let playlistElsewhere = orderedSlots.contains { $0 !== slot && $0.tabs.contains(.playlist) }
         let playlist = menu.addItem(withTitle: "Playlist", action: nil, keyEquivalent: "")
-        playlist.isEnabled = !playlistElsewhere
-        playlist.state = slot.setting.content == .playlist ? .on : .off
-        if playlistElsewhere { playlist.toolTip = "The playlist is in another slot" }
+        playlist.state = slot.tabs.contains(.playlist) ? .on : .off
+        if playlistElsewhere { playlist.toolTip = "Moves the playlist here from another slot" }
         playlist.handler = { [weak self, weak slot] in
             guard let self, let slot else { return }
             choose(.playlist, for: slot)
@@ -618,40 +696,49 @@ import SlotChrome
         }
         for entry in allPlugins {
             let item = menu.addItem(withTitle: entry.name, action: nil, keyEquivalent: "")
-            item.state = slot.setting.content == .plugin(name: entry.name) ? .on : .off
+            item.state = slot.tabs.contains(.plugin(name: entry.name)) ? .on : .off
             item.handler = { [weak self, weak slot] in
                 guard let self, let slot else { return }
                 choose(.plugin(name: entry.name), for: slot)
             }
         }
+        return menu
     }
 
     private func choose(_ content: SlotContent, for slot: Slot) {
-        if content != slot.setting.content { setContent(content, of: slot) }
+        addTab(content, to: slot)
         show(slot, focus: true)
     }
 
-    /// ▾ in the header: what the slot shows, moving it, when it hides by itself, clearing it.
-    private func headerMenu(for slot: Slot) -> NSMenu {
+    /// A right click on a tab: reload its page, move it to another slot, close it.
+    private func tabMenu(for slot: Slot, content: SlotContent) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
-        addContentItems(to: menu, for: slot)
-        if let page = slot.page {
-            menu.addItem(.separator())
+        if case let .plugin(name) = content, let page = slot.pages[name]?.panel {
             let reload = menu.addItem(withTitle: "Reload Page", action: nil, keyEquivalent: "r")   // ⌘R in the page too
             reload.handler = { [weak page] in page?.reload() }
-        }
-        if slot.setting.content != .empty {
             menu.addItem(.separator())
-            for edge in SlotEdge.allCases where edge != slot.edge {
-                let item = menu.addItem(withTitle: "Move to \(Self.title(of: edge)) Slot", action: nil, keyEquivalent: "")
-                item.handler = { [weak self, weak slot] in
-                    guard let self, let slot, let target = slots[edge] else { return }
-                    move(slot, to: target)
-                }
+        }
+        for edge in SlotEdge.allCases where edge != slot.edge {
+            let item = menu.addItem(withTitle: "Move to \(Self.title(of: edge)) Slot", action: nil, keyEquivalent: "")
+            item.handler = { [weak self, weak slot] in
+                guard let self, let slot, let target = slots[edge] else { return }
+                moveTab(content, from: slot, to: target)
             }
         }
         menu.addItem(.separator())
+        let close = menu.addItem(withTitle: "Close Tab", action: nil, keyEquivalent: "")
+        close.handler = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            removeTab(content, from: slot, dropPage: true)
+        }
+        return menu
+    }
+
+    /// A right click on the capsule's empty part: when the slot hides by itself, how it comes from its edge, clearing it.
+    private func capsuleMenu(for slot: Slot) -> NSMenu {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
         let heading = menu.addItem(withTitle: "Hide by Itself", action: nil, keyEquivalent: "")
         heading.isEnabled = false
         let choices: [(SlotAutoHide, String)] = [(.afterChoice, "After Choosing Something to Play"),
@@ -686,12 +773,12 @@ import SlotChrome
                 persist(slot)
             }
         }
-        if slot.setting.content != .empty {
+        if !slot.tabs.isEmpty {
             menu.addItem(.separator())
             let clear = menu.addItem(withTitle: "Clear Slot", action: nil, keyEquivalent: "")
             clear.handler = { [weak self, weak slot] in
                 guard let self, let slot else { return }
-                setContent(.empty, of: slot)
+                self.clear(slot)
             }
         }
         return menu
@@ -739,7 +826,7 @@ import SlotChrome
         let bounds = container.bounds
         let quiet = container.window?.attachedSheet != nil
         for slot in orderedSlots {
-            guard !quiet, !slot.view.isShown, slot.setting.content != .empty, slot.setting.mode == .overlay else {
+            guard !quiet, !slot.view.isShown, !slot.tabs.isEmpty, slot.setting.mode == .overlay else {
                 slot.reveal.reset()
                 hideTongue(slot)
                 continue
@@ -824,17 +911,16 @@ import SlotChrome
     private func isTyping(in slot: Slot) -> Bool {
         guard holdsFocus(slot) else { return false }
         if let page = slot.page { return page.isTyping }
-        return slot.setting.content == .playlist && playlistView.isEditingFilter
+        return slot.shownTab == .playlist && playlistView.isEditingFilter
     }
 
     // MARK: Saving
 
+    /// Saves the slot's setting: its tabs (the shown one first) without those a link added for this run.
     private func persist(_ slot: Slot) {
         var setting = slot.setting
-        if let saved = slot.savedContent {
-            setting.content = saved
-            if saved == .empty { setting.shown = false }
-        }
+        setting.contents.removeAll { slot.transient.contains($0) }
+        if setting.contents.isEmpty { setting.shown = false }
         onPersist?(slot.edge, setting)
     }
 }

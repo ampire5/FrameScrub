@@ -46,7 +46,7 @@ public enum SlotReveal: String, CaseIterable, Sendable, Codable {
 }
 
 /// The view a slot holds.
-public enum SlotContent: Equatable, Sendable {
+public enum SlotContent: Hashable, Sendable {
     case empty
     case playlist
     case plugin(name: String)
