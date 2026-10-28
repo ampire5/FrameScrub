@@ -74,7 +74,6 @@ public struct SlotTool {
     /// A right click on the capsule's empty part.
     public var onCapsuleMenu: (() -> NSMenu?)?
     public var onFilterText: ((String) -> Void)?
-    public var onFilterSubmit: (() -> Void)?
     /// Other keys in the field (↑ ↓, page keys) for the view; true when it took the key. ↩ goes here first too.
     public var onFilterCommand: ((Selector) -> Bool)?
     /// The user closed the field (Esc on an empty field): the keys go back to the player, an overlay slot hides.
@@ -84,8 +83,6 @@ public struct SlotTool {
     /// A menu of the capsule opened or closed.
     public var onMenuTracking: ((Bool) -> Void)?
 
-    /// The pointer is over the capsule: it holds the capsule (and its slot) up.
-    public private(set) var isPointerInside = false
     public var isEditingFilter: Bool { field.map { !$0.isHidden } ?? false }
     public private(set) var isVisible = false
 
@@ -99,7 +96,6 @@ public struct SlotTool {
     private let hideButton = CapsuleButton()
     private let dividers = [NSView(), NSView()]
     private var field: NSSearchField?
-    private var tracking: NSTrackingArea?
 
     public init(edge: SlotEdge) {
         self.edge = edge
@@ -364,9 +360,6 @@ public struct SlotTool {
         guard let field else { return false }
         if selector != #selector(NSResponder.cancelOperation(_:)), onFilterCommand?(selector) == true { return true }
         switch selector {
-        case #selector(NSResponder.insertNewline(_:)):
-            onFilterSubmit?()
-            return true
         case #selector(NSResponder.cancelOperation(_:)):
             if field.stringValue.isEmpty {
                 endFilter()
@@ -379,20 +372,6 @@ public struct SlotTool {
             return false
         }
     }
-
-    // MARK: Pointer
-
-    override public func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
-                                  owner: self, userInfo: nil)
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override public func mouseEntered(with event: NSEvent) { isPointerInside = true }
-    override public func mouseExited(with event: NSEvent) { isPointerInside = false }
 
     override public func rightMouseDown(with event: NSEvent) {
         guard let menu = onCapsuleMenu?() else { return }

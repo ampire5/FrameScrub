@@ -49,6 +49,8 @@ import SlotChrome
         var capsuleCheck: DispatchWorkItem?
         /// A `slot-flash` show: it hides when this runs, unless the pointer came in.
         var flash: DispatchWorkItem?
+        /// The flash ended while a menu was open: the slot goes when the menu closes, unless the user came to it.
+        var flashEndedInMenu = false
         /// When the slot was last shown, for the layout's "newest demotes first".
         var shownOrder = 0
         var demoted = false
@@ -103,6 +105,7 @@ import SlotChrome
             for slot in orderedSlots where slot.view.isShown {
                 slot.clock.menuClosed(pointerInside: isPointer(in: slot), now: Self.now)
                 updateCapsule(slot)
+                if slot.flashEndedInMenu { endFlash(slot) }
             }
             if resignedDuringMenu { resignedDuringMenu = false; hideOnResign() }
         }
@@ -298,13 +301,22 @@ import SlotChrome
     @discardableResult
     func showLinkPage(_ url: URL) -> Bool {
         guard PluginPageSource.link.accepts(url) else { return false }
-        for slot in orderedSlots {
-            guard let (name, entry) = slot.pages.first(where: { slot.shownTab == .plugin(name: $0.key) })
-                    ?? slot.pages.first else { continue }
-            entry.panel.load(url, from: .link)
-            select(.plugin(name: name), in: slot)
-            show(slot, focus: false)
-            return true
+        // The page of a plugin tab that is shown goes first; else the first page in tab order (a dictionary's order is
+        // not one), so a link does not land in whichever page the dictionary lists first.
+        func page(of slot: Slot, shownOnly: Bool) -> (name: String, panel: PluginPanel)? {
+            for tab in shownOnly ? [slot.shownTab].compactMap({ $0 }) : slot.tabs {
+                if case let .plugin(name) = tab, let entry = slot.pages[name] { return (name, entry.panel) }
+            }
+            return nil
+        }
+        for shownOnly in [true, false] {
+            for slot in orderedSlots {
+                guard let (name, panel) = page(of: slot, shownOnly: shownOnly) else { continue }
+                panel.load(url, from: .link)
+                select(.plugin(name: name), in: slot)
+                show(slot, focus: false)
+                return true
+            }
         }
         linkPlugin = PluginEntry(name: SlotDefaults.linkPluginName, url: url)
         guard let slot = firstEmptySlot ?? slots[.right] else { return false }
@@ -367,6 +379,7 @@ import SlotChrome
     private func show(_ slot: Slot, focus: Bool) {
         slot.flash?.cancel()   // an explicit show is the user's: a flash under way no longer hides it
         slot.flash = nil
+        slot.flashEndedInMenu = false
         if !slot.view.isShown {
             showCounter += 1
             slot.shownOrder = showCounter
@@ -403,6 +416,7 @@ import SlotChrome
         updatePagesShown(slot)
         slot.flash?.cancel()
         slot.flash = nil
+        slot.flashEndedInMenu = false
         applyLayout(revealing: nil)
         persist(slot)
         if hadFocus { onFocusVideo?() }
@@ -526,7 +540,7 @@ import SlotChrome
     }
 
     /// Closes a tab; the next one (or the one before the last) shows. Its page goes, unless it is being moved.
-    private func removeTab(_ content: SlotContent, from slot: Slot, dropPage: Bool) {
+    private func removeTab(_ content: SlotContent, from slot: Slot, dropPage: Bool, notify: Bool = true) {
         guard let i = slot.tabs.firstIndex(of: content) else { return }
         let hadFocus = holdsFocus(slot)
         if content == .playlist { slot.view.capsule.closeFilter() }
@@ -536,12 +550,15 @@ import SlotChrome
         if dropPage, case let .plugin(name) = content, let page = slot.pages.removeValue(forKey: name) {
             onPageDropped?(page.panel)
         }
-        changed(slot, hadFocus: hadFocus)
+        if notify { changed(slot, hadFocus: hadFocus) }
     }
 
-    /// Every tab closed (View › Slots › Clear Slot).
+    /// Every tab closed (View › Slots › Clear Slot): the slot is saved once, not once per tab.
     private func clear(_ slot: Slot) {
-        for tab in slot.tabs { removeTab(tab, from: slot, dropPage: true) }
+        guard !slot.tabs.isEmpty else { return }
+        let hadFocus = holdsFocus(slot)
+        for tab in slot.tabs { removeTab(tab, from: slot, dropPage: true, notify: false) }
+        changed(slot, hadFocus: hadFocus)
     }
 
     /// Moves a tab, with its live page, to `target`, where it shows.
@@ -687,7 +704,6 @@ import SlotChrome
         view.capsule.onMenuTracking = { [weak self] open in self?.menuOpen = open }
         view.capsule.onFilterText = { [weak self] text in self?.playlistView.filterEdited(text) }
         view.capsule.onFilterCommand = { [weak self] selector in self?.playlistView.filterCommand(selector) ?? false }
-        view.capsule.onFilterSubmit = { [weak self] in _ = self?.playlistView.filterCommand(#selector(NSResponder.insertNewline(_:))) }
         view.capsule.onFilterClosed = { [weak self, weak slot] in
             guard let self, let slot else { return }
             playlistView.filterClosed()
@@ -1066,13 +1082,22 @@ import SlotChrome
         let end = DispatchWorkItem { [weak self, weak slot] in
             guard let self, let slot else { return }
             slot.flash = nil
-            guard slot.view.isShown else { return }
-            let inUse = holdsFocus(slot) || slot.view.capsule.isEditingFilter
-            if SlotFlash.endHides(pointerInside: isPointer(in: slot), menuOpen: menuOpen, inUse: inUse) { hide(slot) }
+            endFlash(slot)
         }
         if !slot.view.isShown { show(slot, focus: false) }
         slot.flash = end
         DispatchQueue.main.asyncAfter(deadline: .now() + SlotMotion.flash, execute: end)
+    }
+
+    /// A flash's time is over: the slot goes unless the user came to it. With a menu open it waits for the menu to close
+    /// (the slot's hide mode may be one that never hides it by itself).
+    private func endFlash(_ slot: Slot) {
+        slot.flashEndedInMenu = false
+        guard slot.view.isShown else { return }
+        let inUse = holdsFocus(slot) || slot.view.capsule.isEditingFilter
+        let pointerInside = isPointer(in: slot)
+        if menuOpen && !pointerInside && !inUse { slot.flashEndedInMenu = true; return }
+        if SlotFlash.endHides(pointerInside: pointerInside, menuOpen: menuOpen, inUse: inUse) { hide(slot) }
     }
 
     /// Typing goes on in the slot: its page has a text field with the keyboard, or the playlist's filter has it.

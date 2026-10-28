@@ -115,6 +115,13 @@ import Testing
         #expect(try #require(SlotSetting(text: "plugin:A+B" + Self.tail)).contents == [.plugin(name: "A+B")])
     }
 
+    @Test func pluginNameWithTheSeparatorRoundTrips() throws {
+        var setting = try #require(SlotSetting(text: "playlist" + Self.tail))
+        setting.contents = [.playlist, .plugin(name: "Tags + Notes"), .plugin(name: "100%")]
+        let read = try #require(SlotSetting(text: setting.text))
+        #expect(read.contents == setting.contents)
+    }
+
     @Test func emptyInsideAListIsDropped() throws {
         #expect(try #require(SlotSetting(text: "playlist + empty" + Self.tail)).contents == [.playlist])
     }

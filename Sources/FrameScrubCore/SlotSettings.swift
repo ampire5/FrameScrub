@@ -56,7 +56,7 @@ public enum SlotContent: Hashable, Sendable {
         case "empty": self = .empty
         case "playlist": self = .playlist
         case _ where text.hasPrefix("plugin:"):
-            let name = text.dropFirst("plugin:".count).trimmingCharacters(in: .whitespaces)
+            let name = Self.unescaped(String(text.dropFirst("plugin:".count))).trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else { return nil }
             self = .plugin(name: name)
         default: return nil
@@ -67,8 +67,17 @@ public enum SlotContent: Hashable, Sendable {
         switch self {
         case .empty: "empty"
         case .playlist: "playlist"
-        case .plugin(let name): "plugin:\(name)"
+        case .plugin(let name): "plugin:\(Self.escaped(name))"
         }
+    }
+
+    /// A plugin's name holds the list's separator ` + ` as `%2B` (and `%` as `%25`), so it reads back as one entry.
+    private static func escaped(_ name: String) -> String {
+        name.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: " + ", with: " %2B ")
+    }
+
+    private static func unescaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "%2B", with: "+").replacingOccurrences(of: "%25", with: "%")
     }
 }
 
