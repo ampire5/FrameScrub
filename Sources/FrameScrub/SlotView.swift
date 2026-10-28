@@ -29,6 +29,9 @@ import SlotChrome
     /// Applies in overlay; a pinned slot is always dark.
     var backdrop = SlotBackdrop.glass { didSet { applyLook() } }
 
+    /// The pointer came into the card or left it (for the capsule's clock).
+    var onPointerInside: ((Bool) -> Void)?
+    private var pointerTracking: NSTrackingArea?
     /// The size the drag of the inner edge asks for (not clamped), and the drag's end.
     var onResize: ((CGFloat) -> Void)?
     var onResizeEnd: (() -> Void)?
@@ -248,13 +251,24 @@ import SlotChrome
             : nil
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let pointerTracking { removeTrackingArea(pointerTracking) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+                                  owner: self, userInfo: nil)
+        addTrackingArea(area)
+        pointerTracking = area
+    }
+
+    override func mouseEntered(with event: NSEvent) { onPointerInside?(true) }
+    override func mouseExited(with event: NSEvent) { onPointerInside?(false) }
+
     // MARK: Showing and hiding
 
     /// Slides in from the slot's edge and back out on the same spring (`SlotMotion`: 0.25 s, about 1 % past the mark,
     /// as Zen's compact sidebar); with Reduce Motion a short fade instead. Only this view's layer animates.
     func setShown(_ shown: Bool, animated: Bool, completion: (() -> Void)? = nil) {
         isShown = shown
-        if shown { capsule.setVisible(true, animated: false) }   // Task 8: the capsule's own clock
         guard let layer else { isHidden = !shown; completion?(); return }
         layer.removeAnimation(forKey: "slot")
         if shown { isHidden = false }

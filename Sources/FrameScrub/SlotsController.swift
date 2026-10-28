@@ -44,6 +44,11 @@ import SlotChrome
         var transient: Set<SlotContent> = []
         var reveal = EdgeReveal()
         var clock: AutoHideClock
+        var capsuleClock = CapsuleClock()
+        /// The capsule's next fade-out, when one is pending (no timer at rest).
+        var capsuleCheck: DispatchWorkItem?
+        /// A `slot-flash` show: it hides when this runs, unless the pointer came in.
+        var flash: DispatchWorkItem?
         /// When the slot was last shown, for the layout's "newest demotes first".
         var shownOrder = 0
         var demoted = false
@@ -90,7 +95,25 @@ import SlotChrome
     private var monitor: Any?
     private var globalMonitor: Any?
     /// A slot's menu is open: auto-hide waits.
-    private var menuOpen = false
+    private var menuOpen = false {
+        didSet {
+            guard menuOpen != oldValue else { return }
+            if menuOpen { return }
+            // As Zen after a popup: with the pointer outside, the slot waits for it to come back.
+            for slot in orderedSlots where slot.view.isShown {
+                slot.clock.menuClosed(pointerInside: isPointer(in: slot), now: Self.now)
+                updateCapsule(slot)
+            }
+            if resignedDuringMenu { resignedDuringMenu = false; hideOnResign() }
+        }
+    }
+    /// The window or app lost focus while a menu was open: the slots go once it closes.
+    private var resignedDuringMenu = false
+    /// The window is being dragged (from its title bar): a leave then is not one (Zen re-checks for the same reason).
+    private var windowMoving = false
+    /// `slot-flash`.
+    private var flashEnabled = false
+    private var observers: [NSObjectProtocol] = []
     /// The OSD said the window is too small for these pinned slots; said again only when the set changes.
     private var reportedDemotions: Set<SlotEdge> = []
     /// `slot-reveal-distance`: how near a side edge the pointer brings a hidden slot.
@@ -103,6 +126,7 @@ import SlotChrome
         self.playlistView = playlistView
         plugins = config.plugins
         revealBand = CGFloat(config.slotRevealDistance)
+        flashEnabled = config.slotFlash
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var setting = (config.slots[edge] ?? SlotSetting.default(for: edge)).clamped(for: edge)
@@ -148,6 +172,24 @@ import SlotChrome
             MainActor.assumeIsolated { self?.pointerEvent(event) }
             return event
         }
+        let center = NotificationCenter.default
+        observers = [
+            center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let window = note.object as? NSWindow, window === self.container.window else { return }
+                    self.resigned()
+                }
+            },
+            center.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.resigned() }
+            },
+            center.addObserver(forName: NSWindow.willMoveNotification, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated {
+                    guard let self, let window = note.object as? NSWindow, window === self.container.window else { return }
+                    self.windowMoving = true
+                }
+            },
+        ]
         // While the app is in the background it gets no pointer events of its own; the player window may still be in sight.
         globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved) { [weak self] _ in
             MainActor.assumeIsolated { self?.backgroundPointerEvent() }
@@ -157,6 +199,7 @@ import SlotChrome
     isolated deinit {
         if let monitor { NSEvent.removeMonitor(monitor) }
         if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
         autoHideTimer?.invalidate()
     }
 
@@ -328,7 +371,11 @@ import SlotChrome
             hideTongue(slot)
             slot.reveal.reset()
             applyLayout(revealing: slot)
-            slot.clock.shown(pointerInside: isPointer(in: slot), now: Self.now)
+            let inside = isPointer(in: slot)
+            slot.clock.shown(pointerInside: inside, now: Self.now)
+            slot.capsuleClock = CapsuleClock()
+            if inside { slot.capsuleClock.pointerInside(true, now: Self.now) } else { slot.capsuleClock.shownByKey() }
+            updateCapsule(slot, animated: false)
             persist(slot)
             onPagesChanged?()
             updateAutoHideTimer()
@@ -349,6 +396,8 @@ import SlotChrome
         slot.setting.shown = false
         slot.view.setShown(false, animated: true) { [weak self] in self?.onPagesChanged?() }
         updatePagesShown(slot)
+        slot.flash?.cancel()
+        slot.flash = nil
         applyLayout(revealing: nil)
         persist(slot)
         if hadFocus { onFocusVideo?() }
@@ -428,6 +477,7 @@ import SlotChrome
     func configChanged(_ config: Config) {
         plugins = config.plugins
         revealBand = CGFloat(config.slotRevealDistance)
+        flashEnabled = config.slotFlash
         for slot in orderedSlots { refresh(slot) }
     }
 
@@ -604,6 +654,12 @@ import SlotChrome
             cycleBackdrop(slot)
         }
         view.capsule.onMenuTracking = { [weak self] open in self?.menuOpen = open }
+        view.onPointerInside = { [weak self, weak slot] inside in
+            guard let self, let slot else { return }
+            slot.capsuleClock.pointerInside(inside, now: Self.now)
+            if inside { slot.flash?.cancel(); slot.flash = nil }   // the pointer came for it: the usual rules now
+            updateCapsule(slot)
+        }
         view.capsule.onHide = { [weak self, weak slot] in
             guard let self, let slot else { return }
             hide(slot)
@@ -643,6 +699,7 @@ import SlotChrome
         slot.setting.mode = slot.setting.mode == .pinned ? .overlay : .pinned
         persist(slot)
         applyLayout(revealing: nil, animated: false)
+        updateCapsule(slot)
         updateAutoHideTimer()
         onPagesChanged?()
     }
@@ -802,6 +859,7 @@ import SlotChrome
     /// A hidden overlay slot with something in it comes from its edge: at once when the pointer touches the edge, or
     /// by a click on its tongue, which fades in as the pointer nears.
     private func pointerEvent(_ event: NSEvent) {
+        if event.type == .leftMouseUp { windowMoving = false }
         guard event.window === container.window, container.window != nil else { return }
         reveal(at: container.convert(event.locationInWindow, from: nil))
     }
@@ -900,11 +958,75 @@ import SlotChrome
 
     private func autoHideTick() {
         let now = Self.now
+        if NSEvent.pressedMouseButtons & 1 == 0 { windowMoving = false }   // a title-bar drag may send us no mouse-up
         for slot in orderedSlots where slot.view.isShown && effectiveMode(slot) == .overlay {
-            slot.clock.pointerInside(isPointer(in: slot), now: now)
-            slot.clock.setBusy(menuOpen || slot.view.isResizing || isTyping(in: slot))
-            if slot.clock.shouldHide(now: now) { hide(slot) }
+            let inside = isPointer(in: slot)
+            if !inside && !isPointerInWindow {
+                slot.clock.pointerOutsideWindow(now: now)   // left elsewhere than across its edge: Zen's 1 s
+            } else {
+                slot.clock.pointerInside(inside, now: now)
+            }
+            slot.clock.setBusy(menuOpen || windowMoving || slot.view.isResizing || isTyping(in: slot)
+                               || slot.flash != nil)
+            // Checked again when it fires: a drag of the window can report a leave that is none.
+            if slot.clock.shouldHide(now: now), !isPointer(in: slot) { hide(slot) }
         }
+    }
+
+    private var isPointerInWindow: Bool {
+        guard let window = container.window else { return false }
+        return container.bounds.contains(container.convert(window.mouseLocationOutsideOfEventStream, from: nil))
+    }
+
+    // MARK: Zen's rules
+
+    /// The window resigned key or the app went to the background: overlay slots go (Zen collapses on deactivate);
+    /// with a menu open, once it closes.
+    private func resigned() {
+        if menuOpen { resignedDuringMenu = true; return }
+        hideOnResign()
+    }
+
+    private func hideOnResign() {
+        for slot in orderedSlots where slot.view.isShown && AutoHideClock.hidesOnResign(mode: effectiveMode(slot)) {
+            hide(slot)
+        }
+    }
+
+    /// The capsule shows by its clock (pinned: always); a pending fade-out is one work item, not a timer.
+    private func updateCapsule(_ slot: Slot, animated: Bool = true) {
+        slot.capsuleCheck?.cancel()
+        slot.capsuleCheck = nil
+        let now = Self.now
+        slot.capsuleClock.setBusy(menuOpen || slot.view.capsule.isEditingFilter, now: now)
+        let visible = effectiveMode(slot) == .pinned || slot.capsuleClock.isVisible(now: now)
+        slot.view.capsule.setVisible(visible && slot.view.isShown, animated: animated)
+        guard let next = slot.capsuleClock.nextChange(now: now) else { return }
+        let check = DispatchWorkItem { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            updateCapsule(slot)
+        }
+        slot.capsuleCheck = check
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, next - now), execute: check)
+    }
+
+    /// The video changed: with `slot-flash`, the playlist's overlay slot shows for `SlotMotion.flash` when autoadvance or
+    /// a key moved on (only while the playlist is its shown tab); a new change restarts the time.
+    func videoChanged(cause: VideoChangeCause) {
+        guard let slot = orderedSlots.first(where: { $0.shownTab == .playlist }), slot.setting.mode == .overlay else { return }
+        // A flash under way restarts; otherwise only a hidden slot flashes.
+        let restart = slot.flash != nil && flashEnabled && (cause == .autoadvance || cause == .key)
+        guard restart || SlotFlash.shouldFlash(enabled: flashEnabled, slotShown: slot.view.isShown, cause: cause)
+        else { return }
+        slot.flash?.cancel()
+        let end = DispatchWorkItem { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            slot.flash = nil
+            if slot.view.isShown, !isPointer(in: slot), !menuOpen { hide(slot) }
+        }
+        if !slot.view.isShown { show(slot, focus: false) }
+        slot.flash = end
+        DispatchQueue.main.asyncAfter(deadline: .now() + SlotMotion.flash, execute: end)
     }
 
     /// Typing goes on in the slot: its page has a text field with the keyboard, or the playlist's filter has it.

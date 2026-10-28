@@ -2602,6 +2602,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let target = playlist?.neighbour(direction, skipping: isUnreadable) {
             _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
             hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
+            slots.videoChanged(cause: .key)
             openFile(target, stepped: direction) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
         } else {
             showMessage(direction > 0 ? "Last file" : "First file")
@@ -3602,12 +3603,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func playerDidReachEnd(_ player: PlayerCore) {
         guard core.config.playlistAutoadvance else { return }
         if let listPlaylist {
-            if listPlaylist.next != nil { openListItem(at: listPlaylist.currentIndex + 1, plays: true) }
+            if listPlaylist.next != nil {
+                slots.videoChanged(cause: .autoadvance)
+                openListItem(at: listPlaylist.currentIndex + 1, plays: true)
+            }
             return
         }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
         whenFolderRead { [weak self] in
             guard let self, let next = playlist?.neighbour(1, skipping: isUnreadable) else { return }
+            slots.videoChanged(cause: .autoadvance)
             openFile(next, stepped: 1) { [weak self] outcome in   // a broken file is gone past by the open itself
                 if outcome == .opened { self?.core.play() }
             }
