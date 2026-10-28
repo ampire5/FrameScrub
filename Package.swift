@@ -106,6 +106,11 @@ let package = Package(
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),
         .testTarget(
+            name: "SlotChromeTests",
+            dependencies: ["SlotChrome", "FrameScrubCore"],
+            swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
+        ),
+        .testTarget(
             name: "FrameScrubSettingsTests",
             dependencies: [
                 "FrameScrubSettings",

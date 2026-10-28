@@ -243,6 +243,12 @@ public enum SlotMotion {
 public enum VideoChangeCause: Sendable { case autoadvance, key, playlistClick, open }
 
 public enum SlotFlash {
+    /// When a flash's 0.8 s are over, the slot goes unless the user came to it: the pointer is in it, a menu of it is
+    /// open, it has the keyboard or its filter is open.
+    public static func endHides(pointerInside: Bool, menuOpen: Bool, inUse: Bool) -> Bool {
+        !pointerInside && !menuOpen && !inUse
+    }
+
     /// Only changes the user did not make in the playlist itself: autoadvance and the next / previous keys.
     public static func shouldFlash(enabled: Bool, slotShown: Bool, cause: VideoChangeCause) -> Bool {
         enabled && !slotShown && (cause == .autoadvance || cause == .key)

@@ -109,4 +109,12 @@ import Testing
         #expect(!SlotFlash.shouldFlash(enabled: true, slotShown: false, cause: .playlistClick))
         #expect(!SlotFlash.shouldFlash(enabled: true, slotShown: false, cause: .open))
     }
+
+    /// Final review I3: the flash's end leaves a slot the user has started using.
+    @Test func flashEndKeepsASlotInUse() {
+        #expect(SlotFlash.endHides(pointerInside: false, menuOpen: false, inUse: false))
+        #expect(!SlotFlash.endHides(pointerInside: true, menuOpen: false, inUse: false))
+        #expect(!SlotFlash.endHides(pointerInside: false, menuOpen: true, inUse: false))
+        #expect(!SlotFlash.endHides(pointerInside: false, menuOpen: false, inUse: true))
+    }
 }

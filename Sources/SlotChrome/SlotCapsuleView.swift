@@ -77,8 +77,10 @@ public struct SlotTool {
     public var onFilterSubmit: (() -> Void)?
     /// Other keys in the field (↑ ↓, page keys) for the view; true when it took the key. ↩ goes here first too.
     public var onFilterCommand: ((Selector) -> Bool)?
-    /// The field closed (Esc on an empty field, or `endFilter`): the keys go back to the player.
+    /// The user closed the field (Esc on an empty field): the keys go back to the player, an overlay slot hides.
     public var onFilterEnd: (() -> Void)?
+    /// The field closed otherwise (`closeFilter`, or its keys went elsewhere): nothing hides, the keys stay where they are.
+    public var onFilterClosed: (() -> Void)?
     /// A menu of the capsule opened or closed.
     public var onMenuTracking: ((Bool) -> Void)?
 
@@ -312,11 +314,24 @@ public struct SlotTool {
         window?.makeFirstResponder(field)
     }
 
-    /// Closes the field (the text stays with the playlist).
+    /// Closes the field from code (a tab switch, the slot hiding): not the user's Esc, so nothing else follows.
+    public func closeFilter() {
+        guard let field, !field.isHidden else { return }
+        field.isHidden = true
+        setRowHidden(false)
+        needsLayout = true
+        onFilterClosed?()
+    }
+
+    public func controlTextDidEndEditing(_ obj: Notification) {
+        closeFilter()   // the keys went elsewhere (a click on the video): the tabs come back
+    }
+
+    /// The user's close (Esc on an empty field); the text stays with the playlist.
     public func endFilter() {
         guard let field, !field.isHidden else { return }
         let hadKeys = field.currentEditor() != nil
-        field.isHidden = true
+        field.isHidden = true   // ends the editing, but closeFilter finds the field hidden already
         setRowHidden(false)
         needsLayout = true
         if hadKeys { onFilterEnd?() }

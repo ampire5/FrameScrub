@@ -172,7 +172,13 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         if accentChanged { onToolsChanged?() }
     }
 
-    /// The capsule's field closed: the keys go back to the player.
+    /// The capsule's field closed without the user's Esc (a tab switch, a hide, its keys gone elsewhere).
+    func filterClosed() {
+        strip?.filterEdited()
+        onToolsChanged?()
+    }
+
+    /// The capsule's field closed by the user's Esc: the keys go back to the player.
     func filterEnded() {
         strip?.filterEdited()
         onToolsChanged?()

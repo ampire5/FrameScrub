@@ -365,14 +365,16 @@ import SlotChrome
     }
 
     private func show(_ slot: Slot, focus: Bool) {
+        slot.flash?.cancel()   // an explicit show is the user's: a flash under way no longer hides it
+        slot.flash = nil
         if !slot.view.isShown {
             showCounter += 1
             slot.shownOrder = showCounter
             slot.setting.shown = true
-            updatePagesShown(slot)
             hideTongue(slot)
             slot.reveal.reset()
             applyLayout(revealing: slot)
+            updatePagesShown(slot)   // after the layout set the slot shown (before it, every page read as hidden)
             let inside = isPointer(in: slot)
             slot.clock.shown(pointerInside: inside, now: Self.now)
             slot.capsuleClock = CapsuleClock()
@@ -395,6 +397,7 @@ import SlotChrome
     private func hide(_ slot: Slot) {
         guard slot.view.isShown else { return }
         let hadFocus = holdsFocus(slot)
+        slot.view.capsule.closeFilter()
         slot.setting.shown = false
         slot.view.setShown(false, animated: true) { [weak self] in self?.onPagesChanged?() }
         updatePagesShown(slot)
@@ -526,7 +529,7 @@ import SlotChrome
     private func removeTab(_ content: SlotContent, from slot: Slot, dropPage: Bool) {
         guard let i = slot.tabs.firstIndex(of: content) else { return }
         let hadFocus = holdsFocus(slot)
-        if content == .playlist { slot.view.capsule.endFilter() }
+        if content == .playlist { slot.view.capsule.closeFilter() }
         slot.tabs.remove(at: i)
         slot.transient.remove(content)
         if slot.shownTab == content { slot.shownTab = slot.tabs.isEmpty ? nil : slot.tabs[min(i, slot.tabs.count - 1)] }
@@ -567,6 +570,9 @@ import SlotChrome
             guard let self else { return }
             if !isPlaylistShown { togglePlaylist() }
             guard let slot = orderedSlots.first(where: { $0.shownTab == .playlist && $0.view.isShown }) else { return }
+            slot.flash?.cancel()
+            slot.flash = nil
+            slot.view.capsule.setVisible(true, animated: false)   // a hidden field cannot take the keys
             slot.view.capsule.beginFilter(text: playlistView.filterText)
             updateCapsule(slot)
         }
@@ -604,7 +610,7 @@ import SlotChrome
         let shownID = slot.shownTab.map(Self.tabID)
         slot.view.setViews(views, shown: shownID.flatMap { views[$0] == nil ? nil : $0 })
         slot.view.capsule.tabs = slot.tabs.map { tab(for: $0, selected: $0 == slot.shownTab) }
-        if slot.shownTab != .playlist { slot.view.capsule.endFilter() }
+        if slot.shownTab != .playlist { slot.view.capsule.closeFilter() }
         slot.view.capsule.tools = slot.shownTab == .playlist ? playlistView.tools : []
         updatePagesShown(slot)
     }
@@ -682,6 +688,11 @@ import SlotChrome
         view.capsule.onFilterText = { [weak self] text in self?.playlistView.filterEdited(text) }
         view.capsule.onFilterCommand = { [weak self] selector in self?.playlistView.filterCommand(selector) ?? false }
         view.capsule.onFilterSubmit = { [weak self] in _ = self?.playlistView.filterCommand(#selector(NSResponder.insertNewline(_:))) }
+        view.capsule.onFilterClosed = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            playlistView.filterClosed()
+            updateCapsule(slot)
+        }
         view.capsule.onFilterEnd = { [weak self, weak slot] in
             guard let self, let slot else { return }
             playlistView.filterEnded()
@@ -1055,7 +1066,9 @@ import SlotChrome
         let end = DispatchWorkItem { [weak self, weak slot] in
             guard let self, let slot else { return }
             slot.flash = nil
-            if slot.view.isShown, !isPointer(in: slot), !menuOpen { hide(slot) }
+            guard slot.view.isShown else { return }
+            let inUse = holdsFocus(slot) || slot.view.capsule.isEditingFilter
+            if SlotFlash.endHides(pointerInside: isPointer(in: slot), menuOpen: menuOpen, inUse: inUse) { hide(slot) }
         }
         if !slot.view.isShown { show(slot, focus: false) }
         slot.flash = end
