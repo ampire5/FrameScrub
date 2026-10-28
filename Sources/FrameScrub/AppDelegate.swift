@@ -277,7 +277,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The different running copy of this app that launched before us and so must keep running, if any.
     private static func primaryInstance() -> NSRunningApplication? {
         func instance(_ app: NSRunningApplication) -> RunningInstance? {
-            guard let key = app.bundleIdentifier ?? app.executableURL?.path else { return nil }
+            guard let key = HandOver.instanceKey(bundlePath: app.bundleURL?.path, executablePath: app.executableURL?.path)
+            else { return nil }
             return RunningInstance(pid: app.processIdentifier, key: key, launchDate: app.launchDate)
         }
         guard let me = instance(.current) else { return nil }
@@ -308,18 +309,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// `path` for a file; `link` (a `framescrub://open?scene=` link) for a Stash scene, which has no path to pass.
     private static func postHandOver(path: String?, link: URL? = nil) {
-        var userInfo: [String: String] = [:]
-        if let path { userInfo["path"] = path }
-        if let link { userInfo["link"] = link.absoluteString }
         DistributedNotificationCenter.default().postNotificationName(
-            openFileNotification, object: nil, userInfo: userInfo, deliverImmediately: true)
+            openFileNotification, object: nil,
+            userInfo: HandOver.userInfo(path: path, link: link, bundle: Bundle.main.bundlePath), deliverImmediately: true)
     }
 
     private func observeHandOver() {
         handOverObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.openFileNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let self, !self.isSecondary, let controller = self.controller else { return }
+            guard let self, !self.isSecondary, let controller = self.controller,
+                  HandOver.isForUs(note.userInfo, ownBundle: Bundle.main.bundlePath) else { return }
             // Any process can post this name, so only an absolute path to an existing regular file is opened.
             if let path = note.userInfo?["path"] as? String, path.hasPrefix("/") {
                 let url = URL(fileURLWithPath: path)
