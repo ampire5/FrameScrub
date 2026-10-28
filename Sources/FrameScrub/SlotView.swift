@@ -2,16 +2,16 @@ import AppKit
 import HomeChrome
 import FrameScrubCore
 import QuartzCore
+import SlotChrome
 
-/// One slot at the window's edge (left, right or bottom): a thin header (the view's name with its menu, pin/float,
-/// backdrop, hide), the backdrop and the view itself — the playlist or a plugin page — below it. An empty slot shows a
-/// "+" in its middle. The slot's own layer is all that moves when it shows or hides; the video under it is untouched.
+/// One slot at the window's edge (left, right or bottom): the backdrop, its views (the playlist, plugin pages: one per
+/// tab, the shown one visible, the others kept hidden) at the card's full height, and the capsule over their top (tabs,
+/// the view's tools, pin / backdrop / hide; `SlotCapsuleView`). An empty slot shows a "+" in its middle. The slot's own layer is all that moves when it shows or hides; the video under it is untouched.
 /// Its frame is set by `SlotsController`. An overlay slot looks and moves as a compact browser sidebar does: a card a
-/// little off the edges with a soft shadow, sliding in on a light spring.
+/// little off the edges with a soft shadow, sliding in and out on the same light spring (Zen's compact sidebar).
 @MainActor final class SlotView: NSView {
-    static let headerHeight: CGFloat = 30
-    /// Overlay slots keep this far from the video's edges.
-    static let overlayInset: CGFloat = 8
+    /// Overlay slots keep this far from the video's edges (Zen: half its 8 px separation).
+    static let overlayInset: CGFloat = 4
     private static let overlayCornerRadius: CGFloat = 10
     /// The grab zone of the inner edge, half of it outside an overlay card.
     private static let gripWidth: CGFloat = 8
@@ -19,17 +19,10 @@ import QuartzCore
     private static let darkColor = NSColor(srgbRed: 20 / 255, green: 20 / 255, blue: 22 / 255, alpha: 1)
 
     let edge: SlotEdge
-    /// The playlist view or a plugin page; fills the slot below the header.
-    var content: NSView? {
-        didSet {
-            guard content !== oldValue else { return }
-            if oldValue?.superview === contentHost { oldValue?.removeFromSuperview() }
-            if let content { host(content) }
-            updateEmptyState()
-            applyTextShadow(mode == .overlay && backdrop == .clear)
-        }
-    }
-    var title = "" { didSet { titleButton.title = title + " ▾" } }
+    let capsule: SlotCapsuleView
+    /// The tabs' views by id; each fills the card. Only `shownView` is visible.
+    private(set) var views: [String: NSView] = [:]
+    private(set) var shownView: NSView?
     /// Shown in the middle of a slot without a view (a plugin that is not in the config any more).
     var note: String? { didSet { updateEmptyState() } }
     var mode = SlotMode.overlay { didSet { applyLook() } }
@@ -39,11 +32,6 @@ import QuartzCore
     /// The size the drag of the inner edge asks for (not clamped), and the drag's end.
     var onResize: ((CGFloat) -> Void)?
     var onResizeEnd: (() -> Void)?
-    /// ▾ next to the name: replace / move / auto-hide / clear.
-    var onHeaderMenu: ((NSView) -> Void)?
-    var onTogglePin: (() -> Void)?
-    var onCycleBackdrop: (() -> Void)?
-    var onClose: (() -> Void)?
     /// The "+" of an empty slot.
     var onPlus: ((NSView) -> Void)?
 
@@ -57,11 +45,6 @@ import QuartzCore
     private let blur = NSVisualEffectView()
     /// A dark veil over the blur (glass) or straight over the video (clear).
     private let veil = NSView()
-    private let header = NSView()
-    private let titleButton = NSButton(title: "", target: nil, action: nil)
-    private let pinButton = SlotView.symbolButton("pin", "Pin / Float")
-    private let backdropButton = SlotView.symbolButton("circle.lefthalf.filled", "Next Backdrop")
-    private let closeButton = SlotView.symbolButton("xmark", "Hide")
     private let contentHost = NSView()
     private let plusButton = NSButton(frame: .zero)
     private let noteLabel = NSTextField(wrappingLabelWithString: "")
@@ -74,6 +57,7 @@ import QuartzCore
     init(edge: SlotEdge) {
         self.edge = edge
         grip = SlotGripView(edge: edge)
+        capsule = SlotCapsuleView(edge: edge)
         super.init(frame: .zero)
         wantsLayer = true
         appearance = NSAppearance(named: .darkAqua)
@@ -82,20 +66,19 @@ import QuartzCore
         panel.wantsLayer = true
         panel.layer?.masksToBounds = true
         panel.layer?.cornerCurve = .continuous
-        for view in [blur, veil, header, contentHost, plusButton, noteLabel] as [NSView] {
+        for view in [blur, veil, contentHost, plusButton, noteLabel] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             panel.addSubview(view)
         }
+        panel.addSubview(capsule)   // over the views; placed by frame in layout()
         blur.material = .hudWindow
         blur.blendingMode = .withinWindow
         blur.state = .active
         veil.wantsLayer = true
-        header.wantsLayer = true
         contentHost.wantsLayer = true
         layer?.shadowColor = NSColor.black.cgColor
         layer?.shadowOffset = CGSize(width: 0, height: -3)
         layer?.shadowRadius = 4
-        buildHeader()
         // A symbol in a round plate: a "+" typed as a title sits off-centre in a circular bezel.
         plusButton.isBordered = false
         plusButton.image = Icons.symbol("plus", pointSize: 20, weight: .light, description: "Choose what this slot shows")
@@ -123,13 +106,9 @@ import QuartzCore
             ])
         }
         NSLayoutConstraint.activate([
-            header.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
-            header.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
-            header.topAnchor.constraint(equalTo: panel.topAnchor),
-            header.heightAnchor.constraint(equalToConstant: Self.headerHeight),
             contentHost.leadingAnchor.constraint(equalTo: panel.leadingAnchor),
             contentHost.trailingAnchor.constraint(equalTo: panel.trailingAnchor),
-            contentHost.topAnchor.constraint(equalTo: header.bottomAnchor),
+            contentHost.topAnchor.constraint(equalTo: panel.topAnchor),
             contentHost.bottomAnchor.constraint(equalTo: panel.bottomAnchor),
             plusButton.widthAnchor.constraint(equalToConstant: Self.plusSize),
             plusButton.heightAnchor.constraint(equalToConstant: Self.plusSize),
@@ -177,44 +156,21 @@ import QuartzCore
 
     private static let plusSize: CGFloat = 44
 
-    private static func symbolButton(_ symbol: String, _ tip: String) -> NSButton {
-        let button = NSButton(image: Icons.symbol(symbol, pointSize: 13, description: tip) ?? NSImage(),
-                              target: nil, action: nil)
-        button.isBordered = false
-        button.toolTip = tip
-        button.contentTintColor = .secondaryLabelColor
-        button.translatesAutoresizingMaskIntoConstraints = false
-        button.widthAnchor.constraint(equalToConstant: 22).isActive = true
-        return button
-    }
-
-    private func buildHeader() {
-        titleButton.isBordered = false
-        titleButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize, weight: .semibold)
-        titleButton.contentTintColor = .labelColor
-        titleButton.target = self
-        titleButton.action = #selector(titlePressed)
-        titleButton.lineBreakMode = .byTruncatingTail
-        titleButton.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        pinButton.target = self
-        pinButton.action = #selector(pinPressed)
-        backdropButton.target = self
-        backdropButton.action = #selector(backdropPressed)
-        closeButton.target = self
-        closeButton.action = #selector(closePressed)
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
-        let stack = NSStackView(views: [titleButton, spacer, pinButton, backdropButton, closeButton])
-        stack.spacing = 4
-        stack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 8)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        header.addSubview(stack)
-        NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: header.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: header.trailingAnchor),
-            stack.topAnchor.constraint(equalTo: header.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: header.bottomAnchor),
-        ])
+    /// The slot's tabs' views by id, and the one shown. Views already here stay (nothing is rebuilt); views no longer
+    /// listed leave; the others are hidden, out of hit testing and VoiceOver.
+    func setViews(_ views: [String: NSView], shown id: String?) {
+        for (key, old) in self.views where views[key] !== old && old.superview === contentHost { old.removeFromSuperview() }
+        for (_, view) in views where view.superview !== contentHost { host(view) }
+        self.views = views
+        let shown = id.flatMap { views[$0] }
+        for (_, view) in views {
+            let visible = view === shown
+            if view.isHidden == visible { view.isHidden = !visible }
+            view.setAccessibilityElement(visible)
+        }
+        shownView = shown
+        updateEmptyState()
+        applyTextShadow(mode == .overlay && backdrop == .clear)
     }
 
     private func host(_ view: NSView) {
@@ -227,13 +183,12 @@ import QuartzCore
             view.topAnchor.constraint(equalTo: contentHost.topAnchor),
             view.bottomAnchor.constraint(equalTo: contentHost.bottomAnchor),
         ])
-        view.isHidden = false
     }
 
     private func updateEmptyState() {
-        plusButton.isHidden = content != nil
+        plusButton.isHidden = shownView != nil
         noteLabel.stringValue = note ?? ""
-        noteLabel.isHidden = content != nil || note == nil
+        noteLabel.isHidden = shownView != nil || note == nil
     }
 
     /// Overlay: a card a little off the video's edges, rounded, shadowed, with the chosen backdrop. Pinned: flush,
@@ -260,32 +215,32 @@ import QuartzCore
         panel.layer?.cornerRadius = overlay ? Self.overlayCornerRadius : 0
         panel.layer?.backgroundColor = look == .dark ? Self.darkColor.cgColor : NSColor.clear.cgColor
         panel.layer?.borderWidth = overlay ? 1 : 0
-        panel.layer?.borderColor = NSColor(white: 1, alpha: 0.1).cgColor
+        panel.layer?.borderColor = NSColor(white: 1, alpha: 0.15).cgColor
         blur.isHidden = look != .glass
         veil.isHidden = look == .dark
         veil.layer?.backgroundColor = NSColor(white: 0, alpha: look == .glass ? 0.3 : 0.35).cgColor
         layer?.shadowOpacity = overlay ? 0.24 : 0
         applyTextShadow(look == .clear)
         separator.isHidden = overlay
-        backdropButton.isHidden = !overlay
-        pinButton.image = Icons.symbol(overlay ? "pin" : "pin.fill", pointSize: 13, description: "Pin / Float")
+        capsule.showsBackdropButton = overlay
+        capsule.pinned = !overlay
         needsLayout = true
     }
 
-    /// On the clear backdrop the header, and the playlist, get a shadow under their text; a page draws its own.
+    /// On the clear backdrop the playlist gets a shadow under its text; a page draws its own, the capsule has its glass.
     private func applyTextShadow(_ on: Bool) {
-        let views: [NSView] = content is PluginPanel ? [header] : [header, contentHost]
-        for view in [header, contentHost] {
-            let shadowed = on && views.contains(view)
-            view.layer?.shadowColor = NSColor.black.cgColor
-            view.layer?.shadowOpacity = shadowed ? 0.9 : 0
-            view.layer?.shadowRadius = 1.5
-            view.layer?.shadowOffset = CGSize(width: 0, height: -1)
-        }
+        let shadowed = on && !(shownView is PluginPanel)
+        contentHost.layer?.shadowColor = NSColor.black.cgColor
+        contentHost.layer?.shadowOpacity = shadowed ? 0.9 : 0
+        contentHost.layer?.shadowRadius = 1.5
+        contentHost.layer?.shadowOffset = CGSize(width: 0, height: -1)
     }
 
     override func layout() {
         super.layout()
+        let m = SlotCapsuleView.margin, h = SlotCapsuleView.height
+        let place = CGRect(x: m, y: panel.bounds.maxY - m - h, width: max(0, panel.bounds.width - 2 * m), height: h)
+        if capsule.frame != place { capsule.frame = place }
         // The card's shadow follows its rounded shape (a path: no offscreen pass while it moves).
         layer?.shadowPath = mode == .overlay
             ? CGPath(roundedRect: panel.frame, cornerWidth: Self.overlayCornerRadius,
@@ -295,10 +250,11 @@ import QuartzCore
 
     // MARK: Showing and hiding
 
-    /// Slides in from the slot's edge on a light spring (about 0.3 s, overshooting by about 1%), and out in 0.15 s;
-    /// with Reduce Motion a short fade instead. Only this view's layer animates.
+    /// Slides in from the slot's edge and back out on the same spring (`SlotMotion`: 0.25 s, about 1 % past the mark,
+    /// as Zen's compact sidebar); with Reduce Motion a short fade instead. Only this view's layer animates.
     func setShown(_ shown: Bool, animated: Bool, completion: (() -> Void)? = nil) {
         isShown = shown
+        if shown { capsule.setVisible(true, animated: false) }   // Task 8: the capsule's own clock
         guard let layer else { isHidden = !shown; completion?(); return }
         layer.removeAnimation(forKey: "slot")
         if shown { isHidden = false }
@@ -312,7 +268,7 @@ import QuartzCore
             let fade = CABasicAnimation(keyPath: "opacity")
             fade.fromValue = shown ? 0 : 1
             fade.toValue = shown ? 1 : 0
-            fade.duration = 0.15
+            fade.duration = SlotMotion.fade
             animation = fade
         } else {
             let keyPath = edge == .bottom ? "transform.translation.y" : "transform.translation.x"
@@ -321,23 +277,14 @@ import QuartzCore
             case .right: bounds.width
             case .bottom: -bounds.height
             }
-            if shown {
-                let spring = CASpringAnimation(keyPath: keyPath)
-                spring.mass = 1
-                spring.stiffness = 300
-                spring.damping = 28.4   // damping ratio 0.82: about 1% past the mark, then back
-                spring.fromValue = away
-                spring.toValue = 0
-                spring.duration = spring.settlingDuration
-                animation = spring
-            } else {
-                let slide = CABasicAnimation(keyPath: keyPath)
-                slide.fromValue = 0
-                slide.toValue = away
-                slide.duration = 0.15
-                slide.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                animation = slide
-            }
+            let spring = CASpringAnimation(keyPath: keyPath)
+            spring.mass = SlotMotion.mass
+            spring.stiffness = SlotMotion.stiffness
+            spring.damping = SlotMotion.damping
+            spring.fromValue = shown ? away : 0
+            spring.toValue = shown ? 0 : away
+            spring.duration = spring.settlingDuration
+            animation = spring
         }
         animation.fillMode = .forwards
         animation.isRemovedOnCompletion = false
@@ -369,10 +316,6 @@ import QuartzCore
         return false
     }
 
-    @objc private func titlePressed() { onHeaderMenu?(titleButton) }
-    @objc private func pinPressed() { onTogglePin?() }
-    @objc private func backdropPressed() { onCycleBackdrop?() }
-    @objc private func closePressed() { onClose?() }
     @objc private func plusPressed() { onPlus?(plusButton) }
 
     /// Opens the "+" menu, as a click on it would.

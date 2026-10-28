@@ -229,7 +229,7 @@ public struct SlotTool {
 
     private func popUp(_ menu: NSMenu, under view: NSView) {
         onMenuTracking?(true)
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.minY - 4), in: view)
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 2), in: view)
         onMenuTracking?(false)
     }
 

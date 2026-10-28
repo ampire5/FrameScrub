@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import SlotChrome
 
 /// The window's three slots (left, right, bottom; spec "slots"): what each holds, where it goes (`SlotLayout`), showing
 /// and hiding them (chords, menus, the edge and its tongue, auto-hide), and the plugin pages they hold — one page per slot, so
@@ -417,18 +418,15 @@ import FrameScrubCore
         switch content {
         case .empty:
             dropPage(of: slot)
-            slot.view.content = nil
-            slot.view.title = "Empty"
+            show(nil, in: slot)
         case .playlist:
             dropPage(of: slot)
-            slot.view.content = playlistView
-            slot.view.title = "Playlist"
+            show(playlistView, in: slot)
         case let .plugin(name):
-            if slot.view.content === playlistView { slot.view.content = nil }
-            slot.view.title = name
+            if slot.view.shownView === playlistView { show(nil, in: slot) }
             guard let entry = allPlugins.first(where: { $0.name == name }) else {
                 dropPage(of: slot)
-                slot.view.content = nil
+                show(nil, in: slot)
                 slot.view.note = "Plugin “\(name)” is not in framescrub.conf"
                 return
             }
@@ -449,13 +447,24 @@ import FrameScrubCore
                     slot.view.note = "Cannot show \(entry.url.absoluteString)"
                 }
             }
-            slot.view.content = page
+            show(page, in: slot)
+        }
+    }
+
+    /// The slot's one view (Task 7 makes these tabs), and its tab in the capsule.
+    private func show(_ view: NSView?, in slot: Slot) {
+        slot.view.setViews(view.map { ["view": $0] } ?? [:], shown: view == nil ? nil : "view")
+        slot.view.capsule.tabs = switch slot.setting.content {
+        case .empty: []
+        case .playlist: [SlotTab(id: "playlist", symbol: "play.rectangle", letter: nil, name: "Playlist", selected: true)]
+        case let .plugin(name): [SlotTab(id: "plugin:" + name, symbol: nil, letter: String(name.prefix(1)).uppercased(),
+                                         name: name, selected: true)]
         }
     }
 
     private func dropPage(of slot: Slot) {
         guard let page = slot.page else { return }
-        if slot.view.content === page { slot.view.content = nil }
+        if slot.view.shownView === page { show(nil, in: slot) }
         slot.page = nil
         slot.pageName = nil
         slot.pageEntryURL = nil
@@ -467,8 +476,8 @@ import FrameScrubCore
         let hadFocus = holdsFocus(slot) || holdsFocus(target)
         let mine = (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent)
         let other = (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent)
-        slot.view.content = nil
-        target.view.content = nil
+        show(nil, in: slot)
+        show(nil, in: target)
         (slot.setting.content, slot.page, slot.pageName, slot.pageEntryURL, slot.savedContent) = other
         (target.setting.content, target.page, target.pageName, target.pageEntryURL, target.savedContent) = mine
         install(target.setting.content, in: target)
@@ -491,19 +500,28 @@ import FrameScrubCore
             guard let self, let slot else { return }
             popUp(plusMenu(for: slot), from: button, in: slot)
         }
-        view.onHeaderMenu = { [weak self, weak slot] button in
-            guard let self, let slot else { return }
-            popUp(headerMenu(for: slot), from: button, in: slot)
+        view.capsule.onCapsuleMenu = { [weak self, weak slot] in
+            guard let self, let slot else { return nil }
+            return headerMenu(for: slot)
         }
-        view.onTogglePin = { [weak self, weak slot] in
+        view.capsule.onTabMenu = { [weak self, weak slot] _ in
+            guard let self, let slot else { return nil }
+            return headerMenu(for: slot)
+        }
+        view.capsule.onPlus = { [weak self, weak slot] button in
+            guard let self, let slot else { return }
+            popUp(plusMenu(for: slot), from: button, in: slot)
+        }
+        view.capsule.onPin = { [weak self, weak slot] in
             guard let self, let slot else { return }
             togglePin(slot)
         }
-        view.onCycleBackdrop = { [weak self, weak slot] in
+        view.capsule.onBackdrop = { [weak self, weak slot] in
             guard let self, let slot else { return }
             cycleBackdrop(slot)
         }
-        view.onClose = { [weak self, weak slot] in
+        view.capsule.onMenuTracking = { [weak self] open in self?.menuOpen = open }
+        view.capsule.onHide = { [weak self, weak slot] in
             guard let self, let slot else { return }
             hide(slot)
         }
