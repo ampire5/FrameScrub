@@ -1,6 +1,6 @@
 import Foundation
 
-/// A place at the window's edge that holds one view: the playlist or a plugin page (`slot-left` / `slot-right` /
+/// A place at the window's edge that holds views as tabs: the playlist, plugin pages (`slot-left` / `slot-right` /
 /// `slot-bottom`).
 public enum SlotEdge: String, CaseIterable, Sendable, Codable {
     case left, right, bottom
@@ -72,10 +72,17 @@ public enum SlotContent: Equatable, Sendable {
     }
 }
 
-/// One slot's saved state, written as `content, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g.
-/// `plugin:Notes, overlay, glass, mouse-leaves, 560, hidden, at-once`. Text without the last field reveals at once.
+/// One slot's saved state, written as `contents, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g.
+/// `plugin:Notes, overlay, glass, mouse-leaves, 560, hidden, at-once`. The contents are the slot's tabs joined by ` + `
+/// (`playlist + plugin:Stash`), the shown one first; one tab is written as before, none as `empty`.
 public struct SlotSetting: Equatable, Sendable {
-    public var content: SlotContent
+    /// The tabs, the shown one first; never `.empty`, no duplicates.
+    public var contents: [SlotContent]
+    /// The shown tab, `.empty` for none. Setting it makes it the only tab (`.empty`: none).
+    public var content: SlotContent {
+        get { contents.first ?? .empty }
+        set { contents = newValue == .empty ? [] : [newValue] }
+    }
     public var mode: SlotMode
     public var backdrop: SlotBackdrop
     public var autoHide: SlotAutoHide
@@ -86,7 +93,7 @@ public struct SlotSetting: Equatable, Sendable {
 
     public init(content: SlotContent, mode: SlotMode, backdrop: SlotBackdrop, autoHide: SlotAutoHide, size: Int,
                 shown: Bool, reveal: SlotReveal = .atOnce) {
-        self.content = content
+        contents = content == .empty ? [] : [content]
         self.mode = mode
         self.backdrop = backdrop
         self.autoHide = autoHide
@@ -108,7 +115,7 @@ public struct SlotSetting: Equatable, Sendable {
         fields.removeLast()
         guard fields.count >= 6 else { return nil }
         let tail = Array(fields.suffix(5))
-        guard let content = SlotContent(text: fields.dropLast(5).joined(separator: ",")),
+        guard let contents = Self.contents(text: fields.dropLast(5).joined(separator: ",")),
               let mode = SlotMode(rawValue: tail[0].lowercased()),
               let backdrop = SlotBackdrop(rawValue: tail[1].lowercased()),
               let autoHide = SlotAutoHide(rawValue: tail[2].lowercased()),
@@ -119,12 +126,23 @@ public struct SlotSetting: Equatable, Sendable {
         case "hidden": shown = false
         default: return nil
         }
-        self.init(content: content, mode: mode, backdrop: backdrop, autoHide: autoHide, size: size, shown: shown,
+        self.init(content: .empty, mode: mode, backdrop: backdrop, autoHide: autoHide, size: size, shown: shown,
                   reveal: reveal)
+        self.contents = contents
+    }
+
+    /// `playlist + plugin:Stash`: each entry must read; `empty` and repeats are dropped.
+    private static func contents(text: String) -> [SlotContent]? {
+        var list: [SlotContent] = []
+        for part in text.components(separatedBy: " + ") {
+            guard let content = SlotContent(text: part.trimmingCharacters(in: .whitespaces)) else { return nil }
+            if content != .empty && !list.contains(content) { list.append(content) }
+        }
+        return list
     }
 
     public var text: String {
-        [content.text, mode.rawValue, backdrop.rawValue, autoHide.rawValue, String(size), shown ? "shown" : "hidden",
+        [contents.isEmpty ? SlotContent.empty.text : contents.map(\.text).joined(separator: " + "), mode.rawValue, backdrop.rawValue, autoHide.rawValue, String(size), shown ? "shown" : "hidden",
          reveal.rawValue]
             .joined(separator: ", ")
     }

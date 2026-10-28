@@ -97,6 +97,16 @@ import Testing
         #expect(Config.keys.contains("slot-reveal-distance"))
     }
 
+    @Test func slotFlashDefaultsOffAndParses() {
+        #expect(Config().slotFlash == false)
+        let (c, warnings) = Config.parse("slot-flash=yes")
+        #expect(warnings.isEmpty)
+        #expect(c.slotFlash)
+        #expect(c.text(forKey: "slot-flash") == "yes")
+        #expect(!Config.parse("slot-flash=maybe").1.isEmpty)
+        #expect(Config.keys.contains("slot-flash"))
+    }
+
     @Test func parsesPlaylistStripKeys() {
         let d = Config()
         #expect(d.playlistView == .list && d.playlistStripReturn == 3)

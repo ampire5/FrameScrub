@@ -176,6 +176,9 @@ public struct Config: Equatable, Sendable {
     public var slots = SlotDefaults.standard
     /// `slot-reveal-distance`: how near a side edge (points) the pointer brings a hidden slot (`EdgeReveal.isAt`).
     public var slotRevealDistance = 12
+    /// `slot-flash`: the playlist's slot shows for a moment when the video changes by autoadvance or a key
+    /// (`SlotFlash`, Zen's `toolbar-flash-popup`).
+    public var slotFlash = false
     /// `mouse-profile`: what the mouse's buttons do (`MouseProfile`).
     public var mouseProfile = MouseProfile.viewing
     /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
@@ -266,7 +269,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strong-strength", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
@@ -307,6 +310,7 @@ public struct Config: Equatable, Sendable {
         case _ where SlotEdge.allCases.contains(where: { $0.key == key }):
             return slots[SlotEdge.allCases.first { $0.key == key }!]?.text
         case "slot-reveal-distance": return String(slotRevealDistance)
+        case "slot-flash": return yesNo(slotFlash)
         case "mouse-profile": return mouseProfile.rawValue
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
@@ -500,6 +504,7 @@ public struct Config: Equatable, Sendable {
             guard let setting = SlotSetting(text: value) else { return false }
             slots[edge] = setting.clamped(for: edge)
         case "slot-reveal-distance": guard let v = int(2...60) else { return false }; slotRevealDistance = v
+        case "slot-flash": guard let v = bool() else { return false }; slotFlash = v
         case "mouse-profile": guard let v = MouseProfile(rawValue: value.lowercased()) else { return false }; mouseProfile = v
         case "preview": guard let v = bool() else { return false }; preview = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v

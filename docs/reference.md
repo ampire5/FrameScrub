@@ -457,10 +457,11 @@ stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
 stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
 plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
-slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: view (empty, playlist, plugin:<name>), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
+slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: views as tabs, the shown one first, joined by " + " (empty, playlist, plugin:<name>; e.g. playlist + plugin:Notes), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
 slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
+slot-flash=no                   # yes: the playlist's slot shows for 0.8 s when the video changes by autoadvance or a key (as Zen's sidebar on a tab switch)
 mouse-profile=viewing           # viewing | editing: what the mouse's buttons do (editing: marks under back / forward; viewing: back shows the info, forward nothing). SmartShift held 0.6 s, or View › Mouse Buttons for Editing, switches
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
