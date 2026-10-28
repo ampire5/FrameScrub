@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import SlotChrome
 import WebKit
 
 /// A web page in a slot: a plugin. The page drives the player through `window.framescrub` and hears the
@@ -315,7 +316,14 @@ import WebKit
         let source = PluginBridgeScript.source(trusted: trusted, stash: stash, stashOrigins: stashOrigins,
                                                extra: Self.keyScript)
         content.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        content.addUserScript(WKUserScript(source: Self.insetScript, injectionTime: .atDocumentStart, forMainFrameOnly: true))
     }
+
+    /// How far down the slot's capsule reaches over the page: `--slot-top-inset` on the root element, for a page that
+    /// wants its top clear of it (`padding-top: var(--slot-top-inset)`).
+    static let topInset = SlotCapsuleView.height + 2 * SlotCapsuleView.margin
+    private static let insetScript =
+        "document.documentElement.style.setProperty('--slot-top-inset', '\(Int(topInset))px');"
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }

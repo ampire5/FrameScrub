@@ -75,6 +75,8 @@ public struct SlotTool {
     public var onCapsuleMenu: (() -> NSMenu?)?
     public var onFilterText: ((String) -> Void)?
     public var onFilterSubmit: (() -> Void)?
+    /// Other keys in the field (↑ ↓, page keys) for the view; true when it took the key. ↩ goes here first too.
+    public var onFilterCommand: ((Selector) -> Bool)?
     /// The field closed (Esc on an empty field, or `endFilter`): the keys go back to the player.
     public var onFilterEnd: (() -> Void)?
     /// A menu of the capsule opened or closed.
@@ -345,6 +347,7 @@ public struct SlotTool {
 
     public func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         guard let field else { return false }
+        if selector != #selector(NSResponder.cancelOperation(_:)), onFilterCommand?(selector) == true { return true }
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
             onFilterSubmit?()

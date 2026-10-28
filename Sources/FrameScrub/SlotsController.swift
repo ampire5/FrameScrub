@@ -125,6 +125,7 @@ import SlotChrome
         self.above = above
         self.playlistView = playlistView
         plugins = config.plugins
+        defer { wirePlaylist() }
         revealBand = CGFloat(config.slotRevealDistance)
         flashEnabled = config.slotFlash
         var playlistTaken = false
@@ -161,6 +162,7 @@ import SlotChrome
                 slot.shownOrder = showCounter
                 slot.view.setShown(true, animated: false)
                 updatePagesShown(slot)
+                updateCapsule(slot, animated: false)
             } else {
                 slot.setting.shown = false
             }
@@ -461,7 +463,10 @@ import SlotChrome
             revealing?.view.setShown(true, animated: false)
             report()
         }
-        if modesChanged { onPagesChanged?() }
+        if modesChanged {
+            for slot in shown where slot.view.isShown { updateCapsule(slot, animated: false) }   // pinned: always shown
+            onPagesChanged?()
+        }
     }
 
     private func effectiveMode(_ slot: Slot) -> SlotMode { slot.demoted ? .overlay : slot.setting.mode }
@@ -556,6 +561,24 @@ import SlotChrome
         show(target, focus: hadFocus)
     }
 
+    /// The playlist's filter and order live in the capsule of the slot that shows it.
+    private func wirePlaylist() {
+        playlistView.onBeginFilter = { [weak self] in
+            guard let self else { return }
+            if !isPlaylistShown { togglePlaylist() }
+            guard let slot = orderedSlots.first(where: { $0.shownTab == .playlist && $0.view.isShown }) else { return }
+            slot.view.capsule.beginFilter(text: playlistView.filterText)
+            updateCapsule(slot)
+        }
+        playlistView.onToolsChanged = { [weak self] in
+            guard let self, let slot = orderedSlots.first(where: { $0.shownTab == .playlist }) else { return }
+            slot.view.capsule.tools = playlistView.tools
+        }
+        playlistView.editingFilter = { [weak self] in
+            self?.orderedSlots.contains { $0.shownTab == .playlist && $0.view.capsule.isEditingFilter } ?? false
+        }
+    }
+
     /// After the tabs changed: the views, the capsule, saving, the pages' state.
     private func changed(_ slot: Slot, hadFocus: Bool) {
         slot.sync()
@@ -581,6 +604,8 @@ import SlotChrome
         let shownID = slot.shownTab.map(Self.tabID)
         slot.view.setViews(views, shown: shownID.flatMap { views[$0] == nil ? nil : $0 })
         slot.view.capsule.tabs = slot.tabs.map { tab(for: $0, selected: $0 == slot.shownTab) }
+        if slot.shownTab != .playlist { slot.view.capsule.endFilter() }
+        slot.view.capsule.tools = slot.shownTab == .playlist ? playlistView.tools : []
         updatePagesShown(slot)
     }
 
@@ -654,6 +679,14 @@ import SlotChrome
             cycleBackdrop(slot)
         }
         view.capsule.onMenuTracking = { [weak self] open in self?.menuOpen = open }
+        view.capsule.onFilterText = { [weak self] text in self?.playlistView.filterEdited(text) }
+        view.capsule.onFilterCommand = { [weak self] selector in self?.playlistView.filterCommand(selector) ?? false }
+        view.capsule.onFilterSubmit = { [weak self] in _ = self?.playlistView.filterCommand(#selector(NSResponder.insertNewline(_:))) }
+        view.capsule.onFilterEnd = { [weak self, weak slot] in
+            guard let self, let slot else { return }
+            playlistView.filterEnded()
+            updateCapsule(slot)
+        }
         view.onPointerInside = { [weak self, weak slot] inside in
             guard let self, let slot else { return }
             slot.capsuleClock.pointerInside(inside, now: Self.now)

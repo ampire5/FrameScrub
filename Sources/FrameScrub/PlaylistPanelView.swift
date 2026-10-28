@@ -1,10 +1,12 @@
 import AppKit
 import FrameScrubCore
 import HomeScreenModel
+import SlotChrome
 
 /// The playlist (shown in a slot): the folder's videos or a page's list, current one highlighted; a click opens a row.
-/// On top: a name filter and, for a folder, the order.
-final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+/// Its filter and, for a folder, its order are tools in the slot's capsule (`tools`); the capsule's filter field drives
+/// the filter here (`filterEdited`, `filterCommand`, `filterEnded`).
+final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A row was clicked: its index among the rows shown.
     var onSelect: ((Int) -> Void)?
     /// The filter text changed (live, as it is typed).
@@ -15,8 +17,17 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     var onSubmitFilter: (() -> Void)?
     /// Esc in the filter field (after clearing it): the keys go back to the player.
     var onEndFilter: (() -> Void)?
-    private let search = NSSearchField()
-    private let sortButton = NSPopUpButton(frame: .zero, pullsDown: false)
+    /// 🔍 or ⌘F: the slot opens its capsule's filter field (with `filterText`).
+    var onBeginFilter: (() -> Void)?
+    /// The tools changed (the filter's accent, the order).
+    var onToolsChanged: (() -> Void)?
+    /// Whether the capsule's filter field has the keyboard (set by the slots).
+    var editingFilter: (() -> Bool)?
+    /// The filter's text, kept while the field is closed.
+    private(set) var filterText = ""
+    /// The folder's order; nil for a page's list, which keeps the page's order.
+    private var sort: BrowserSort?
+    private var listName: String?
     private let table = NSTableView()
     private let scroll = NSScrollView()
     private var rows: [PlaylistRow] = []
@@ -65,59 +76,22 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.translatesAutoresizingMaskIntoConstraints = false
+        // The first row starts under the slot's capsule, which lies over the list.
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets(top: PluginPanel.topInset, left: 0, bottom: 0, right: 0)
         addSubview(scroll)
-        search.placeholderString = "Filter (⌘F)"
-        search.controlSize = .small
-        search.sendsSearchStringImmediately = true
-        search.delegate = self
-        search.postsFrameChangedNotifications = true
-        NotificationCenter.default.addObserver(self, selector: #selector(alignNames), name: NSView.frameDidChangeNotification, object: search)
-        search.target = self
-        search.action = #selector(filterChanged)
-        for sort in PlaylistSort.allCases {
-            sortButton.addItem(withTitle: sort.shortTitle)
-            sortButton.lastItem?.representedObject = sort.rawValue
-        }
-        sortButton.controlSize = .small
-        sortButton.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
-        sortButton.target = self
-        sortButton.action = #selector(sortPicked)
-        let bar = NSStackView(views: [search, sortButton])
-        bar.spacing = 6
-        bar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 6, right: 8)
-        sortButton.setContentHuggingPriority(.required, for: .horizontal)
-        search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        bar.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(bar)
         NSLayoutConstraint.activate([
-            bar.leadingAnchor.constraint(equalTo: leadingAnchor), bar.trailingAnchor.constraint(equalTo: trailingAnchor),
-            bar.topAnchor.constraint(equalTo: topAnchor),
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: bar.bottomAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
+            scroll.topAnchor.constraint(equalTo: topAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Where the names start in a row: under the filter field's text, so one text edge runs down the panel.
-    private var nameInset: CGFloat = 30
+    /// Where the names start in a row.
+    private let nameInset: CGFloat = 14
 
-    /// Follows the filter field: its frame is only known once the bar above the list has been laid out.
-    @objc private func alignNames() {
-        guard search.frame.width > 0, let cell = search.cell as? NSSearchFieldCell else { return }
-        let textX = search.convert(cell.searchTextRect(forBounds: search.bounds), to: self).minX
-        let columnX = table.convert(table.rect(ofColumn: 0), to: self).minX
-        let inset = (textX - columnX + 2).rounded()   // + the field editor's own text padding
-        guard inset > 0, inset != nameInset else { return }
-        nameInset = inset
-        table.enumerateAvailableRowViews { row, _ in
-            for case let cell as NSTableCellView in row.subviews {
-                cell.constraints.first { $0.identifier == "leading" }?.constant = inset
-            }
-        }
-    }
-
-    /// The strip under the bar instead of the table, or back.
+    /// The strip instead of the table, or back.
     private func applyMode() {
         if mode == .strip, strip == nil {
             let strip = PlaylistStripView()
@@ -138,24 +112,40 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     }
 
     /// Whether the filter field has the keyboard (the panel stays while it does).
-    var isEditingFilter: Bool {
-        guard let editor = window?.firstResponder as? NSText else { return false }
-        return editor.delegate === search
+    var isEditingFilter: Bool { editingFilter?() ?? false }
+
+    func beginFilter() { onBeginFilter?() }
+
+    /// 🔍 (accented while the filter holds text) and, for a folder, ⇅ with the orders, the chosen one ticked.
+    var tools: [SlotTool] {
+        let tip = filterText.isEmpty ? (listName.map { "Filter \($0) (⌘F)" } ?? "Filter (⌘F)") : "Filter: \(filterText)"
+        var tools = [SlotTool(id: "filter", symbol: "magnifyingglass", accent: !filterText.isEmpty, tip: tip,
+                              action: { [weak self] in self?.beginFilter() })]
+        if let sort {
+            tools.append(SlotTool(id: "order", symbol: "arrow.up.arrow.down", tip: "Order: \(Self.title(sort))",
+                                  menu: { [weak self] in self?.sortMenu(sort) ?? NSMenu() }))
+        }
+        return tools
     }
 
-    func beginFilter() {
-        window?.makeFirstResponder(search)
+    private func sortMenu(_ sort: BrowserSort) -> NSMenu {
+        let menu = NSMenu()
+        for key in PlaylistSort.allCases {
+            let chosen = key.rawValue == sort.key.rawValue
+            let item = menu.addItem(withTitle: chosen ? Self.title(sort) : key.shortTitle,
+                                    action: #selector(sortPicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = key.rawValue
+            item.state = chosen ? .on : .off
+        }
+        return menu
     }
 
     /// A folder: its order (Home's too) can be picked; the chosen field shows its direction, picking it again turns it.
     func showSort(_ sort: BrowserSort) {
-        sortButton.isHidden = false
-        search.placeholderString = "Filter (⌘F)"
-        for (i, key) in PlaylistSort.allCases.enumerated() {
-            let item = sortButton.item(at: i)
-            item?.title = key.rawValue == sort.key.rawValue ? Self.title(sort) : key.shortTitle
-        }
-        sortButton.selectItem(at: PlaylistSort.allCases.firstIndex { $0.rawValue == sort.key.rawValue } ?? 0)
+        self.sort = sort
+        listName = nil
+        onToolsChanged?()
     }
 
     private static func title(_ sort: BrowserSort) -> String {
@@ -166,27 +156,37 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         }
     }
 
-    /// A page's list: kept in the page's order; `name` (if the page gave one) shows in the filter field.
+    /// A page's list: kept in the page's order; `name` (if the page gave one) shows in the filter's tip.
     func showList(name: String?) {
-        sortButton.isHidden = true
-        search.placeholderString = name.map { "Filter \($0) (⌘F)" } ?? "Filter (⌘F)"
+        sort = nil
+        listName = name
+        onToolsChanged?()
     }
 
-    @objc private func filterChanged() {
-        onFilter?(search.stringValue)
+    /// The capsule's field changed.
+    func filterEdited(_ text: String) {
+        let accentChanged = text.isEmpty != filterText.isEmpty
+        filterText = text
+        onFilter?(text)
         strip?.filterEdited()
+        if accentChanged { onToolsChanged?() }
     }
 
-    func controlTextDidEndEditing(_ obj: Notification) {
+    /// The capsule's field closed: the keys go back to the player.
+    func filterEnded() {
         strip?.filterEdited()
+        onToolsChanged?()
+        onEndFilter?()
     }
 
-    @objc private func sortPicked() {
-        guard let raw = sortButton.selectedItem?.representedObject as? String, let sort = PlaylistSort(rawValue: raw) else { return }
+    @objc private func sortPicked(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let sort = PlaylistSort(rawValue: raw) else { return }
         onSort?(sort)
     }
 
-    func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+    /// Keys in the capsule's filter field: ↩ opens (the browsed row in the strip, else the first file shown), ↑ ↓ and the
+    /// page keys browse the strip. False for keys the field keeps.
+    func filterCommand(_ selector: Selector) -> Bool {
         switch selector {
         case #selector(NSResponder.insertNewline(_:)):
             if let strip, mode == .strip, !strip.browsedIsPlaying { strip.openBrowsed() } else { onSubmitFilter?() }
@@ -204,13 +204,6 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         case #selector(NSResponder.scrollPageDown(_:)) where mode == .strip,
              #selector(NSResponder.pageDown(_:)) where mode == .strip:
             strip.map { $0.step(by: $0.pageRows) }
-            return true
-        case #selector(NSResponder.cancelOperation(_:)):
-            if !search.stringValue.isEmpty {
-                search.stringValue = ""
-                filterChanged()
-            }
-            onEndFilter?()
             return true
         default:
             return false
