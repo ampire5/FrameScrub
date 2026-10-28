@@ -48,14 +48,14 @@ public final class FileFactsStore: @unchecked Sendable {
 
     public func set(_ new: FileFacts, for path: String) {
         lock.withLock {
-            guard var facts else {
+            guard facts != nil else {
                 if pending[path] == nil { pendingOrder.append(path) }
                 pending[path] = new
                 return
             }
-            if facts[path] == nil { order.append(path) }
-            facts[path] = new
-            self.facts = facts
+            // Changed in place: a local copy of the dictionary would copy all of it (up to `limit` entries) per call.
+            if facts?[path] == nil { order.append(path) }
+            facts?[path] = new
             trimLocked()
         }
     }
@@ -69,10 +69,9 @@ public final class FileFactsStore: @unchecked Sendable {
 
     /// Past `limit` entries, the newest half stays.
     private func trimLocked() {
-        guard var facts, facts.count > limit else { return }
-        let dropped = order.prefix(facts.count - limit / 2)
-        for path in dropped { facts[path] = nil }
+        guard let count = facts?.count, count > limit else { return }
+        let dropped = order.prefix(count - limit / 2)
+        for path in dropped { facts?[path] = nil }
         order.removeFirst(dropped.count)
-        self.facts = facts
     }
 }
