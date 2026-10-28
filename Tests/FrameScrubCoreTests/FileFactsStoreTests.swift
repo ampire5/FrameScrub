@@ -37,17 +37,18 @@ import Testing
     }
 
     /// Minor 17 of the strip's review: `set` on the main thread waited for a background `all()` decoding the file.
-    @Test func setDoesNotWaitForTheFirstRead() throws {
+    /// Async, with no semaphore: a test thread blocked in a wait takes a cooperative thread from the pool that
+    /// `FrameUpscaler`'s `runBlocking` also waits on, and the whole suite stalled (2026-10-28).
+    @Test func setDoesNotWaitForTheFirstRead() async throws {
         let url = try bigFile(50_000)
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
         let store = FileFactsStore(url: url, limit: 100_000)
-        let read = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async { _ = store.all(); read.signal() }
-        Thread.sleep(forTimeInterval: 0.002)
+        let read = Task.detached { store.all().count }
+        try await Task.sleep(nanoseconds: 2_000_000)
         let start = DispatchTime.now().uptimeNanoseconds
         store.set(FileFacts(duration: 1), for: "/x.mp4")
         let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
-        read.wait()
+        _ = await read.value
         #expect(took < 5, "set took \(took) ms")
         let all = store.all()
         #expect(all["/x.mp4"]?.duration == 1 && all["/f/49999.mp4"]?.duration == 49999)
