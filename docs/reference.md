@@ -305,10 +305,60 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - A file that cannot be opened leaves its reason on screen (missing, no permission, network drive not responding,
   read error, not a video or damaged, no video track) with the technical message underneath; Return tries again
   (handy once a sleeping NAS wakes up), PgUp / PgDn go on to the neighbours.
-- The pointer hides when it rests on the video for 2 s (with the seek bar), on a key press and while scrubbing;
+- The pointer hides when it rests on the video for 1.5 s (with the playback controls), on a key press and while scrubbing;
   moving the mouse brings it back. The seek bar stays while the pointer rests on it.
 - The seek bar shows cut marks in green, with the lead-in each clip gets from the keyframe before its mark in a
   fainter green, and an open mark from its start to the playhead.
+- The film's three-icon capsule (also in the context menu) selects Whole File Lens, Segment, or Whole File.
+  Whole File Lens keeps one fixed set of samples across the file: a compact magnified region follows the playhead,
+  leaving distant geometry and pictures untouched. Whole File uses the same samples without magnification.
+  Segment keeps samples on an absolute time grid: the pictures move continuously through a fixed central lens,
+  and only newly entering samples need images. Playback never changes an existing cell's sampled time.
+  The view choice is remembered and does not seek or pause. The overview remains a direct whole-file seek control.
+  Dragging captures the input projection while the displayed film continues through its lens; release causes no
+  recentering/resampling jump.
+  The overview follows `seek-mode`; clicking a film cell selects its displayed time precisely. Small pointer jitter
+  remains a click; dragging starts after 6 pt. Scrolling the overview steps the hover preview's keyframes.
+  Thumbnails keep the picture's proportions, rotation and current aspect/crop. Hovering highlights a cell and
+  enlarges its cached picture over the film without changing its height or reading the file again.
+  The sliders button beside the three view icons opens a live dropdown directly from the film; Right-click ›
+  Time Lens… opens the same retained panel. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–4×)
+  are independent. Magnification/area change only geometry, reusing the existing images and sample times.
+  Thumbnail crop (0–100%) blends between full-picture fit and horizontal centre crop without changing density.
+  Seconds per thumbnail (0.1–30 s) applies only to Segment. Lens controls are inactive in the unmagnified Whole File
+  view. Reset restores magnification/density 2.75×, area 30%, crop 70%, step 1 s.
+  Values are remembered; changing them does not seek. Option-scroll adjusts outside density in whole-file modes,
+  or the time step in Segment. Missing pictures can fill while the dropdown stays open; gestures/foreground still win.
+  Hover always shows the complete picture. Zero crop keeps full-picture cells.
+  Enlarged hover pictures stay clear of the playback/view controls; edge previews reduce their footprint when
+  necessary. Transport and view buttons stay above pictures and receive clicks first. Moving directly into a
+  capsule dismisses the hover and keeps the film revealed, without leaving and re-entering the timeline.
+  Narrow cells omit timestamps when they would overlap; hover retains the full timestamp.
+- Moving the pointer shows the progress bar and two translucent capsules: Play/Pause and ±10 seconds; mute,
+  volume, explicit playback rates and full screen. Playback chrome hides after 1.5 s without movement away from
+  its active controls. An enabled filmstrip opens only on entering its lower reveal zone, folds 0.5 s after leaving
+  (including releasing a drag outside), and stays when pinned. Its empty space collapses with it.
+  View › Show/Fold Filmstrip (⌘L) opens or folds it; View › Pin Filmstrip (⌥⌘L) toggles persistent pinning.
+  The same actions are in its context menu. Folding by command suppresses immediate re-opening until the pointer
+  leaves the zone. Pinning the film does not force the playback chrome to remain visible.
+  Mouse-wheel scrolling selects adjacent loaded thumbnails already displayed in the film (vertical mouse direction
+  is inverted). Vertical trackpad scrolling also steps displayed samples; horizontal trackpad gestures seek continuously.
+  Sample steps animate only the film geometry for 140 ms, reuse cached pictures and stop at the visible sample ends. Starting a film scroll or drag pauses playback and enables scrub filling;
+  Option-scroll changes this view's outside density/step. Scroll momentum does not cause further seeking.
+  Right-click the timeline for thumbnail sizes, Hide Filmstrip and Always Show Playback Controls. Existing editing
+  commands and the mouse's viewing/editing profiles remain available; this stage adds no editing toolbar.
+- Film thumbnails load through one utility decoder while the film is revealed and visible, during playback too.
+  A read waits if playback's current/next frame is missing, retains its queue and resumes on a delivered frame;
+  gestures take priority. Moving samples update a pending batch without resetting its dwell deadline on each tick.
+  Existing thumbnails remain visible. `preview=no` disables their decoder as well as hover
+  pictures. Network files wait for the whole visible batch once, not for each image; local files start immediately.
+  Unknown cells show their timestamp until a picture is available.
+  Each arriving image paints the strip immediately, without waiting for another pointer event. Already generated
+  progress-bar previews also enter its bounded cache. Indexing scans packet timestamps/keyframe flags without
+  image decoding; it does not generate free thumbnails. A folded or disabled film starts no new thumbnail reads.
+  Ordinary forward viewing fills the existing bounded playback window (up to two seconds ahead), rather than all
+  distant scrub regions that happen to fit in memory. Pausing or scrolling enables the fuller scrub window.
+  Decoder workers start after the restored position and autoplay mode have been selected.
 - The seek bar shades the A-B range and grows thicker while you point at it. The preview then shows the frame number
   next to the time and, under the picture, a lens of ±20 s around that point: keyframes as ticks, the point as a line
   in the middle, the playhead as a dot. The label says `K` on a keyframe, else how far the keyframes either side are

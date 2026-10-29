@@ -389,6 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu.map(walk)
         return rows
     }
+    @objc private func toggleFilmstrip(_ sender: Any?) { controller?.toggleFilmstrip() }
+    @objc private func pinFilmstrip(_ sender: Any?) { controller?.pinFilmstrip() }
 
     /// A menu item's shortcut as menus show it: modifier glyphs (⌃⌥⇧⌘), then the key.
     private static func shortcutText(_ item: NSMenuItem) -> String {
@@ -548,6 +550,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleFilmstrip(_:)) {
+            item.title = controller?.filmstripShown == true ? "Fold Filmstrip" : "Show Filmstrip"
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
+        if item.action == #selector(pinFilmstrip(_:)) {
+            item.state = controller?.filmstripPinned == true ? .on : .off
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
         if item.action == #selector(copyPath(_:)) { return controller?.currentURL != nil }
         if [#selector(largerCards(_:)), #selector(smallerCards(_:)), #selector(defaultCardSize(_:)),
             #selector(toggleHomeSidebar(_:))].contains(item.action) {
@@ -713,6 +723,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Fit to Screen", .windowFit, key: "4"))
         viewMenu.addItem(commandItem("Float on Top", .cycleOntop, key: "", modifiers: []))   // T stays an input.conf binding
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
+        let film = viewMenu.addItem(withTitle: "Show Filmstrip", action: #selector(toggleFilmstrip(_:)), keyEquivalent: "l")
+        film.target = self
+        let pinFilm = viewMenu.addItem(withTitle: "Pin Filmstrip", action: #selector(pinFilmstrip(_:)), keyEquivalent: "l")
+        pinFilm.keyEquivalentModifierMask = [.command, .option]; pinFilm.target = self
         let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
         icon.keyEquivalentModifierMask = [.control, .option, .command]
         let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")

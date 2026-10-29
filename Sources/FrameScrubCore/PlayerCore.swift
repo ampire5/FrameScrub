@@ -292,7 +292,6 @@ public final class PlayerCore {
         filler.onLanded = { [weak self] id, n in
             DispatchQueue.main.async { self?.landed(id, n, session: current) }
         }
-        filler.start()
         self.filler = filler
         syncCacheRegions()
 
@@ -315,6 +314,9 @@ public final class PlayerCore {
         seek(toFrame: 0)
         resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
         if config.autoplay { play() }
+        // Start in the final playback/pause mode and at the restored position, never in the
+        // filler's default paused mode while open/export/audio setup is still being prepared.
+        filler.start()
         if speed != 1 { feedback(.speed(speed)) }   // a kept speed is shown, so a faster file is no surprise
     }
 

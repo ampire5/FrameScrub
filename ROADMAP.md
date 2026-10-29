@@ -6,9 +6,11 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 
 - **Light, dark or system theme everywhere.** The start screen, the playlist panel and the other dark-only windows follow the choice in Settings.
 - **Subtitles and audio tracks.** Embedded and external subtitles, switching between audio and subtitle tracks, remembered per file.
-- **A filmstrip in the seek bar.** A continuous strip of keyframes along the timeline, as in QuickTime's trim view, alongside the existing hover preview.
 
 ## Recently shipped
+
+- Viewing timeline with a thumbnail filmstrip, adjustable time lens, linear overview and transport controls.
+- FFmpeg bundled with the app; release builds run without a Homebrew FFmpeg installation.
 
 - The shared Settings window from [Loupe](https://github.com/ampire5/Loupe) (SettingsKit): search, every setting with its default, Key Bindings, the colour a video or folder sets; and Home, a Photos-style start screen with a sidebar, Recent, folders and Stash.
 - Go to a time or frame number (`⌘G`), and back to where you were before a seek (`Shift+Backspace`).
@@ -20,7 +22,6 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 
 - **Logitech, deeper.** More of the mouse's own features and more events worth feeling, mice connected over Bluetooth without a receiver, and more HID++ devices as people test them.
 - **A contributing guide**: how to build, test and send a pull request, plus the code layout and conventions.
-- **FFmpeg inside the app**, so the Releases zip works without `brew install ffmpeg`.
 - **Stash streaming** for scenes whose files aren't reachable over a share: playback straight from Stash over HTTP, with the same read cache.
 
 ## Exploring

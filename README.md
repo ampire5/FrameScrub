@@ -82,7 +82,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
 - **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
-- Under the seek bar's track, on the right: previous / next item in the playlist (dimmed at its ends) and the volume, a mute button and a slider (moving it unmutes; like the volume keys it lasts until quit, `volume` in the config is where it starts).
+- **Viewing timeline:** a full-width filmstrip with a time lens (seconds near the playhead, larger intervals towards the ends) and a separate linear overview for direct seeking. Two translucent capsules appear above it on hover: Play/Pause and ±10 s on the left; mute/volume, playback speed and full screen on the right. Right-click the timeline to change thumbnail size, hide the film, or keep the controls visible. The playlist slot and `<` / `>` switch files.
 - Scene detection: jump to the next scene or back to the start of this one.
 - `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
@@ -412,7 +412,7 @@ Pull requests are welcome; a full contributing guide is on the roadmap.
 
 ## Roadmap
 
-Next up: subtitles and audio tracks, a filmstrip in the seek bar — and a plugin architecture for media servers (Plex, Jellyfin, DLNA, HLS). See **[ROADMAP.md](ROADMAP.md)**.
+Next up: subtitles and audio tracks, and more media-server integrations (Plex, Jellyfin, DLNA, HLS). See **[ROADMAP.md](ROADMAP.md)**.
 
 ## Credits
 

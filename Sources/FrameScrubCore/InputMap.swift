@@ -67,6 +67,8 @@ public struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         set.insert(KeyChord(key: "z", modifiers: [.meta, .shift]))
         set.insert(KeyChord(key: "c", modifiers: [.meta, .alt]))
         set.insert(KeyChord(key: "p", modifiers: [.meta, .alt]))
+        set.insert(KeyChord(key: "l", modifiers: .meta))
+        set.insert(KeyChord(key: "l", modifiers: [.meta, .alt]))
         set.insert(KeyChord(key: "p", modifiers: [.meta, .alt, .ctrl]))
         set.insert(KeyChord(key: "f", modifiers: [.meta, .ctrl]))
         for key in ["LEFT", "RIGHT", "DOWN"] {   // View › Slots
