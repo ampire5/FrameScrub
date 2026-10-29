@@ -80,6 +80,12 @@ import HomeScreenModel
             strip.topAnchor.constraint(equalTo: topAnchor), strip.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         strip.card = card
+        strip.selectionHint = "Selected · click or Return to play"
+        strip.onBrowse = { [weak self] row in
+            guard let self else { return }; scroll.settle()
+            state.browse(to: row, now: now, inGesture: false)
+            place(animated: false); armReturn()
+        }
         strip.onVisibleChange = { [weak self] in self?.visibleChanged() }
         strip.onPress = { [weak self] row in self?.open(row) }
         strip.onPressBegan = { [weak self] in self?.pressBegan() }
