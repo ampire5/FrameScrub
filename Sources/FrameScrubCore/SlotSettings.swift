@@ -1,52 +1,8 @@
 import Foundation
-
-/// A place at the window's edge that holds one view: the playlist or a plugin page (`slot-left` / `slot-right` /
-/// `slot-bottom`).
-public enum SlotEdge: String, CaseIterable, Sendable, Codable {
-    case left, right, bottom
-
-    /// The config key of this slot's setting.
-    public var key: String { "slot-\(rawValue)" }
-
-    /// Points the slot may take: its width for the sides, its height for the bottom.
-    public var sizeRange: ClosedRange<Int> { self == .bottom ? 120...900 : 240...1200 }
-}
-
-/// A pinned slot takes its room from the video; an overlay slot lies over the video, which keeps its size.
-public enum SlotMode: String, Sendable, Codable {
-    case pinned, overlay
-}
-
-/// What an overlay slot shows behind its view. Pinned slots are always dark.
-public enum SlotBackdrop: String, CaseIterable, Sendable, Codable {
-    case dark, glass, clear
-
-    public var next: SlotBackdrop {
-        let all = Self.allCases
-        return all[(all.firstIndex(of: self)! + 1) % all.count]
-    }
-}
-
-/// When an overlay slot goes away by itself.
-public enum SlotAutoHide: String, CaseIterable, Sendable, Codable {
-    /// Once its page starts something playing (or asks to hide); also Esc, ✕ and a click on the video.
-    case afterChoice = "after-choice"
-    /// The pointer left the slot a moment ago, as the Dock does.
-    case mouseLeaves = "mouse-leaves"
-    /// Only Esc, ✕, the slot's chord or a click on the video.
-    case manual
-}
-
-/// How a hidden overlay slot comes back from its edge.
-public enum SlotReveal: String, CaseIterable, Sendable, Codable {
-    /// The pointer touching the edge brings it.
-    case atOnce = "at-once"
-    /// A tongue fades in as the pointer nears the edge; a click on it brings the slot.
-    case tongue
-}
+@_exported import SlotModel
 
 /// The view a slot holds.
-public enum SlotContent: Equatable, Sendable {
+public enum SlotContent: Hashable, Sendable {
     case empty
     case playlist
     case plugin(name: String)
@@ -56,7 +12,7 @@ public enum SlotContent: Equatable, Sendable {
         case "empty": self = .empty
         case "playlist": self = .playlist
         case _ where text.hasPrefix("plugin:"):
-            let name = text.dropFirst("plugin:".count).trimmingCharacters(in: .whitespaces)
+            let name = Self.unescaped(String(text.dropFirst("plugin:".count))).trimmingCharacters(in: .whitespaces)
             guard !name.isEmpty else { return nil }
             self = .plugin(name: name)
         default: return nil
@@ -67,15 +23,31 @@ public enum SlotContent: Equatable, Sendable {
         switch self {
         case .empty: "empty"
         case .playlist: "playlist"
-        case .plugin(let name): "plugin:\(name)"
+        case .plugin(let name): "plugin:\(Self.escaped(name))"
         }
+    }
+
+    /// A plugin's name holds the list's separator ` + ` as `%2B` (and `%` as `%25`), so it reads back as one entry.
+    private static func escaped(_ name: String) -> String {
+        name.replacingOccurrences(of: "%", with: "%25").replacingOccurrences(of: " + ", with: " %2B ")
+    }
+
+    private static func unescaped(_ text: String) -> String {
+        text.replacingOccurrences(of: "%2B", with: "+").replacingOccurrences(of: "%25", with: "%")
     }
 }
 
-/// One slot's saved state, written as `content, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g.
-/// `plugin:Notes, overlay, glass, mouse-leaves, 560, hidden, at-once`. Text without the last field reveals at once.
+/// One slot's saved state, written as `contents, mode, backdrop, auto-hide, size, shown|hidden, reveal`, e.g.
+/// `plugin:Notes, overlay, glass, mouse-leaves, 560, hidden, at-once`. The contents are the slot's tabs joined by ` + `
+/// (`playlist + plugin:Stash`), the shown one first; one tab is written as before, none as `empty`.
 public struct SlotSetting: Equatable, Sendable {
-    public var content: SlotContent
+    /// The tabs, the shown one first; never `.empty`, no duplicates.
+    public var contents: [SlotContent]
+    /// The shown tab, `.empty` for none. Setting it makes it the only tab (`.empty`: none).
+    public var content: SlotContent {
+        get { contents.first ?? .empty }
+        set { contents = newValue == .empty ? [] : [newValue] }
+    }
     public var mode: SlotMode
     public var backdrop: SlotBackdrop
     public var autoHide: SlotAutoHide
@@ -86,7 +58,7 @@ public struct SlotSetting: Equatable, Sendable {
 
     public init(content: SlotContent, mode: SlotMode, backdrop: SlotBackdrop, autoHide: SlotAutoHide, size: Int,
                 shown: Bool, reveal: SlotReveal = .atOnce) {
-        self.content = content
+        contents = content == .empty ? [] : [content]
         self.mode = mode
         self.backdrop = backdrop
         self.autoHide = autoHide
@@ -108,7 +80,7 @@ public struct SlotSetting: Equatable, Sendable {
         fields.removeLast()
         guard fields.count >= 6 else { return nil }
         let tail = Array(fields.suffix(5))
-        guard let content = SlotContent(text: fields.dropLast(5).joined(separator: ",")),
+        guard let contents = Self.contents(text: fields.dropLast(5).joined(separator: ",")),
               let mode = SlotMode(rawValue: tail[0].lowercased()),
               let backdrop = SlotBackdrop(rawValue: tail[1].lowercased()),
               let autoHide = SlotAutoHide(rawValue: tail[2].lowercased()),
@@ -119,12 +91,23 @@ public struct SlotSetting: Equatable, Sendable {
         case "hidden": shown = false
         default: return nil
         }
-        self.init(content: content, mode: mode, backdrop: backdrop, autoHide: autoHide, size: size, shown: shown,
+        self.init(content: .empty, mode: mode, backdrop: backdrop, autoHide: autoHide, size: size, shown: shown,
                   reveal: reveal)
+        self.contents = contents
+    }
+
+    /// `playlist + plugin:Stash`: each entry must read; `empty` and repeats are dropped.
+    private static func contents(text: String) -> [SlotContent]? {
+        var list: [SlotContent] = []
+        for part in text.components(separatedBy: " + ") {
+            guard let content = SlotContent(text: part.trimmingCharacters(in: .whitespaces)) else { return nil }
+            if content != .empty && !list.contains(content) { list.append(content) }
+        }
+        return list
     }
 
     public var text: String {
-        [content.text, mode.rawValue, backdrop.rawValue, autoHide.rawValue, String(size), shown ? "shown" : "hidden",
+        [contents.isEmpty ? SlotContent.empty.text : contents.map(\.text).joined(separator: " + "), mode.rawValue, backdrop.rawValue, autoHide.rawValue, String(size), shown ? "shown" : "hidden",
          reveal.rawValue]
             .joined(separator: ", ")
     }

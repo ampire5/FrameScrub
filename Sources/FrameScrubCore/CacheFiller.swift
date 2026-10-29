@@ -335,7 +335,10 @@ public final class CacheFiller {
         let window = windowLocked()
         guard mode != .reversing, let i = focusRegionLocked() else { return [window] }
         let extended = regions.map(extendedLocked)
-        if extended.reduce(0, { $0 + $1.count }) <= roomLocked() {
+        // Ordinary viewing only needs its playback window. Eagerly filling distant scrub regions
+        // competed with visible thumbnails: H.264 fixture/1 GiB/M4 Max, 212 cached frames + 3 seeks
+        // before this change (see viewing timeline bench). Pausing still fills the scrub regions.
+        if mode != .playing, extended.reduce(0, { $0 + $1.count }) <= roomLocked() {
             let own = extended[i]
             var order = [window]
             if window.upperBound < own.upperBound { order.append(window.upperBound + 1...own.upperBound) }

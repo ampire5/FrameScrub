@@ -1,13 +1,13 @@
 {
-  "originHash" : "4bd0e5b890874248b68c9b8a7015d513f7362993d0564308e3355d85cd37dfea",
+  "originHash" : "1db358de8f6dd3bd6a58e43b80a07756d55755feb60c2f6bd7563271ee2259df",
   "pins" : [
     {
       "identity" : "homescreenkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/HomeScreenKit.git",
       "state" : {
-        "revision" : "19327cb9103219dd0f01c296d482b07cd0d95e43",
-        "version" : "0.7.0"
+        "revision" : "8cefe0434ccedffa808389965cf12659fa6287ed",
+        "version" : "0.11.8"
       }
     },
     {
@@ -24,8 +24,17 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/LogiHIDPP.git",
       "state" : {
-        "revision" : "0c6849480ac0ea46c0bf5e7727d9eb77b49c7ed0",
-        "version" : "0.1.0"
+        "revision" : "af29a2e5850d3fd17a61570ee6c085618cb4f404",
+        "version" : "0.1.1"
+      }
+    },
+    {
+      "identity" : "mouseservice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ampire5/MouseService.git",
+      "state" : {
+        "revision" : "3fa27da4ab3a5344ac90a35f07c7a6353a625b0e",
+        "version" : "0.2.1"
       }
     },
     {
@@ -44,6 +53,15 @@
       "state" : {
         "revision" : "d1141bb17714ee8978b0c781f15a1fb60bb08e05",
         "version" : "0.2.0"
+      }
+    },
+    {
+      "identity" : "yams",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jpsim/Yams.git",
+      "state" : {
+        "revision" : "3d6871d5b4a5cd519adf233fbb576e0a2af71c17",
+        "version" : "5.4.0"
       }
     }
   ],

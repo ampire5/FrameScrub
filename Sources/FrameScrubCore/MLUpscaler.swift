@@ -81,12 +81,13 @@ public enum MLUpscaleError: Error, CustomStringConvertible {
 
 private final class ResultBox<T: Sendable>: @unchecked Sendable { var result: Result<T, Error>? }
 
-/// Runs async work from a background (non-main, non-cooperative) thread and waits for it.
+/// Runs async work from a background (non-main) thread and waits for it. The work runs on `MLExecutor`, not on the
+/// cooperative pool, so the caller may be a pool thread (a test, say) without starving the work it waits for.
 func runBlocking<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) throws -> T {
     precondition(!Thread.isMainThread, "runBlocking must not run on the main thread")
     let box = ResultBox<T>()
     let done = DispatchSemaphore(value: 0)
-    Task.detached {
+    Task.detached(executorPreference: MLExecutor.shared) {
         do { box.result = .success(try await operation()) } catch { box.result = .failure(error) }
         done.signal()
     }

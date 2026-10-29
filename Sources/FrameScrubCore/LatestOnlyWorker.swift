@@ -9,8 +9,8 @@ public final class LatestOnlyWorker<Value: Sendable>: @unchecked Sendable {
     private var pending: Value?
     private var running = false
 
-    public init(label: String, handler: @escaping @Sendable (Value) -> Void) {
-        queue = DispatchQueue(label: label, qos: .userInitiated)
+    public init(label: String, qos: DispatchQoS.QoSClass = .userInitiated, handler: @escaping @Sendable (Value) -> Void) {
+        queue = DispatchQueue(label: label, qos: DispatchQoS(qosClass: qos, relativePriority: 0))
         self.handler = handler
     }
 

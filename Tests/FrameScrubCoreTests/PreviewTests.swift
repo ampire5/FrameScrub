@@ -70,6 +70,16 @@ import Testing
 
     // MARK: PreviewProvider
 
+    @Test func aFailedRequestStillReleasesTheSequentialLoader() async throws {
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index, rotationClockwise: 0, widthPixels: 160)
+        defer { provider.stop() }
+        let finished = Locked(false)
+        provider.onRequestFinished = { finished.mutate { $0 = true } }
+        provider.request(seconds: 1)
+        #expect(await eventually { finished.value })
+    }
+
     private func collect(_ provider: PreviewProvider) -> Locked<[PreviewImage]> {
         let images = Locked<[PreviewImage]>([])
         provider.onImage = { image in images.mutate { $0.append(image) } }

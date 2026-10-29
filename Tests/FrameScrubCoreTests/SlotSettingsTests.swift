@@ -85,4 +85,52 @@ import Testing
         #expect(slots[.left] == .default(for: .left))
         #expect(slots[.bottom] == .default(for: .bottom))
     }
+
+    // MARK: Tabs (contents as a list)
+
+    private static let tail = ", overlay, glass, mouse-leaves, 400, hidden, at-once"
+
+    @Test func severalContentsRoundTrip() throws {
+        let text = "playlist + plugin:Stash" + Self.tail
+        let s = try #require(SlotSetting(text: text))
+        #expect(s.contents == [.playlist, .plugin(name: "Stash")])
+        #expect(s.text == text)
+    }
+
+    @Test func singleContentWritesTheOldText() throws {
+        let text = "plugin:Notes, overlay, glass, mouse-leaves, 560, hidden, at-once"
+        let s = try #require(SlotSetting(text: text))
+        #expect(s.contents == [.plugin(name: "Notes")])
+        #expect(s.text == text)
+    }
+
+    @Test func emptyIsNoContents() throws {
+        let s = try #require(SlotSetting(text: "empty" + Self.tail))
+        #expect(s.contents == [])
+        #expect(s.content == .empty)
+        #expect(s.text == "empty" + Self.tail)
+    }
+
+    @Test func pluginNameMayHoldPlus() throws {
+        #expect(try #require(SlotSetting(text: "plugin:A+B" + Self.tail)).contents == [.plugin(name: "A+B")])
+    }
+
+    @Test func pluginNameWithTheSeparatorRoundTrips() throws {
+        var setting = try #require(SlotSetting(text: "playlist" + Self.tail))
+        setting.contents = [.playlist, .plugin(name: "Tags + Notes"), .plugin(name: "100%")]
+        let read = try #require(SlotSetting(text: setting.text))
+        #expect(read.contents == setting.contents)
+    }
+
+    @Test func emptyInsideAListIsDropped() throws {
+        #expect(try #require(SlotSetting(text: "playlist + empty" + Self.tail)).contents == [.playlist])
+    }
+
+    @Test func duplicateIsDropped() throws {
+        #expect(try #require(SlotSetting(text: "playlist + playlist" + Self.tail)).contents == [.playlist])
+    }
+
+    @Test func aBadEntryRejectsTheSetting() {
+        #expect(SlotSetting(text: "playlist + nonsense" + Self.tail) == nil)
+    }
 }

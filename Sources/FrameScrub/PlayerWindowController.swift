@@ -86,8 +86,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var statsPanel: InfoPanelController!
     /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
     private var slots: SlotsController!
-    /// Home's toolbar pills hidden under a shown slot (`updateToolbarUnderSlots`).
-    private let pillsUnderSlots = NSHashTable<NSView>.weakObjects()
     /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from the configured plugins.
     private var pluginPolicy = PluginPolicy()
     /// The video's edges in the window, set from the slots' layout (pinned slots take room from it).
@@ -112,6 +110,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let hud = FeedbackHUD()
     private let goToField = GoToField()
     private let seekBar = SeekBarView()
+    private var seekBarHeight: NSLayoutConstraint!
+    private var filmstripLoader: FilmstripPreviewLoader?
     private let backButton = BackButton()
     private let previewView = PreviewView()
     /// The playlist's view; shown in whichever slot holds the playlist.
@@ -208,9 +208,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// What is asked of the Logitech mouse's wheel now (see `updatePrecisionWheel`): all off until the player is in
     /// front.
     private var wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
-    /// `playerInFront` at the last `updatePrecisionWheel`, to recheck the mouse when the player comes in front.
-    private var playerWasInFront = false
-    private var precisionCheckedAt = 0.0
     /// The pointer is hidden with `NSCursor.hide()` for a scrub (see `hideCursorForScrub`).
     private var cursorHiddenForScrub = false
     private var appObservers: [NSObjectProtocol] = []
@@ -261,6 +258,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         super.init(window: window)
         restoreFrame(of: window)
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
+        playlistPanel.mode = config.playlistView
+        playlistPanel.stripReturn = config.playlistStripReturn
         applyHomeConfig(config)
         window.delegate = self
         core.delegate = self
@@ -280,13 +279,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 MainActor.assumeIsolated { self?.updatePrecisionWheel() }
             })
         }
-        // After a wake the mouse, or LinearMouse replaying its own setting, may have switched the mode off.
-        appObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                MainActor.assumeIsolated { self?.mouseBridge?.recheckHighResolutionWheel() }
-            }
-        })
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -804,7 +796,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             window.toolbar = view.browser.nsToolbar
             window.titleVisibility = .hidden
         }
-        DispatchQueue.main.async { [weak self] in self?.updateToolbarUnderSlots() }   // once the toolbar has its items laid out
         hideSeekBarWork?.cancel()
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
@@ -813,8 +804,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
-        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0) : nil } ?? r }
-        let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
+        let back = core.url.flatMap { $0.isFileURL ? (folder: folder(of: $0), file: $0) : nil } ?? folderReturn
+        let wanted = tab ?? (folderReturn != nil && core.url != nil ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
         let location: BrowserLocation
@@ -826,6 +817,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } else {
             location = view.browser.lastBrowsed
         }
+        if shown == .folders, let selecting { view.browser.lastOpenedID = selecting }
         if view.browser.location == location, hasShownHome, selecting == nil {
             view.browser.reload()
         } else {
@@ -862,7 +854,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 if !isFullScreen { window.styleMask.remove(.fullSizeContentView) }
             }
         }
-        updateToolbarUnderSlots()   // the pills it hid are shown again for the next time Home has the toolbar
         if let titleBeforeHome { window?.title = titleBeforeHome }
         titleBeforeHome = nil
         window?.makeFirstResponder(videoView)
@@ -1079,6 +1070,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)
         statsTimer?.invalidate()
         statsTimer = nil
+        filmstripLoader?.stop()
+        filmstripLoader = nil
         previewProvider?.stop()
         previewProvider = nil
         cropSampler?.cancel()
@@ -1089,6 +1082,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Leaves the file (its position is kept for the next open); framescrub.conf's colour applies again.
     private func closeCore() {
+        filmstripLoader?.stop()
+        filmstripLoader = nil
+        seekBar.resetFilmstrip()
         core.close()
         colorFileChanged()
     }
@@ -1154,6 +1150,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if config.autoColor, let lastFrame { checkSceneCut(lastFrame) }   // turned on in Settings: a first frame is a cut
         window?.level = config.ontop ? .floating : .normal
         playlistPanel.fontSize = CGFloat(config.playlistFontSize)
+        playlistPanel.mode = config.playlistView
+        playlistPanel.stripReturn = config.playlistStripReturn
         applyHomeConfig(config)
         if stashChanged, let library = stashLibrary {   // a new address, key or rules: a new page and session
             stashSession?.leave()
@@ -1401,6 +1399,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         // Only the player's "Saved…" OSD is clickable; any other message must not keep its handler.
         osd.onClick = nil
+        placeTopOverlays()
         osd.show(text, duration: duration)
     }
 
@@ -1452,7 +1451,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             seekBar.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             seekBar.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor, constant: -16),
             seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -12),
-            seekBar.heightAnchor.constraint(equalToConstant: 44),
+            { let constraint = seekBar.heightAnchor.constraint(equalToConstant: seekBar.preferredHeight)
+                seekBarHeight = constraint; return constraint }(),
             backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
         ])
@@ -1472,10 +1472,24 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onEnterExit = { [weak self] in
             self?.showCursorAfterScrub()
             self?.updatePrecisionWheel()
+            self?.revealSeekBar()
         }
         let transport = seekBar.transport
-        transport.onPrevious = { [weak self] in self?.runFromSeekBar(.playlistPrev) }
-        transport.onNext = { [weak self] in self?.runFromSeekBar(.playlistNext) }
+        transport.onPlay = { [weak self] in self?.runFromSeekBar(.cyclePause) }
+        transport.onBack = { [weak self] in self?.runFromSeekBar(.seek(-10, .byConfig)) }
+        transport.onForward = { [weak self] in self?.runFromSeekBar(.seek(10, .byConfig)) }
+        transport.onSpeed = { [weak self] in self?.runFromSeekBar(.setSpeed($0)) }
+        transport.onFullscreen = { [weak self] in self?.runFromSeekBar(.cycleFullscreen) }
+        seekBar.onHeightChange = { [weak self] height in self?.seekBarHeight.constant = height }
+        seekBar.onFilmstripRequest = { [weak self] times in self?.filmstripLoader?.request(times) }
+        seekBar.onFilmScrubBegan = { [weak self] in self?.core.pause() }
+        seekBar.onFilmSeek = { [weak self] seconds in
+            guard let self, let index = core.index else { return }
+            previewPin = nil
+            positionWillMove()
+            haptics.from(.menu) { self.core.seek(toFrame: index.frameNumber(forSeconds: seconds)) }
+            revealSeekBar()
+        }
         transport.onToggleMute = { [weak self] in self?.runFromSeekBar(.cycleMute) }
         transport.onVolume = { [weak self] in
             self?.core.setVolume($0)
@@ -1483,6 +1497,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         core.onIndexReady = { [weak self] in
             self?.previewProvider?.updateIndex($0)
+            self?.filmstripLoader?.updateIndex($0)
             self?.pluginGrabber?.updateIndex($0)
             self?.sceneSearch?.updateIndex($0)
         }
@@ -1566,17 +1581,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
         videoView.onLeftClick = { [weak self] in self?.slots.hideOverlays() }
+        videoView.zoomAllowed = { [weak self] in self.map { !$0.showsHome && $0.core.info != nil } ?? false }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
         }
         videoView.onOtherButtonUp = { [weak self] button, time in self?.buttons.appKitUp(button, at: time) }
         videoView.onMouseMoved = { [weak self] in
             self?.showCursorAfterScrub()
+            self?.seekBar.updateFilmPointer(self?.window?.mouseLocationOutsideOfEventStream)
             self?.revealSeekBar()
             self?.updatePrecisionWheel()
         }
         videoView.onEnterExit = { [weak self] in
             self?.showCursorAfterScrub()
+            self?.seekBar.updateFilmPointer(nil)
             self?.updatePrecisionWheel()
         }
         videoView.onOpenFile = { [weak self] in self?.open($0) }
@@ -1637,6 +1655,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let changed = geometry.displaySize(of: upright) != videoView.geometry.displaySize(of: upright)
         videoView.geometry = geometry
         core.displayGeometry = geometry
+        // Automatic crop detection can finish while paused, with no subsequent position update.
+        updateSeekBar()
         guard reshapeWindow, changed, let content = window?.contentView else { return }
         applyWindowSize(.keepHeight(content.bounds.height))
     }
@@ -1651,7 +1671,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             MainActor.assumeIsolated {
                 guard let self, self.cropSampler === sampler, let crop else { return }
                 self.detectedCrop = crop
-                if self.aspectMode == .auto { self.updateGeometry(reshapeWindow: true) }
+                // The window keeps its size, as on open: bars found later only change how the picture fits into it.
+                if self.aspectMode == .auto { self.updateGeometry(reshapeWindow: false) }
             }
         }
     }
@@ -1849,8 +1870,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             applyWindowSize(.scale(scale))
         case .windowFit:
             applyWindowSize(.fitScreen)
+        case let .zoom(step):
+            // ⌘+scroll zooms about the pointer, a key about the middle.
+            if videoView.zoomAllowed() { videoView.zoom(by: step ?? 0.25, atPointer: NSApp.currentEvent?.type == .scrollWheel) }
+        case .zoomReset:
+            videoView.zoomToFit()
         case .revealFrames:
             revealFrames()
+        case .showInFolder:
+            showInFolder()
         case .showKeys:
             if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
         case .goTo:
@@ -2189,6 +2217,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func handleMagnify(_ event: NSEvent) {
+        if gestures.pinchZooms(modifiers: Modifiers(event.modifierFlags)) {
+            if videoView.zoomAllowed() { videoView.zoomMagnify(event) }
+            return
+        }
         perform(gestures.routePinch(magnification: Double(event.magnification), modifiers: Modifiers(event.modifierFlags)),
                 from: .trackpad, fresh: true)
         if event.phase == .ended || event.phase == .cancelled { gestures.endPinch() }
@@ -2208,7 +2240,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 haptics.from(source) { core.scrub(by: frames, ticks: ticks) }
             case let .command(command): runInput(command, from: source, fresh: fresh)
             case let .scrubEdge(edge, frames): scrubEdge(edge, by: frames, heldButton: heldButton, from: source, fresh: fresh)
-            case .zoomBy: break   // zoom view arrives with v1.1 Plan B
+            case .zoomBy: break   // `handleMagnify` gives the continuous zoom's pinch to the view
             }
         }
     }
@@ -2293,7 +2325,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         bridge.onSmartShift = { [weak self] pressed, time in self?.smartShiftButton(pressed: pressed, at: time) }
         wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
-        playerWasInFront = false
         updatePrecisionWheel()
     }
 
@@ -2389,26 +2420,32 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             context.duration = 0.15
             seekBar.animator().alphaValue = 1
         }
+        seekBar.refreshVisibility()
+        seekBar.setPlaybackControlsVisible(true)
+        seekBar.revealPlaybackControls()
         showBackButton(true, duration: 0.15)
         hideSeekBarWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if isPointer(over: seekBar) { revealSeekBar(); return }   // a pointer resting on the bar keeps it
+            if isPointer(over: seekBar) || seekBar.isInteracting { return }   // a pointer resting on the bar keeps it
             previewFraction = nil
             previewPin = nil
             seekBar.previewFrame = nil
             previewImage = nil
             previewView.hide()
-            if isPointer(over: backButton) { revealSeekBar(); return }
-            NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.4
-                self.seekBar.animator().alphaValue = 0
+            if isPointer(over: backButton) { return }
+            seekBar.setPlaybackControlsVisible(false)
+            if !seekBar.showsFilmstrip {
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = 0.2
+                    self.seekBar.animator().alphaValue = 0
+                }
             }
-            showBackButton(false, duration: 0.4)
+            showBackButton(false, duration: 0.2)
             hideCursorOverVideo()
         }
         hideSeekBarWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     /// Fades the back button in or out and moves the OSD out of its way.
@@ -2418,14 +2455,26 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             context.duration = duration
             context.allowsImplicitAnimation = true
             backButton.animator().alphaValue = show ? 1 : 0
-            placeTopOverlays()
+            placeTopOverlays(animated: true)
         }
     }
 
     /// The back button and the OSD at the top: 16 pt down, and below the full-screen title bar while it is in.
-    private func placeTopOverlays() {
-        backButtonTop.animator().constant = 16 + titlebarInset
-        osdTop.animator().constant = (isBackButtonShown ? 16 + BackButton.height + 8 : 16) + titlebarInset
+    private func placeTopOverlays(animated: Bool = false) {
+        guard let window, let content = window.contentView else { return }
+        let layoutTop = content.convert(window.contentLayoutRect, from: nil).maxY
+        let covered = max(titlebarInset, max(0, content.bounds.maxY - layoutTop))
+        let visibleTopInset = max(0, visibleEdges[2].constant)
+        let clearance = max(0, covered - visibleTopInset)
+        let back = 16 + clearance
+        let message = (isBackButtonShown ? 16 + BackButton.height + 8 : 16) + clearance
+        if backButtonTop.constant != back {
+            if animated { backButtonTop.animator().constant = back } else { backButtonTop.constant = back }
+        }
+        if osdTop.constant != message {
+            if animated { osdTop.animator().constant = message } else { osdTop.constant = message }
+        }
+        updateSlotsTopInset()
     }
 
     /// In full screen the title bar (and the traffic lights) live in a window of their own that the system slides in
@@ -2445,7 +2494,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.2
                 context.allowsImplicitAnimation = true
-                self.placeTopOverlays()
+                self.placeTopOverlays(animated: true)
             }
         }
         titlebarObserver = NotificationCenter.default.addObserver(forName: NSWindow.didMoveNotification, object: bar,
@@ -2461,13 +2510,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func updatePrecisionWheel() {
         guard let mouseBridge else { return }
         let inFront = playerInFront
-        if inFront && !playerWasInFront && core.config.wheelPrecision {
-            // Another LogiHIDPP app (Loupe) may have given back its own mode just after this one came forward: the
-            // package would believe a stale mode.
-            mouseBridge.recheckWheelMode()
-            mouseBridge.recheckHighResolutionWheel()
-        }
-        playerWasInFront = inFront
         let overVideo = isPointer(over: videoView) && !isPointer(over: seekBar)
             && !(slots?.isPointerOverShownSlot ?? false)
             && !(window.map { isPointerOnStats(at: $0.mouseLocationOutsideOfEventStream) } ?? false)
@@ -2475,22 +2517,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let freeSpin = UserDefaults.standard.object(forKey: Self.wheelFreeSpinKey) as? Bool ?? true
         let wants = WheelWants(precision: core.config.wheelPrecision, freeSpin: freeSpin, playerInFront: inFront,
                                overVideo: overVideo)
-        guard wants != wheelWants else {
-            // While the pointer moves, look at the mouse now and then: it may have slept, reconnected, or had its
-            // mode switched by LinearMouse, and a failed restore is retried.
-            let now = ProcessInfo.processInfo.systemUptime
-            if core.config.wheelPrecision, now - precisionCheckedAt > 2 {
-                precisionCheckedAt = now
-                mouseBridge.recheckHighResolutionWheel()
-                mouseBridge.recheckWheelMode()
-            }
-            return
+        if wants != wheelWants {
+            wheelWants = wants
+            mouseBridge.takeSmartShift(wants.wheelMode != nil)
         }
-        wheelWants = wants
-        precisionCheckedAt = ProcessInfo.processInfo.systemUptime
-        mouseBridge.takeSmartShift(wants.wheelMode != nil)
-        mouseBridge.wantWheelMode(wants.wheelMode)
-        mouseBridge.wantHighResolutionWheel(wants.highResolution)
+        // As areas of this window: MouseService applies them while the pointer is over it, and rechecks the mouse
+        // itself after a sleep or a reconnect. Sent on every call (the bridge drops an unchanged wish), so the video's
+        // rect follows a resize and full screen.
+        mouseBridge.wantWheel(window: window?.windowNumber, mode: wants.wheelMode,
+                              highResolutionRect: wants.highResolution ? videoView.convert(videoView.bounds, to: nil) : nil)
     }
 
     /// The app is active and this window is key, with no sheet and no start screen: the one definition of "in front"
@@ -2500,7 +2535,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func isPointer(over view: NSView) -> Bool {
-        guard let window, !view.isHidden else { return false }
+        guard let window, !view.isHidden, view.alphaValue > 0.01 else { return false }
+        if view === seekBar, let container = seekBar.superview {
+            return seekBar.hitTest(container.convert(window.mouseLocationOutsideOfEventStream, from: nil)) != nil
+        }
         let point = view.convert(window.mouseLocationOutsideOfEventStream, from: nil)
         return view.bounds.contains(point)
     }
@@ -2544,6 +2582,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let key = PreviewKey(enabled: core.config.preview, width: CGFloat(core.config.previewWidth), url: core.url, scale: scale)
         if !force, key == previewKey { return }
         previewKey = nil
+        filmstripLoader?.stop()
+        filmstripLoader = nil
+        seekBar.resetFilmstrip()
         previewProvider?.stop()
         previewProvider = nil
         previewImage = nil
@@ -2562,6 +2603,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                        policy: core.networkPolicy)
         provider.onImage = { [weak self] result in
             guard let self else { return }
+            if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
             previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
             updatePreviewView()
         }
@@ -2572,6 +2614,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.updatePreviewView()
         }
         previewProvider = provider
+        let loader = FilmstripPreviewLoader(url: url, index: index, rotation: info.rotationClockwise,
+                                            width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy)
+        loader.mayRead = { [weak self] in
+            guard let self else { return false }
+            guard seekBar.showsFilmstrip, seekBar.alphaValue > 0.01, !seekBar.isThumbnailInteraction, !showsHome,
+                  window?.occlusionState.contains(.visible) == true else { return false }
+            if core.isPaused { return true }
+            guard let index = core.index, core.cache.contains(core.position) else { return false }
+            let next = min(index.frameCount - 1, max(0, core.position + core.direction))
+            return core.cache.contains(next)
+        }
+        loader.onImage = { [weak self] image, seconds in self?.seekBar.setFilmstripImage(image, seconds: seconds) }
+        filmstripLoader = loader
     }
 
     /// Sorts and filters the folder's last listing (only `url` until the folder has been read).
@@ -2613,6 +2668,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let target = playlist?.neighbour(direction, skipping: isUnreadable) {
             _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
             hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
+            slots.videoChanged(cause: .key)
             openFile(target, stepped: direction) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
         } else {
             showMessage(direction > 0 ? "Last file" : "First file")
@@ -2899,7 +2955,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func frame(atBarFraction fraction: Double) -> Int {
-        Int((fraction * Double(max(core.frameCount - 1, 0))).rounded())
+        core.index?.frameNumber(forSeconds: fraction * core.durationSeconds) ?? 0
     }
 
     /// The frame the preview shows: where a scroll over the bar moved it, else under the pointer.
@@ -2958,7 +3014,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                          time: "\(FrameNaming.timecode(index.seconds(forFrame: frame)))  f\(frame)" + (lens.map { "  " + $0.label } ?? ""),
                          lens: lens, playhead: core.position)
         previewView.layoutSubtreeIfNeeded()
-        let fraction = Double(frame) / Double(max(core.frameCount - 1, 1))
+        let fraction = core.durationSeconds > 0 ? index.seconds(forFrame: frame) / core.durationSeconds : 0
         let trackX = seekBar.frame.minX + 12 + fraction * (seekBar.frame.width - 24)
         let width = previewView.fittingSize.width
         let maxLeading = max(container.bounds.width - width - 8, 8)
@@ -2974,23 +3030,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 return keyframe < segment.start ? keyframe...(segment.start - 1) : nil
             } : []
         } ?? []
+        seekBar.updateTimeline(index: core.index, duration: core.durationSeconds, paused: core.isPaused,
+                               uprightSize: uprightVideoSize, geometry: videoView.geometry,
+                               previewSettle: core.networkPolicy.previewSettle)
         seekBar.update(frameCount: core.frameCount, position: core.position, cached: core.cache.cachedRanges(),
                        loopA: core.loopA, loopB: core.loopB, marks: marks.segments.map { $0.start...$0.end },
                        leadIns: leadIns, openMark: marks.open, text: "\(core.progressText)   frame \(core.position)")
         updateTransport()
     }
 
-    /// The seek bar's ⏮ ⏭ and volume, as the playlist and the player are now; the controls touch only what changed.
-    /// ⏮ ⏭ follow < and >: a page's list, Stash's queue (whose ends only Stash knows), else the folder.
+    /// Refresh only the controls whose values changed; file navigation belongs to the playlist slot.
     private func updateTransport() {
-        let (previous, next): (Bool, Bool) = if let listPlaylist {
-            (listPlaylist.previous != nil, listPlaylist.next != nil)
-        } else if followsStashQueue {
-            (true, true)
-        } else {
-            (playlist?.previous != nil, playlist?.next != nil)
-        }
-        seekBar.transport.update(hasPrevious: previous, hasNext: next, volume: core.volume, muted: core.isMuted)
+        seekBar.transport.update(volume: core.volume, muted: core.isMuted, paused: core.isPaused, speed: core.speed)
     }
 
     /// A click on a seek bar control: the command as its key runs it, silently (the bar plays no haptics), and the
@@ -3011,7 +3062,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
         slots.onMessage = { [weak self] in self?.showMessage($0) }
-        slots.onSlotsPlaced = { [weak self] in self?.updateToolbarUnderSlots() }
         slots.onPagesChanged = { [weak self] in
             guard let self else { return }
             rebuildInputMap()   // a page's keys count while it is in a slot
@@ -3106,44 +3156,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         statsPanel.place()
     }
 
-    /// Over Home a slot goes the window's whole height, under the toolbar: the toolbar's pills it covers, and the
-    /// traffic lights, fade out and are hidden (no clicks land on them over the slot), and come back when it goes or
-    /// Home does. A pill is a child of the toolbar's full-width item container (macOS 26: `NSToolbarPlatterView`,
-    /// `NSToolbarItemViewer`); it is found from an item's own view, so AppKit's classes are not named.
-    private func updateToolbarUnderSlots() {
-        guard let window, let container = window.contentView else { return }
-        let covers = showsHome && !isFullScreen ? slots.shownFrames.map { container.convert($0, to: nil) } : []
-        var pills: [NSView] = []
-        if let toolbar = window.toolbar, window.toolbar === home?.browser.nsToolbar {
-            for case let view? in toolbar.items.map(\.view) {
-                var pill = view
-                while let parent = pill.superview, parent.frame.width < window.frame.width - 1 { pill = parent }
-                if let bar = pill.superview, bar.window === window { pills = bar.subviews; break }
-            }
-        }
-        pills += [.closeButton, .miniaturizeButton, .zoomButton].compactMap { window.standardWindowButton($0) }   // a left slot's top
-        for pill in pills {
-            let frame = pill.convert(pill.bounds, to: nil)
-            let covered = covers.contains { $0.intersects(frame) }
-            if covered, !pillsUnderSlots.contains(pill) {
-                pillsUnderSlots.add(pill)
-                NSAnimationContext.runAnimationGroup({ $0.duration = 0.15; pill.animator().alphaValue = 0 }) { [weak self, weak pill] in
-                    MainActor.assumeIsolated {
-                        guard let self, let pill, self.pillsUnderSlots.contains(pill) else { return }
-                        pill.isHidden = true
-                    }
-                }
-            } else if !covered, pillsUnderSlots.contains(pill) {
-                showPill(pill)
-            }
-        }
-        for pill in pillsUnderSlots.allObjects where !pills.contains(pill) { showPill(pill) }   // the toolbar is gone
-    }
-
-    private func showPill(_ pill: NSView) {
-        pillsUnderSlots.remove(pill)
-        pill.isHidden = false
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; pill.animator().alphaValue = 1 }
+    /// The side slots start below the title bar and toolbar wherever these lie over the content (Home's toolbar, the
+    /// full-screen title bar while it is in), so the slots' headers and the traffic lights and pills never cover each
+    /// other and both take clicks.
+    private func updateSlotsTopInset() {
+        guard let window, let slots, let container = window.contentView else { return }
+        slots.topInset = isFullScreen ? titlebarInset
+            : max(0, container.bounds.maxY - container.convert(window.contentLayoutRect, from: nil).maxY)
     }
 
     private func persistSlot(_ edge: SlotEdge, _ setting: SlotSetting) {
@@ -3508,6 +3527,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.updatePrecisionWheel()   // the panel may come or go under the pointer
         }
         container.onLayout = { [weak panel, weak self] in
+            self?.placeTopOverlays()
             self?.slots?.containerDidLayout()
             panel?.place()
         }
@@ -3516,6 +3536,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// For View › Show Stats / Hide Stats.
     var statsVisible: Bool { statsPanel.isVisible }
+    var filmstripShown: Bool { seekBar.showsFilmstrip }
+    var filmstripPinned: Bool { seekBar.filmPinned }
+    func toggleFilmstrip() { seekBar.toggleFilmVisibility(); revealSeekBar() }
+    func pinFilmstrip() { seekBar.toggleFilmPin(); revealSeekBar() }
 
     /// For the ticks of Playback › Colour: the open file's colour over framescrub.conf.
     var colorConfig: Config { core.config }
@@ -3580,6 +3604,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func player(_ player: PlayerCore, display frame: DecodedFrame) {
         videoView.show(frame)
+        filmstripLoader?.resume()
         lastFrame = frame
         checkSceneCut(frame)
         pushPluginState(force: false)
@@ -3615,6 +3640,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
+    /// `show-in-folder` (a double click, ↩, ⌘↑, File › Show in Folder): Home's Folders on the video's folder, the
+    /// video selected, wherever it was opened from; Back from the video goes to that folder from now on.
+    private func showInFolder() {
+        guard let url = core.url, url.isFileURL else { showMessage("No video open"); return }
+        returnTab = .folders
+        folderReturn = (folder: folder(of: url), file: url)
+        showHome(tab: .folders)
+    }
+
     private func revealFrames() {
         guard let target = core.revealTarget else { showMessage("No frames saved yet"); return }
         if (try? target.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
@@ -3635,12 +3669,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func playerDidReachEnd(_ player: PlayerCore) {
         guard core.config.playlistAutoadvance else { return }
         if let listPlaylist {
-            if listPlaylist.next != nil { openListItem(at: listPlaylist.currentIndex + 1, plays: true) }
+            if listPlaylist.next != nil {
+                slots.videoChanged(cause: .autoadvance)
+                openListItem(at: listPlaylist.currentIndex + 1, plays: true)
+            }
             return
         }
         if followsStashQueue { stepStashQueue(1, plays: true); return }
         whenFolderRead { [weak self] in
             guard let self, let next = playlist?.neighbour(1, skipping: isUnreadable) else { return }
+            slots.videoChanged(cause: .autoadvance)
             openFile(next, stepped: 1) { [weak self] outcome in   // a broken file is gone past by the open itself
                 if outcome == .opened { self?.core.play() }
             }
@@ -3693,12 +3731,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResignKey(_ notification: Notification) {
         endHoldSpeed()   // the key-up goes elsewhere
+        seekBar.cancelInteraction()
         cancelMouseInput()   // and so may a button's release
         showCursorAfterScrub()
         updatePrecisionWheel()
     }
     func windowDidBecomeKey(_ notification: Notification) { updatePrecisionWheel() }
-    func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer(); seekBar.refreshVisibility() }
     func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer() }
     func windowDidEnterFullScreen(_ notification: Notification) {
@@ -3712,7 +3751,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if !showsHome { window?.styleMask.remove(.fullSizeContentView) }
         updatePrecisionWheel()
     }
-    func windowDidResize(_ notification: Notification) { rememberFrame() }
+    func windowDidResize(_ notification: Notification) {
+        rememberFrame()
+        if window?.inLiveResize != true { updatePrecisionWheel() }   // the video's rect (a live resize: at its end)
+    }
+    func windowDidEndLiveResize(_ notification: Notification) { updatePrecisionWheel() }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while
     /// the window is being built, before the panel exists.

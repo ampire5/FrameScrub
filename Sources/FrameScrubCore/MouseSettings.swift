@@ -63,44 +63,6 @@ public struct HapticSettings: Equatable, Sendable {
     public func choice(for e: HapticEvent) -> HapticChoice? { choices[e].flatMap { $0 } }
 }
 
-/// `mx-panel-force`: how hard the MX Master 4's haptic panel must be pressed. `0…100` goes linearly over the mouse's
-/// range (0, the default as in Loupe, the lightest it takes, 100 the stiffest), `default` writes the mouse's factory
-/// value, `keep` never writes it.
-public enum PanelForceSetting: Equatable, Sendable {
-    case keep, factoryDefault, percent(Int)
-
-    /// The force to write, in the mouse's units, given what the mouse reports; nil for `keep`.
-    public func value(range: ClosedRange<UInt16>, defaultValue: UInt16) -> UInt16? {
-        switch self {
-        case .keep: return nil
-        case .factoryDefault: return defaultValue
-        case .percent(let p):
-            let span = Double(range.upperBound - range.lowerBound)
-            return range.lowerBound + UInt16((Double(min(max(p, 0), 100)) * span / 100).rounded())
-        }
-    }
-
-    /// The value as framescrub.conf spells it.
-    public var text: String {
-        switch self {
-        case .keep: return "keep"
-        case .factoryDefault: return "default"
-        case .percent(let p): return String(p)
-        }
-    }
-
-    /// `keep`, `default` (any case) or a whole number 0…100; nil otherwise.
-    public static func parse(_ text: String) -> PanelForceSetting? {
-        switch text.lowercased() {
-        case "keep": return .keep
-        case "default": return .factoryDefault
-        default:
-            guard let p = Int(text), (0...100).contains(p) else { return nil }
-            return .percent(p)
-        }
-    }
-}
-
 /// `mx-side-buttons`: how FrameScrub gets the MX Master's back and forward buttons. A mouse utility such as Mac Mouse
 /// Fix takes them from the system before any app sees them, but the mouse still reports each press over HID++.
 /// - `watch` (default): listen to the mouse; the system and the utility still get the buttons.

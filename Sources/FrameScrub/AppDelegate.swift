@@ -277,7 +277,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// The different running copy of this app that launched before us and so must keep running, if any.
     private static func primaryInstance() -> NSRunningApplication? {
         func instance(_ app: NSRunningApplication) -> RunningInstance? {
-            guard let key = app.bundleIdentifier ?? app.executableURL?.path else { return nil }
+            guard let key = HandOver.instanceKey(bundlePath: app.bundleURL?.path, executablePath: app.executableURL?.path)
+            else { return nil }
             return RunningInstance(pid: app.processIdentifier, key: key, launchDate: app.launchDate)
         }
         guard let me = instance(.current) else { return nil }
@@ -308,18 +309,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     /// `path` for a file; `link` (a `framescrub://open?scene=` link) for a Stash scene, which has no path to pass.
     private static func postHandOver(path: String?, link: URL? = nil) {
-        var userInfo: [String: String] = [:]
-        if let path { userInfo["path"] = path }
-        if let link { userInfo["link"] = link.absoluteString }
         DistributedNotificationCenter.default().postNotificationName(
-            openFileNotification, object: nil, userInfo: userInfo, deliverImmediately: true)
+            openFileNotification, object: nil,
+            userInfo: HandOver.userInfo(path: path, link: link, bundle: Bundle.main.bundlePath), deliverImmediately: true)
     }
 
     private func observeHandOver() {
         handOverObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.openFileNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let self, !self.isSecondary, let controller = self.controller else { return }
+            guard let self, !self.isSecondary, let controller = self.controller,
+                  HandOver.isForUs(note.userInfo, ownBundle: Bundle.main.bundlePath) else { return }
             // Any process can post this name, so only an absolute path to an existing regular file is opened.
             if let path = note.userInfo?["path"] as? String, path.hasPrefix("/") {
                 let url = URL(fileURLWithPath: path)
@@ -389,6 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApp.mainMenu.map(walk)
         return rows
     }
+    @objc private func toggleFilmstrip(_ sender: Any?) { controller?.toggleFilmstrip() }
+    @objc private func pinFilmstrip(_ sender: Any?) { controller?.pinFilmstrip() }
 
     /// A menu item's shortcut as menus show it: modifier glyphs (⌃⌥⇧⌘), then the key.
     private static func shortcutText(_ item: NSMenuItem) -> String {
@@ -548,6 +550,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleFilmstrip(_:)) {
+            item.title = controller?.filmstripShown == true ? "Fold Filmstrip" : "Show Filmstrip"
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
+        if item.action == #selector(pinFilmstrip(_:)) {
+            item.state = controller?.filmstripPinned == true ? .on : .off
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
         if item.action == #selector(copyPath(_:)) { return controller?.currentURL != nil }
         if [#selector(largerCards(_:)), #selector(smallerCards(_:)), #selector(defaultCardSize(_:)),
             #selector(toggleHomeSidebar(_:))].contains(item.action) {
@@ -667,6 +677,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         fileMenu.addItem(withTitle: "Larger Cards", action: #selector(largerCards(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Smaller Cards", action: #selector(smallerCards(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(withTitle: "Default Card Size", action: #selector(defaultCardSize(_:)), keyEquivalent: "").target = self
+        // No key on the item: ↩ types in the text fields and ⌘↑ goes up a folder in Home (input.conf binds them).
+        fileMenu.addItem(commandItem("Show in Folder", .showInFolder, key: ""))
         fileMenu.addItem(commandItem("Show Saved Frames in Finder", .revealFrames, key: "o", modifiers: [.command, .shift]))
         let copyPath = fileMenu.addItem(withTitle: "Copy Path", action: #selector(copyPath(_:)), keyEquivalent: "c")
         copyPath.keyEquivalentModifierMask = [.command, .option]
@@ -711,6 +723,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Fit to Screen", .windowFit, key: "4"))
         viewMenu.addItem(commandItem("Float on Top", .cycleOntop, key: "", modifiers: []))   // T stays an input.conf binding
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
+        let film = viewMenu.addItem(withTitle: "Show Filmstrip", action: #selector(toggleFilmstrip(_:)), keyEquivalent: "l")
+        film.target = self
+        let pinFilm = viewMenu.addItem(withTitle: "Pin Filmstrip", action: #selector(pinFilmstrip(_:)), keyEquivalent: "l")
+        pinFilm.keyEquivalentModifierMask = [.command, .option]; pinFilm.target = self
         let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
         icon.keyEquivalentModifierMask = [.control, .option, .command]
         let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")

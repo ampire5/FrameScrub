@@ -60,7 +60,8 @@ import Testing
         let all = sections.flatMap(\.entries)
         #expect(all.contains(KeyHelp.Entry(keys: ["?"], action: "These keys")))
         #expect(all.contains { $0.action == "Step frames" && $0.keys == ["Swipe ←→", "Wheel ↑↓", "⇧Side wheel left"] })
-        #expect(!all.contains { $0.action.lowercased().contains("zoom") })   // bound, but there is no zoom yet
+        #expect(all.contains { $0.action == "Zoom in" && $0.keys.first == "⌘=" })
+        #expect(all.contains { $0.action == "Zoom: fit" && $0.keys == ["⌘0"] })
         #expect(Set(all.map(\.action)).count == all.count)
     }
 

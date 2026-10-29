@@ -20,9 +20,14 @@ The mouse and trackpad work the same in both.
 | Hold right mouse button + side wheel | Playback speed down / up (`step-speed`: only changes the speed, never starts or reverses playback) |
 | Shift+side wheel, Shift+⌥+side wheel | Step frames, fast (what Shift turns a plain mouse's wheel into) |
 | Trackpad vertical swipe, ⌥+wheel | Volume |
-| ⌘+scroll, pinch | Zoom (bound, not available yet) |
-| Right click | Play / pause (acts on release, and not after a scroll) |
-| Double click | Full screen |
+| Pinch | Zoom about the fingers; halts at Fill (black bars gone) and 100 %, stretches past the limits and springs back. Never smaller than Fit |
+| ⌘+scroll, ⌘= / ⌘− | Zoom in / out (√√2 a step; about the pointer for ⌘+scroll), animated; ⌘0 back to Fit |
+| Two-finger double tap (Smart zoom) | Fit ↔ 100 % at the fingers (twice Fit where 100 % is not much larger) |
+| Drag on a zoomed picture | Pan: the picture follows the cursor, glides on after release, rubber band at the edges (otherwise a drag moves the window) |
+| Right-button drag up / down | Zoom in / out about the press point (a right click without moving stays play / pause) |
+| Right click | Play / pause (acts on release, and not after a scroll or a zoom) |
+| Double click | Show the video in its folder (Home's Folders, the video selected; as ↩ and ⌘↑) |
+| Middle click | Full screen |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
 | … gesture button tap / hold | Save a frame / save the clips |
@@ -63,7 +68,8 @@ What each action does in detail is in the classic table below.
 | `1` / `2` | Previous / next video in the folder | PgUp / PgDn, `<` / `>` |
 | `3` / `4` / `5` | Speed −/+ `speed-step`, reset | `[` `]` `Backspace` |
 | `Tab` / F9 / ⌘F | Playlist panel / folder order / filter | F8 |
-| `` ` `` | Full screen (Esc leaves it) | double click |
+| `` ` `` | Full screen (Esc leaves it) | middle click |
+| ↩ / ⌘↑ | Show the video in its folder | double click |
 | ⌘T | Float on top | |
 | `⌥a` / `⌥v` / `⌥⇧v` | Aspect / vibrance / auto colour (this file; saving for the folder or as default: Playback > Colour) | |
 | `u` / `U` | Still-frame upscaling on / off / upscaler for saved frames | |
@@ -93,6 +99,7 @@ modes and Play Marks Only work mirrored.
 | ⌘F | Filter the playlist by name (part of the name, any case); Return opens the first match, Esc clears it. While a filter is on, PgUp / PgDn move through the matches and the title shows `3 / 7 (48)` |
 | F9 | Folder order: name → newest first → largest first (also the menu at the top of the playlist; saved as `playlist-sort`) |
 | ⌘⌫ | Move the video to the Trash and open the next one. On a volume without a Trash (most SMB shares) it asks first, then deletes for good |
+| ↩, ⌘↑, double click | Show the video in its folder: Home's Folders on it, the video selected, wherever it was opened from (`show-in-folder`; also File › Show in Folder). ⌘[ / Esc come back to it, and from then on Back goes to that folder |
 | ⌘W | Close the video and go back to where it was opened from — Home's Recent or Stash (`close-file`; also the ‹ Recent / ‹ Stash button in the top left corner). With no video open it closes the window |
 | ⌘, | Settings |
 | `←` `→` / `↑` `↓` | Seek ∓5 s / ±60 s (keyframes when `seek-mode=keyframe`) |
@@ -149,7 +156,7 @@ Actions: `scrub`, `scrub fast`, `scrub invert`, `seek N [exact|keyframes]`, `add
 per notch.
 
 `MBTN_RIGHT+` holds the right mouse button: by default `MBTN_RIGHT+WHEEL_…` and `MBTN_RIGHT+TRACKPAD_…` are
-`scrub fast`. The middle button is `MBTN_MID`: by default a click is `cycle fullscreen` (like `MBTN_LEFT_DBL`), and the
+`scrub fast`. The middle button is `MBTN_MID`: by default a click is `cycle fullscreen` (`MBTN_LEFT_DBL` is `show-in-folder`), and the
 wheel turned while the wheel is held down (`MBTN_MID+WHEEL_UP` / `_DOWN`) is `add volume 5` / `-5`; with that chord
 bound, the click acts on the release, and not at all after a scroll. A button with a `_DBL` binding runs its single
 action only after the double-click interval. The right button released after it served as a modifier does not play /
@@ -236,11 +243,11 @@ the trackpad or menu items.
 | `haptic-done` | completed | a frame or clip is written to disk |
 | `haptic-error` | angry-alert | a command refused (no mark before / after, no exact index) or a write failed |
 
-`haptic-strength` (0…100, default `keep`) is the strength of ordinary patterns; `keep` leaves the mouse's own setting.
-`mx-panel-force` (0…100 across the mouse's range, default `0` — the lightest press, as in Loupe; `default` for the
-factory value, `keep` to leave it) is how hard the panel must be pressed. Pressing and releasing a button never buzzes
-by itself. Settings → Mouse & Trackpad has the toggle, a pattern per event, both strengths, the panel force and the
-side buttons.
+The mouse reaches FrameScrub through MouseService, which must be running; without it the mouse works as an ordinary
+one. The mouse's own settings, the normal haptic strength and how hard the panel must be pressed, are MouseService's
+(its Settings…); `haptic-strength` and `mx-panel-force` in this file are ignored with a warning. Pressing and releasing
+a button never buzzes by itself. Settings → Mouse & Trackpad has the toggle, a pattern per event, the strong strength
+and the side buttons.
 
 **Back / forward and Mac Mouse Fix.** `mx-side-buttons=watch` (default) listens to the buttons over HID++ without taking
 them from the system, so Mac Mouse Fix keeps its own Back / Forward actions (a swipe with Back held, say) and FrameScrub
@@ -298,19 +305,71 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - A file that cannot be opened leaves its reason on screen (missing, no permission, network drive not responding,
   read error, not a video or damaged, no video track) with the technical message underneath; Return tries again
   (handy once a sleeping NAS wakes up), PgUp / PgDn go on to the neighbours.
-- The pointer hides when it rests on the video for 2 s (with the seek bar), on a key press and while scrubbing;
+- The pointer hides when it rests on the video for 1.5 s (with the playback controls), on a key press and while scrubbing;
   moving the mouse brings it back. The seek bar stays while the pointer rests on it.
 - The seek bar shows cut marks in green, with the lead-in each clip gets from the keyframe before its mark in a
   fainter green, and an open mark from its start to the playhead.
+- The film's three-icon capsule (also in the context menu) selects Whole File Lens, Segment, or Whole File.
+  Whole File Lens keeps one fixed set of samples across the file: a compact magnified region follows the playhead,
+  leaving distant geometry and pictures untouched. Whole File uses the same samples without magnification.
+  Segment keeps samples on an absolute time grid: the pictures move continuously through a fixed central lens,
+  and only newly entering samples need images. Playback never changes an existing cell's sampled time.
+  The view choice is remembered and does not seek or pause. The overview remains a direct whole-file seek control.
+  Dragging captures the input projection while the displayed film continues through its lens; release causes no
+  recentering/resampling jump.
+  The overview follows `seek-mode`; clicking a film cell selects its displayed time precisely. Small pointer jitter
+  remains a click; dragging starts after 6 pt. Scrolling the overview steps the hover preview's keyframes.
+  Thumbnails keep the picture's proportions, rotation and current aspect/crop. Hovering highlights a cell and
+  enlarges its cached picture over the film without changing its height or reading the file again.
+  The sliders button beside the three view icons opens a live dropdown directly from the film; Right-click ›
+  Time Lens… opens the same retained panel. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–4×)
+  are independent. Magnification/area change only geometry, reusing the existing images and sample times.
+  Thumbnail crop (0–100%) blends between full-picture fit and horizontal centre crop without changing density.
+  Seconds per thumbnail (0.1–30 s) applies only to Segment. Lens controls are inactive in the unmagnified Whole File
+  view. Reset restores magnification/density 2.75×, area 30%, crop 70%, step 1 s.
+  Values are remembered; changing them does not seek. Option-scroll adjusts outside density in whole-file modes,
+  or the time step in Segment. Missing pictures can fill while the dropdown stays open; gestures/foreground still win.
+  Hover always shows the complete picture. Zero crop keeps full-picture cells.
+  Enlarged hover pictures stay clear of the playback/view controls; edge previews reduce their footprint when
+  necessary. Transport and view buttons stay above pictures and receive clicks first. Moving directly into a
+  capsule dismisses the hover and keeps the film revealed, without leaving and re-entering the timeline.
+  Narrow cells omit timestamps when they would overlap; hover retains the full timestamp.
+- Moving the pointer shows the progress bar and two translucent capsules: Play/Pause and ±10 seconds; mute,
+  volume, explicit playback rates and full screen. Playback chrome hides after 1.5 s without movement away from
+  its active controls. An enabled filmstrip opens only on entering its lower reveal zone, folds 0.5 s after leaving
+  (including releasing a drag outside), and stays when pinned. Its empty space collapses with it.
+  View › Show/Fold Filmstrip (⌘L) opens or folds it; View › Pin Filmstrip (⌥⌘L) toggles persistent pinning.
+  The same actions are in its context menu. Folding by command suppresses immediate re-opening until the pointer
+  leaves the zone. Pinning the film does not force the playback chrome to remain visible.
+  Mouse-wheel scrolling selects adjacent loaded thumbnails already displayed in the film (vertical mouse direction
+  is inverted). Vertical trackpad scrolling also steps displayed samples; horizontal trackpad gestures seek continuously.
+  Sample steps animate only the film geometry for 140 ms, reuse cached pictures and stop at the visible sample ends. Starting a film scroll or drag pauses playback and enables scrub filling;
+  Option-scroll changes this view's outside density/step. Scroll momentum does not cause further seeking.
+  Right-click the timeline for thumbnail sizes, Hide Filmstrip and Always Show Playback Controls. Existing editing
+  commands and the mouse's viewing/editing profiles remain available; this stage adds no editing toolbar.
+- Film thumbnails load through one utility decoder while the film is revealed and visible, during playback too.
+  A read waits if playback's current/next frame is missing, retains its queue and resumes on a delivered frame;
+  gestures take priority. Moving samples update a pending batch without resetting its dwell deadline on each tick.
+  Existing thumbnails remain visible. `preview=no` disables their decoder as well as hover
+  pictures. Network files wait for the whole visible batch once, not for each image; local files start immediately.
+  Unknown cells show their timestamp until a picture is available.
+  Each arriving image paints the strip immediately, without waiting for another pointer event. Already generated
+  progress-bar previews also enter its bounded cache. Indexing scans packet timestamps/keyframe flags without
+  image decoding; it does not generate free thumbnails. A folded or disabled film starts no new thumbnail reads.
+  Ordinary forward viewing fills the existing bounded playback window (up to two seconds ahead), rather than all
+  distant scrub regions that happen to fit in memory. Pausing or scrolling enables the fuller scrub window.
+  Decoder workers start after the restored position and autoplay mode have been selected.
 - The seek bar shades the A-B range and grows thicker while you point at it. The preview then shows the frame number
   next to the time and, under the picture, a lens of ±20 s around that point: keyframes as ticks, the point as a line
   in the middle, the playhead as a dot. The label says `K` on a keyframe, else how far the keyframes either side are
   (`K −0.80 s / +2.20 s`).
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
-- **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds the playlist,
-  a plugin page (`plugin=Name | URL`, repeatable; the `plugin=` page of a
-  `framescrub://open` link is listed as `Plugin`) or nothing, whose **+** menu fills it. A slot is pinned (takes room from the video) or lies
+- **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds tabs — the
+  playlist and plugin pages (`plugin=Name | URL`, repeatable; the `plugin=` page of a
+  `framescrub://open` link is a tab of its own for the run, listed as `Plugin`) — or nothing, whose **+** menu fills it.
+  A glass capsule over the slot's top holds the tabs, the shown view's tools (the playlist's filter and order) and pin,
+  backdrop and hide; pages may read `--slot-top-inset` to keep clear of it. A slot is pinned (takes room from the video) or lies
   over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when
   asked, and slides in when the pointer comes near its edge (`slot-reveal-distance`, 12 pt by default; the bottom slot at the very edge) (or on a click on its tongue). Each is kept in `slot-left` / `slot-right` / `slot-bottom`.
   A page drives the player through `window.framescrub` (bridge version 2, documented at the top of
@@ -416,9 +475,7 @@ haptic-keyframe=whisper-collision # pattern for a plain wheel scrub or an edge d
 haptic-mark=subtle-collision    # pattern for a plain wheel scrub passing the edge of a mark or A / B
 haptic-done=completed           # pattern for a frame or clip written to disk
 haptic-error=angry-alert        # pattern for a refused command or a failed write
-haptic-strength=keep            # 0…100 | keep: the mouse's normal haptic strength in percent (keep leaves what the mouse has)
 haptic-strong-strength=80       # 0…100: the strength patterns marked "strong" play at
-mx-panel-force=0                # 0…100 | default | keep: how hard the haptic panel must be pressed (0 the lightest; keep: never written)
 mx-side-buttons=watch           # watch | take | system — back / forward: listen to the mouse, divert them while in front, or AppKit's events only
 frame-format=jpeg               # jpeg | png | heic | tiff
 jpeg-quality=95                 # 1…100, JPEG quality of saved frames
@@ -439,6 +496,8 @@ autoplay=no                     # yes: start playing every file as it opens
 activate-on-open=yes            # bring the window to the front when a file is opened from Finder or the Dock
 playlist-sort=name              # name | date | size — the folder's order (date: newest first, size: largest first)
 playlist-font-size=14           # 9…32 points, text size of the playlist panel (F8)
+playlist-view=list              # list | strip: the playlist as names, or as a vertical strip of pictures
+playlist-strip-return=3         # 0…30 seconds: the strip goes back to the playing video after browsing; 0 never
 home-card-size=220              # 60…480 points, width of Home's cards (⌘= / ⌘− / ⌘0 on Home)
 recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
@@ -450,10 +509,11 @@ stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
 stash-stream=auto               # auto | never | always — play Stash's stream when the file is on no share this Mac can reach (always: the stream even then)
 plugin-open-allowed=            # origins (http://host:port, comma-separated) whose plugin pages may open local videos
-slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: view (empty, playlist, plugin:<name>), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
+slot-left=empty, overlay, glass, mouse-leaves, 400, hidden, at-once      # left slot: views as tabs, the shown one first, joined by " + " (empty, playlist, plugin:<name>; e.g. playlist + plugin:Notes), pinned|overlay, dark|glass|clear, mouse-leaves|after-choice|manual, size, shown|hidden, at-once|tongue (how it comes from its edge)
 slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right slot, as slot-left (the default keeps the playlist there)
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
+slot-flash=no                   # yes: the playlist's slot shows for 0.8 s when the video changes by autoadvance or a key (as Zen's sidebar on a tab switch)
 mouse-profile=viewing           # viewing | editing: what the mouse's buttons do (editing: marks under back / forward; viewing: back shows the info, forward nothing). SmartShift held 0.6 s, or View › Mouse Buttons for Editing, switches
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame

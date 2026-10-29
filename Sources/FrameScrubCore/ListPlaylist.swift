@@ -90,29 +90,50 @@ public struct ListPlaylist: Equatable, Sendable {
 public struct PlaylistRow: Equatable, Sendable {
     public let title: String
     public let subtitle: String?
+    /// The local file, for its picture and facts; nil for a scene or a stream.
+    public let url: URL?
 
-    public init(title: String, subtitle: String? = nil) {
+    public init(title: String, subtitle: String? = nil, url: URL? = nil) {
         self.title = title
         self.subtitle = subtitle
+        self.url = url
     }
 
     /// A folder's file: its name.
-    public init(file: URL) { self.init(title: file.lastPathComponent) }
+    public init(file: URL) { self.init(title: file.lastPathComponent, url: file) }
 
     /// A list item: the title the page gave, else the file's name, "Scene <id>", or the stream's last path component
     /// (its host when the path has none).
     public init(_ item: PlaylistItem) {
-        if let title = item.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
-            self.init(title: title)
-            return
-        }
+        let given = item.title?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
         switch item {
-        case let .scene(id, _, _): self.init(title: "Scene \(id)")
-        case let .file(url, _, _): self.init(file: url)
+        case let .scene(id, _, _): self.init(title: given ?? "Scene \(id)")
+        case let .file(url, _, _): self.init(title: given ?? url.lastPathComponent, url: url)
         case let .stream(url, _, _):
             let name = url.lastPathComponent
-            self.init(title: name.isEmpty || name == "/" ? url.host ?? url.absoluteString : name)
+            self.init(title: given ?? (name.isEmpty || name == "/" ? url.host ?? url.absoluteString : name))
         }
     }
+}
+
+extension PlaylistRow {
+    /// Each row's identity across list changes (`FilmstripItems.indexMap`): its file, else its title; a second row of
+    /// the same file or title gets its occurrence after a `#`, so no two rows share one.
+    public static func identities(_ rows: [PlaylistRow]) -> [URL] {
+        var seen: [URL: Int] = [:]
+        return rows.map { row in
+            let base = row.url ?? URL(string: "playlist-row:" + (row.title.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""))!
+            let n = seen[base, default: 0]
+            seen[base] = n + 1
+            guard n > 0 else { return base }
+            var parts = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+            parts.fragment = String(n)
+            return parts.url!
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 

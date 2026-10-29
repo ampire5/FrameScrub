@@ -129,6 +129,20 @@ import Testing
         #expect(!cache.contains(331))
     }
 
+    @Test func normalPlaybackDefersDistantScrubRegionsUntilPaused() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 1024)
+        filler.setRegions([100...130, 300...330], advance: .repeating)
+        filler.setFocus(110, mode: .playing, direction: 1)
+        filler.start()
+        defer { filler.stop() }
+        #expect(await eventually { (110...130).allSatisfy(cache.contains) })
+        try await Task.sleep(for: .milliseconds(300))
+        print("viewing-region-bench: cached=\(cache.count), seeks=\(filler.forwardSeeks)")
+        #expect(!cache.contains(300), "Normal viewing must not decode a distant scrub region merely because it fits")
+        filler.setFocus(110, mode: .paused)
+        #expect(await eventually { (250...330).allSatisfy(cache.contains) })
+    }
+
     @Test func regionsTooBigKeepTheFocusRegion() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 400)   // room ~116 < 0...240 and 250...450
         filler.setRegions([100...240, 300...450], advance: .repeating)

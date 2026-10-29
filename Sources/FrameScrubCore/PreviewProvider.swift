@@ -13,6 +13,8 @@ public struct PreviewImage: @unchecked Sendable {
 public final class PreviewProvider: @unchecked Sendable {
     public var onImage: ((PreviewImage) -> Void)?          // main queue
     public var onUnavailable: (() -> Void)?                // main queue; the file cannot be previewed
+    /// Main queue, after image delivery (or failure): a serial consumer may submit its next visible thumbnail.
+    public var onRequestFinished: (() -> Void)?
     public var decodeCount: Int { lock.withLock { decodes } }
 
     private let url: URL
@@ -32,7 +34,7 @@ public final class PreviewProvider: @unchecked Sendable {
     private var worker: LatestOnlyWorker<Double>!
 
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
-                policy: NetworkPolicy = .local) {
+                policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated) {
         self.url = url
         self.readCache = readCache
         self.index = index
@@ -40,7 +42,7 @@ public final class PreviewProvider: @unchecked Sendable {
         self.widthPixels = max(1, widthPixels)
         settle = policy.previewSettle
         readAhead = policy.sideReadAhead
-        worker = LatestOnlyWorker<Double>(label: "framescrub.preview") { [weak self] seconds in self?.handle(seconds) }
+        worker = LatestOnlyWorker<Double>(label: "framescrub.preview", qos: qos) { [weak self] seconds in self?.handle(seconds) }
     }
 
     public func request(seconds: Double) { worker.submit(seconds) }
@@ -52,9 +54,11 @@ public final class PreviewProvider: @unchecked Sendable {
         lock.withLock { stopped = true }
         onImage = nil
         onUnavailable = nil
+        onRequestFinished = nil
     }
 
     private func handle(_ seconds: Double) {
+        defer { DispatchQueue.main.async { [weak self] in self?.onRequestFinished?() } }
         let (current, skip) = lock.withLock { (index, stopped || failed) }
         guard !skip else { return }
         let n = current.frameNumber(forSeconds: seconds)

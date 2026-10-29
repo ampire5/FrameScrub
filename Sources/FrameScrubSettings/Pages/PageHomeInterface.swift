@@ -18,6 +18,11 @@ extension SettingsPanel {
             SettingsSection("Text", rows: [
                 .number("playlist-font-size", "Playlist text size (F8)", unit: "pt", step: 1, symbol: "list.bullet",
                         description: "9–32, default 14."),
+                .choice("playlist-view", "Playlist", [("list", "List"), ("strip", "Strip")], symbol: "film.stack",
+                        description: "The playlist as a list of names, or as a strip of pictures. Default List."),
+                .number("playlist-strip-return", "Strip goes back after", unit: "s", step: 1, symbol: "arrow.uturn.backward",
+                        description: "Seconds before the strip goes back to the playing video after browsing. "
+                            + "0–30, default 3; 0: never."),
                 .number("stats-font-size", "Stats text size (I)", unit: "pt", step: 1, symbol: "info.circle",
                         description: "8–40, default 12."),
             ]),
@@ -26,6 +31,9 @@ extension SettingsPanel {
                         symbol: "rectangle.lefthalf.inset.filled",
                         description: "How near the window's left or right edge the pointer brings a hidden slot "
                             + "(View › Slots sets what each holds). 2–60, default 12."),
+                .toggle("slot-flash", "Show the playlist when the video changes", symbol: "sparkles.rectangle.stack",
+                        description: "The playlist's slot shows for a moment when autoadvance or a key moves to "
+                            + "another video. Default off."),
             ]),
         ])
     }

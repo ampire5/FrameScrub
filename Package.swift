@@ -20,8 +20,11 @@ let package = Package(
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.2.0"),
-        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.7.0"),
+        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.11.8"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.7.0"),
+        // The Logitech mouse goes through MouseService (a local mirror in .swiftpm/configuration/mirrors.json while
+        // working on both).
+        .package(url: "https://github.com/ampire5/MouseService.git", from: "0.2.0"),
     ],
     targets: [
         .systemLibrary(
@@ -38,6 +41,7 @@ let package = Package(
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
+                .product(name: "SlotModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
             ]
         ),
@@ -57,20 +61,31 @@ let package = Package(
             dependencies: [
                 "FrameScrubCore",
                 "FrameScrubSettings",
+                .product(name: "SlotChrome", package: "HomeScreenKit"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "Filmstrip", package: "HomeScreenKit"),
+                .product(name: "FilmstripModel", package: "HomeScreenKit"),
+                .product(name: "HomeChrome", package: "HomeScreenKit"),
+                .product(name: "HomeScreenModel", package: "HomeScreenKit"),
+                .product(name: "SlotModel", package: "HomeScreenKit"),
             ]
         ),
         .executableTarget(
             name: "FrameScrub",
             dependencies: [
+                .product(name: "Slots", package: "HomeScreenKit"),
                 "FrameScrubCore",
                 "FrameScrubSettings",
+                .product(name: "SlotChrome", package: "HomeScreenKit"),
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelKit", package: "InfoPanelKit"),
                 .product(name: "StashKitUI", package: "StashKit"),
                 .product(name: "HomeScreenKit", package: "HomeScreenKit"),
                 .product(name: "HomeChrome", package: "HomeScreenKit"),
+                .product(name: "Filmstrip", package: "HomeScreenKit"),
+                .product(name: "FilmstripModel", package: "HomeScreenKit"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
+                .product(name: "MouseClient", package: "MouseService"),
             ]
         ),
         .testTarget(
@@ -81,6 +96,7 @@ let package = Package(
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
+                .product(name: "SlotModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
             ],
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []

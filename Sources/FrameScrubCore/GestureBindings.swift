@@ -14,7 +14,7 @@ public enum GestureActionKind: Equatable, Sendable {
     /// `step-speed up` / `down`: by `speed-step`.
     case speedStep
     case playlist
-    case zoom(Double), zoomContinuous     // listed, but zoom itself is not implemented yet
+    case zoom(Double), zoomContinuous
     case ignore
 }
 

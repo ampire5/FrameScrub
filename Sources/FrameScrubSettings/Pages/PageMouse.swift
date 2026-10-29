@@ -1,3 +1,4 @@
+import AppKit
 import FrameScrubCore
 import LogiHIDPP
 import SettingsKit
@@ -50,17 +51,18 @@ extension SettingsPanel {
                         description: "The MX Master 4's vibration, through the Bolt receiver, without Logi Options+. "
                             + "A pattern per event, or None. Default on.",
                         nested: haptics + [
-                            .number("haptic-strength", "Strength", step: 5,
-                                    description: "The mouse's normal vibration strength. 0–100, or keep (default): "
-                                        + "the mouse's own setting stays."),
                             .number("haptic-strong-strength", "Strong strength", step: 5,
                                     description: "For the patterns marked strong. 0–100, default 80."),
                         ]),
             ]),
             SettingsSection("MX Master", rows: [
-                .number("mx-panel-force", "Panel force", step: 5, symbol: "hand.point.down",
-                        description: "How hard the haptic panel must be pressed: 0 the lightest the mouse takes, 100 "
-                            + "the stiffest; default writes the factory value, keep leaves it alone. Default 0."),
+                .button("MouseService", "Open", symbol: "computermouse",
+                        description: "Logitech buttons, haptics and Precision Scroll come from MouseService; without it "
+                            + "the mouse works as an ordinary one. Haptic strength and panel force are set there.") {
+                    if let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "local.mouseservice") {
+                        NSWorkspace.shared.openApplication(at: app, configuration: NSWorkspace.OpenConfiguration())
+                    }
+                },
                 .choice("mx-side-buttons", "Back / forward", [
                     (word: "watch", title: "Watch"), (word: "take", title: "Take"), (word: "system", title: "System only"),
                 ], symbol: "arrow.left.arrow.right.circle",

@@ -166,7 +166,7 @@ public final class InputBindingSource: KeyBindingSource {
         "toggle-segment-lock", "shuttle-back", "shuttle-stop", "shuttle-forward",
         "frame-back-step", "frame-step", "scrub", "scrub fast", "keyframe-back-step", "keyframe-step",
         "revert-seek", "go-to", "scene-back-step", "scene-step", "playlist-prev", "playlist-next", "playlist-filter",
-        "cycle-playlist-sort", "delete-file",
+        "cycle-playlist-sort", "show-in-folder", "delete-file",
         "screenshot", "copy-frame", "export-range", "reveal-frames", "mark-in", "mark-out", "mark-prev", "mark-next",
         "mark-snap", "mark-loop", "mark-delete", "mark-clear", "play-marks", "save-clip", "scrub-edge start",
         "scrub-edge end",

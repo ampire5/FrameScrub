@@ -97,6 +97,29 @@ import Testing
         #expect(Config.keys.contains("slot-reveal-distance"))
     }
 
+    @Test func slotFlashDefaultsOffAndParses() {
+        #expect(Config().slotFlash == false)
+        let (c, warnings) = Config.parse("slot-flash=yes")
+        #expect(warnings.isEmpty)
+        #expect(c.slotFlash)
+        #expect(c.text(forKey: "slot-flash") == "yes")
+        #expect(!Config.parse("slot-flash=maybe").1.isEmpty)
+        #expect(Config.keys.contains("slot-flash"))
+    }
+
+    @Test func parsesPlaylistStripKeys() {
+        let d = Config()
+        #expect(d.playlistView == .list && d.playlistStripReturn == 3)
+        let (c, warnings) = Config.parse("playlist-view=strip\nplaylist-strip-return=0")
+        #expect(warnings.isEmpty)
+        #expect(c.playlistView == .strip && c.playlistStripReturn == 0)
+        #expect(c.text(forKey: "playlist-view") == "strip" && c.text(forKey: "playlist-strip-return") == "0")
+        #expect(Config.parse("playlist-strip-return=31").0.playlistStripReturn == 3)
+        #expect(Config.parse("playlist-strip-return=-1").0.playlistStripReturn == 3)
+        #expect(Config.parse("playlist-view=grid").0.playlistView == .list)
+        #expect(Config.keys.contains("playlist-view") && Config.keys.contains("playlist-strip-return"))
+    }
+
     @Test func parsesPlaylistFontSize() {
         #expect(Config().playlistFontSize == 14)
         let (c, warnings) = Config.parse("playlist-font-size=18")
@@ -211,22 +234,27 @@ import Testing
         #expect(gain.text(forKey: "auto-color-vibrance-gain") == "4")
     }
 
+    @Test func oldMouseDeviceKeysWarn() {
+        // The haptic strength and the panel force are MouseService's settings now (its core spec, "Device settings").
+        let (c, warnings) = Config.parse("haptic-strength=50\nmx-panel-force=10")
+        #expect(warnings == ["framescrub.conf:1: haptic-strength: now in MouseService's settings",
+                             "framescrub.conf:2: mx-panel-force: now in MouseService's settings"])
+        #expect(c == Config())
+        #expect(!Config.keys.contains("haptic-strength") && !Config.keys.contains("mx-panel-force"))
+    }
+
     @Test func parsesMouseSettings() {
         let d = Config()
-        #expect(d.mouseLongPress == 400 && d.mouseHaptics && d.hapticStrength == nil && d.hapticStrongStrength == 80)
-        #expect(d.mxPanelForce == .percent(0) && d.mxSideButtons == .watch)
-        let (c, warnings) = Config.parse("haptic-end=knock\nmouse-long-press=150\nhaptic-strength=30\nhaptic-strong-strength=100\nmx-panel-force=default\nmx-side-buttons=Take\nmouse-haptics=no\nhaptic-mark=none")
+        #expect(d.mouseLongPress == 400 && d.mouseHaptics && d.hapticStrongStrength == 80)
+        #expect(d.mxSideButtons == .watch)
+        let (c, warnings) = Config.parse("haptic-end=knock\nmouse-long-press=150\nhaptic-strong-strength=100\nmx-side-buttons=Take\nmouse-haptics=no\nhaptic-mark=none")
         #expect(warnings.isEmpty)
         #expect(c.haptics.choice(for: .end) == HapticChoice(pattern: .knock, strong: false))
         #expect(c.haptics.choice(for: .mark) == nil && c.text(forKey: "haptic-mark") == "none")
-        #expect(c.mouseLongPress == 150 && !c.mouseHaptics && c.hapticStrength == 30 && c.hapticStrongStrength == 100)
-        #expect(c.mxPanelForce == .factoryDefault && c.mxSideButtons == .take)
+        #expect(c.mouseLongPress == 150 && !c.mouseHaptics && c.hapticStrongStrength == 100)
+        #expect(c.mxSideButtons == .take)
         let (strong, _) = Config.parse("haptic-step=Sharp_Collision strong")
         #expect(strong.haptics.choice(for: .step) == HapticChoice(pattern: .sharpCollision, strong: true))
-        let (kept, keptWarnings) = Config.parse("haptic-strength=30\nhaptic-strength=keep")
-        #expect(kept.hapticStrength == nil && keptWarnings.isEmpty)
-        let (force, forceWarnings) = Config.parse("mx-panel-force=65")
-        #expect(force.mxPanelForce == .percent(65) && forceWarnings.isEmpty)
     }
 
     @Test func rejectsBadMouseSettings() {
@@ -235,13 +263,11 @@ import Testing
             haptic-step=strong
             mouse-long-press=100
             mouse-long-press=2001
-            haptic-strength=101
             haptic-strong-strength=keep
-            mx-panel-force=101
             mx-side-buttons=grab
             mouse-haptics=maybe
             """)
-        #expect(warnings.count == 9)
+        #expect(warnings.count == 7)
         #expect(warnings.first == "framescrub.conf:1: bad option 'haptic-end=nope'")
         #expect(c == Config())
     }
@@ -252,12 +278,10 @@ import Testing
         c.mouseHaptics = false
         c.haptics.choices[.toggle] = .some(nil)
         c.haptics.choices[.done] = HapticChoice(pattern: .knock, strong: true)
-        c.hapticStrength = 55
         c.hapticStrongStrength = 95
-        c.mxPanelForce = .percent(12)
         c.mxSideButtons = .system
         let keys = ["mouse-long-press", "mouse-haptics"] + HapticEvent.allCases.map(\.configKey)
-            + ["haptic-strength", "haptic-strong-strength", "mx-panel-force", "mx-side-buttons"]
+            + ["haptic-strong-strength", "mx-side-buttons"]
         let (back, warnings) = Config.parse(keys.map { "\($0)=\(c.text(forKey: $0)!)" }.joined(separator: "\n"))
         #expect(warnings.isEmpty && back == c)
         for k in keys { #expect(Config().text(forKey: k) != nil, "\(k)") }

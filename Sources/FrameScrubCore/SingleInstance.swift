@@ -3,7 +3,7 @@ import Foundation
 /// One running copy of the app, as seen by the single-instance check.
 public struct RunningInstance: Equatable, Sendable {
     public var pid: Int32
-    /// Bundle identifier, or the executable path when there is none.
+    /// The bundle's path (`HandOver.instanceKey`: two builds are two apps), or the executable path when there is none.
     public var key: String
     /// nil sorts last.
     public var launchDate: Date?
