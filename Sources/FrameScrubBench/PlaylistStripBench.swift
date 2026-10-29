@@ -45,7 +45,11 @@ enum PlaylistStripBench {
             return PlaylistRowFacts(facts: facts, resume: i % 4 == 0 ? ResumeEntry(position: 100) : nil,
                                     size: 1_000_000_000 + Int64(i), date: Date())
         }
-        let aspects = (0..<count).map { $0 % 3 == 0 ? aspectCycle[$0 / 3 % 3] : nil }
+        let aspects: [Double?] = (0..<count).map { index -> Double? in
+            guard index % 3 == 0 else { return nil }
+            let cycleIndex = (index / 3) % aspectCycle.count
+            return aspectCycle[cycleIndex]
+        }
 
         print("action\tround\tp50 ms\tp99 ms\tmax ms\tn")
         for round in 1...rounds {
