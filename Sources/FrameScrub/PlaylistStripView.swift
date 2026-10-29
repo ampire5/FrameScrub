@@ -551,12 +551,12 @@ import HomeScreenModel
         super.init(frame: frame)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 3
+        stack.spacing = 5
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([
             // A label draws its text 2 pt in from its frame: the lines start on the caption's edge.
-            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -2), stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: -2), stack.trailingAnchor.constraint(equalTo: trailingAnchor),
             stack.topAnchor.constraint(equalTo: topAnchor),
         ])
     }
@@ -573,7 +573,7 @@ import HomeScreenModel
             field.isSelectable = false   // a click opens the row; the keyboard stays with the video
             field.maximumNumberOfLines = 1
             field.lineBreakMode = .byTruncatingTail
-            field.font = Chrome.Text.digits(.small)
+            field.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .regular)
             field.textColor = Chrome.Palette.overMedia.secondaryText
             field.preferredMaxLayoutWidth = max(0, bounds.width)
             stack.addArrangedSubview(field)
@@ -582,7 +582,7 @@ import HomeScreenModel
 
     func fittingHeight(width: CGFloat) -> CGFloat {
         for case let field as NSTextField in stack.arrangedSubviews { field.preferredMaxLayoutWidth = width }
-        return stack.fittingSize.height
+        return stack.fittingSize.height + 20
     }
 
     override func setFrameSize(_ newSize: NSSize) {
