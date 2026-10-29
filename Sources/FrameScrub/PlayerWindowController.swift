@@ -802,7 +802,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
-        let back = folderReturn.map { r in core.url.flatMap { folder(of: $0) == r.folder.standardizedFileURL ? (folder: r.folder, file: $0) : nil } ?? r }
+        let back = core.url.flatMap { $0.isFileURL ? (folder: folder(of: $0), file: $0) : nil } ?? folderReturn
         let wanted = tab ?? (back != nil && core.url != nil ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
@@ -815,6 +815,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         } else {
             location = view.browser.lastBrowsed
         }
+        if shown == .folders, let selecting { view.browser.lastOpenedID = selecting }
         if view.browser.location == location, hasShownHome, selecting == nil {
             view.browser.reload()
         } else {

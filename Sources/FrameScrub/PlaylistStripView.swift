@@ -207,7 +207,7 @@ import HomeScreenModel
 
     private func relayout() {
         relayoutPending = false
-        let width = Double(bounds.width)
+        let width = max(0, Double(bounds.width) - 20)
         let currentPicture = max(rowPicture, width - 2 * Double(FilmstripRowsView.padding))
         measureCard(width: currentPicture)
         let aspects: [Double?] = rows.map { row in
