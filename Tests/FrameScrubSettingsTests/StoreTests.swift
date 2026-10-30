@@ -204,10 +204,44 @@ import Testing
         try store.setValue("shadows", forKey: "auto-color-filters")
         #expect(store.value(forKey: "auto-color-filters") == "shadows")
     }
+    @Test func thumbnailPolicyPersistsAndResetsWithoutWritingConf() throws {
+        let url = try conf()
+        let prefs = PreferencesStore(config: Config(), url: url)
+        let domain = defaults()
+        let store = FrameScrubSettingsStore(preferences: prefs, defaults: domain)
+        #expect(store.value(forKey: "thumbnail-format") == "jpeg")
+        #expect(store.value(forKey: "thumbnail-quality") == "80")
+        #expect(store.validate("9", forKey: "thumbnail-quality") != nil)
+        #expect(store.validate("101", forKey: "thumbnail-quality") != nil)
+        #expect(store.validate("nan", forKey: "thumbnail-quality") != nil)
+        #expect(store.validate("webp", forKey: "thumbnail-format") != nil)
+        #expect(store.validate("0", forKey: "thumbnail-cache-mib") != nil)
+        #expect(store.validate("127", forKey: "thumbnail-poster-size") != nil)
+        #expect(store.validate("1921", forKey: "thumbnail-recent-size") != nil)
+        try store.setValue("640", forKey: "thumbnail-poster-size")
+        #expect(store.value(forKey: "thumbnail-poster-size") == "640")
+        for value in ["29", "57", "58"] {
+            try store.setValue(value, forKey: "thumbnail-quality")
+            #expect(store.value(forKey: "thumbnail-quality") == value)
+        }
+        try store.setValue("95", forKey: "thumbnail-quality")
+        try store.setValue("512", forKey: "thumbnail-cache-mib")
+        let reopened = FrameScrubSettingsStore(preferences: prefs, defaults: domain)
+        #expect(reopened.value(forKey: "thumbnail-quality") == "95")
+        #expect(reopened.value(forKey: "thumbnail-cache-mib") == "512")
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        try store.removeValues(forKeys: Array(FrameScrubSettingsStore.thumbnailKeys))
+        #expect(store.value(forKey: "thumbnail-quality") == "80")
+        #expect(store.value(forKey: "thumbnail-cache-mib") == "256")
+        #expect(store.value(forKey: "thumbnail-poster-size") == "480")
+        #expect(store.value(forKey: "thumbnail-recent-size") == "1280")
+    }
 }
 
 func makeTemporaryDirectory() -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("framescrub-settings-tests-\(UUID().uuidString)")
     try! FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+
+
 }

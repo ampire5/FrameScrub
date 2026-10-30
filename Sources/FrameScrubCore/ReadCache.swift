@@ -282,8 +282,10 @@ public final class ReadCache: @unchecked Sendable {
     /// One read of the underlying file, counted.
     func readFile(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
                   progress: (@Sendable (Int) -> Bool)? = nil) throws -> Int {
+        guard !lock.withLock({ closed }) else { throw POSIXError(.ECANCELED) }
         let n = try progress.map { try source.read(at: offset, count: count, into: buffer, progress: $0) }
             ?? source.read(at: offset, count: count, into: buffer)
+        guard !lock.withLock({ closed }) else { throw POSIXError(.ECANCELED) }
         lock.withLock {
             counters.bytesFromFile += Int64(n)
             let now = CACurrentMediaTime()

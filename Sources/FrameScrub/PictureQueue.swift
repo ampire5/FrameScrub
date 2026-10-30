@@ -43,8 +43,12 @@ import HomeScreenModel
         reading = Task { @MainActor [weak self] in
             var missing: [URL] = [], probes: [URL] = []
             for url in urls {
-                let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
+                let cached = await Task.detached(priority: .utility) {
+                    (store.image(for: url), FileFactsStore.shared.facts(for: [url])[url.path])
+                }.value
+                let image = cached.0
                 guard let self, !Task.isCancelled else { return }
+                if let found = cached.1 { self.onFacts?(url, found) }
                 if let image {
                     self.onPicture?(idPrefix + url.path, image)
                     self.onHave?(url)

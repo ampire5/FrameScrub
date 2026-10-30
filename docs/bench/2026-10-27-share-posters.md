@@ -3,7 +3,7 @@
 The owner's report: a folder of many videos on the NAS makes FrameScrub generate posters "with wild multithreading"
 and the system gets sluggish. Reproduced before anything is changed (CLAUDE.md).
 
-**Machine.** Apple M4 Max, 14 physical cores; the NAS over SMB (`//wololo@NAS/18TB-SG-1`, mounted under ~/Volumes),
+**Machine.** Apple M4 Max, 14 physical cores; a NAS over SMB,
 a folder of 101 1080p H.264 files.
 
 **How.** `FRAMESCRUB_POSTER_DIR=<folder> [FRAMESCRUB_POSTER_WORKERS=n] [FRAMESCRUB_POSTER_SKIP=k] swift test --filter

@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var clipQueue: ClipQueue?
     /// Set while a "Quit When Done" is waiting for the clip queue to empty.
     private var terminateWhenIdle = false
+    private var flushingUserState = false
     /// The Logitech mouse (nil for a secondary launch, and until the first window is up).
     private var mouseBridge: LogiMouseBridge?
     /// The folders' colour (folder-colors.json); nil for a secondary launch, which never opens a file.
@@ -227,7 +228,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func replyToTerminate(_ terminate: Bool) {
         guard terminateWhenIdle else { return }
         terminateWhenIdle = false
-        NSApp.reply(toApplicationShouldTerminate: terminate)
+        if terminate, controller != nil { _ = beginUserStateTermination(NSApp) }
+        else { NSApp.reply(toApplicationShouldTerminate: terminate) }
+    }
+
+    /// Async persistence must finish before process exit; the main actor continues serving the window.
+    private func beginUserStateTermination(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let controller else { return .terminateNow }
+        guard !flushingUserState else { return .terminateLater }
+        flushingUserState = true
+        Task { @MainActor in
+            await controller.prepareUserStateForTermination()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     private static func quittingMessage(left: Int) -> String {
@@ -235,7 +249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let clipQueue, clipQueue.isBusy else { return .terminateNow }
+        if flushingUserState { return .terminateLater }
+        guard let clipQueue, clipQueue.isBusy else { return beginUserStateTermination(sender) }
         let count = clipQueue.waitingCount + 1
         let alert = NSAlert()
         alert.messageText = count == 1 ? "1 clip is still being saved" : "\(count) clips are still being saved"
@@ -245,7 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         alert.addButton(withTitle: "Cancel")           // Esc
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            guard clipQueue.isBusy else { return .terminateNow }   // finished while the alert was up
+            guard clipQueue.isBusy else { return beginUserStateTermination(sender) }   // finished while the alert was up
             terminateWhenIdle = true
             let left = clipQueue.waitingCount + 1
             controller?.showMessage(Self.quittingMessage(left: left), duration: 3600)
@@ -256,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             clipQueue.cancelAll()
             guard clipQueue.isBusy else {
                 terminateWhenIdle = false
-                return .terminateNow
+                return beginUserStateTermination(sender)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.replyToTerminate(true) }
             return .terminateLater
@@ -374,6 +389,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         store.onWheelFreeSpinWrite = { [weak self] in self?.controller?.updatePrecisionWheel() }
         settingsStore = store
         return store
+    }
+
+    @MainActor @objc func cleanUpMediaCache(_ sender: Any?) {
+        Task { await MediaCacheActions.shared.run(.cleanUp) }
+    }
+    @MainActor @objc func clearThumbnailCache(_ sender: Any?) {
+        Task { await MediaCacheActions.shared.run(.clearImages) }
+    }
+    @MainActor @objc func clearMediaCache(_ sender: Any?) {
+        Task { await MediaCacheActions.shared.run(.clearAll) }
     }
 
     /// The menus' items with a shortcut, for the Key Bindings page: "⇧⌘O", "Open URL…".
@@ -684,6 +709,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         copyPath.keyEquivalentModifierMask = [.command, .option]
         copyPath.target = self
         fileMenu.addItem(commandItem("Move to Trash", .deleteFile, key: "\u{8}"))   // ⌘⌫
+        fileMenu.addItem(.separator())
+        fileMenu.addItem(withTitle: "Clean Up Media Cache", action: #selector(cleanUpMediaCache(_:)), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Clear Thumbnail Cache…", action: #selector(clearThumbnailCache(_:)), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Clear Media Cache…", action: #selector(clearMediaCache(_:)), keyEquivalent: "").target = self
         fileMenu.addItem(.separator())
         // ⌘W: the video when the player shows one (close-file), else the window.
         let closeWindow = fileMenu.addItem(withTitle: "Close", action: #selector(closeWindow(_:)), keyEquivalent: "w")

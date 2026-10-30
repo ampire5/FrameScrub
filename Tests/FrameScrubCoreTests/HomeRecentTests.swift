@@ -8,13 +8,14 @@ import Testing
     let day = Date(timeIntervalSince1970: 1_790_000_000)
 
     @Test func entriesCarryProgressAndTime() {
-        let entries = HomeRecent.entries([a, b], resume: { $0 == a ? ResumeEntry(position: 30, duration: 120, updated: day) : nil },
+        let entries = HomeRecent.entries([a, b], resume: { $0 == a ? ResumeEntry(position: 30, duration: 120, lastViewedAt: day, updated: day) : nil },
                                          facts: [:], dimmed: [])
         #expect(entries.map(\.id) == ["recent:/v/a.mp4", "recent:/v/b.mkv"])
         #expect(entries[0].kind == .file && entries[0].name == "a.mp4")
         #expect(entries[0].subtitle == RecentFiles.timeText(position: 30, duration: 120))
         #expect(entries[0].progress == 0.25)
         #expect(entries[0].date == day)
+        #expect(entries[0].lastViewedAt == day && entries[1].lastViewedAt == nil)
         #expect(!entries[0].canRename && !entries[0].canTrash)
         #expect(entries[1].subtitle == nil && entries[1].progress == nil && entries[1].date == nil)
     }
@@ -53,5 +54,9 @@ import Testing
     @Test func pathOfID() {
         #expect(HomeRecent.path(ofID: "recent:/v/a.mp4") == "/v/a.mp4")
         #expect(HomeRecent.path(ofID: "session:3") == nil)
+    }
+    @Test func colourStateTimestampIsNotAView() {
+        let entries = HomeRecent.entries([a], resume: { _ in ResumeEntry(position: 0, updated: day) }, facts: [:], dimmed: [])
+        #expect(entries[0].date == nil)
     }
 }

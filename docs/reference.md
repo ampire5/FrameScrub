@@ -398,14 +398,14 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   Clear Menu clears both). The cards' size: ⌘= / ⌘− (also ⌘ + wheel, a pinch, or the MX side wheel) one column
   more or fewer, ⌘0 the default, saved as `home-card-size` (File → Larger Cards / Smaller Cards / Default Card
   Size). The mouse's back and forward go through Home's history. File → Copy Path (⌥⌘C) copies the open video's
-  path. The pictures are JPEGs of up to 1280 pixels in `~/Library/Application Support/FrameScrub/thumbnails` (the
-  newest 200), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
+  path. The pictures are JPEGs of up to 1280 pixels in the SQLite media cache
+  (`~/Library/Caches/FrameScrub/media.sqlite`, the newest 200 last frames), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
   the background while Recent is up.
 - **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
   its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
   the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
-  `~/Library/Application Support/FrameScrub/thumbnails/posters` (480 pixels, the newest 2000), with the lengths found
-  while making them (`durations.json`). F2 renames,
+  the same SQLite cache (480 pixels, the newest 2000 posters), with versioned metadata including codecs,
+  streams, geometry, colour/HDR, audio, subtitles and declared text tags. F2 renames,
   ⌘⌫ moves to the Trash, ⌘↑ goes up, ⌘[ / ⌘] go back and forward, typing a name selects it. A video opened from a
   folder goes back to that folder with it selected (⌘W, the ‹ button with the folder's name, ⇧⌘H); the folder's
   videos are the playlist, in `playlist-sort`'s order.
@@ -710,3 +710,27 @@ and copied frames (`save-color=yes`) get the file's colour.
 
 Frames go to a folder named after the video, next to it. If that folder cannot be written,
 they go to `~/Pictures/FrameScrub/<video name>/`.
+
+### Media cache and thumbnail encoding
+
+The disposable SQLite catalog opens on demand, queries only requested files and checks path, volume/device, inode,
+size and modification time. A replaced file cannot reuse the old facts or picture. Missing fields in a completed
+probe are remembered too. File Information… on a Home video card displays available card values immediately, then
+reads the catalog and, when needed, the file off the main thread. Closing/switching the inspector cancels its pending
+work. One bounded worker probes at a time; an in-flight filesystem read can finish on the operating system's schedule.
+
+The default thumbnail codec is JPEG through ImageIO, quality 80 (shared photo/video measurement:
+`docs/bench/2026-10-30-thumbnail-codecs.md`). Settings → Performance → Thumbnail storage exposes format, quality, poster/last-frame pixel sizes and the storage limit (16–65536 MiB, default 256). Changes take effect after relaunch. The equivalent UserDefaults are:
+`thumbnail-format` (`jpeg`, `heic`, `avif`) and `thumbnail-quality` (10…100, default 80). An unavailable encoder falls
+back to JPEG. These are application defaults, not keys in framescrub.conf. Cache keys include the actual format,
+quality, dimensions and picture version. Different encoders' quality numbers are not interchangeable.
+The same settings page shows image/metadata counts and disk usage. File → Clear Thumbnail Cache… clears image
+payloads; Clear Media Cache… also removes disposable metadata. Clean Up Media Cache removes stale entries only on
+currently mounted local volumes, skipping offline/network volumes. Explicit clears reclaim database space in bounded
+steps. All commands keep viewing history, positions, marks, loops and colour settings.
+
+No old JSON or JPEG cache is imported or automatically deleted. After verifying the new version, the obsolete
+JPEGs under `Application Support/FrameScrub/thumbnails` and its `posters` subdirectory, plus `facts.json` and any old
+`durations.json` there, can be removed. Keep `positions.json` and its `.lock` coordination file: they are user state, not obsolete cache. The JSON contains user positions, marks, loops and colour
+settings. Its optional `lastViewedAt` records actual displayed player frames, independently of colour edits or the resume-playback switch. The first visible displayed frame is queued for a utility write; later observed frame times are saved on leaving. Returning from Home or revealing an occluded player records another actual visit even when paused. Hidden or minimized rendering does not count. Closing a video hidden behind Home does not invent a new viewing time. File rows expose this separately as Last Viewed; absence stays unknown. Old user
+records stay readable and do not invent viewing times from their update dates.

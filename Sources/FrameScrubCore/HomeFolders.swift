@@ -53,6 +53,7 @@ public enum HomeFolders {
             guard e.isFile else { return e }
             var e = e
             let entry = resume(e.url)
+            e.lastViewedAt = entry?.lastViewedAt
             e.facts = facts[e.url.path]
             let duration = entry?.duration ?? e.facts?.duration
             e.subtitle = RecentFiles.timeText(position: entry?.position, duration: duration)
@@ -67,7 +68,11 @@ public enum HomeFolders {
     public static func summary(of entries: [BrowserEntry], resume: (URL) -> ResumeEntry?) -> CardSummary {
         let videos = entries.filter(\.isFile)
         let dates = videos.compactMap(\.date)
-        let started = videos.filter { (resume($0.url)?.position ?? 0) > 0 }.count
+        let started = videos.filter {
+            guard let entry = resume($0.url) else { return false }
+            // Keep legacy viewed progress without inventing a date; a real first-frame visit at 0 counts too.
+            return entry.lastViewedAt != nil || entry.position > 0
+        }.count
         return CardSummary(photos: videos.count, folders: entries.count - videos.count,
                            bytes: videos.reduce(0) { $0 + ($1.size ?? 0) }, first: dates.min(), last: dates.max(),
                            viewed: videos.isEmpty ? nil : Double(started) / Double(videos.count))

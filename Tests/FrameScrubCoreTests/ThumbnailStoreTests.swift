@@ -1,5 +1,4 @@
 import CoreImage
-import CryptoKit
 import Foundation
 import Testing
 @testable import FrameScrubCore
@@ -49,29 +48,68 @@ import Testing
     @Test func keepsOnlyTheNewest() throws {
         let store = ThumbnailStore(directory: makeTemporaryDirectory(), limit: 2)
         let urls = try (0..<3).map { try video("v\($0).mp4") }
-        for (i, url) in urls.enumerated() {
-            store.save(picture(64, 36), for: url, context: context)
-            let file = try #require(store.fileURL(for: url))
-            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: Double(i - 10))], ofItemAtPath: file.path)
-        }
-        store.save(picture(64, 36), for: urls[2], context: context)   // prunes after the dates were set
+        for url in urls { store.save(picture(64, 36), for: url, context: context) }
         #expect(store.image(for: urls[0]) == nil)
         #expect(store.image(for: urls[1]) != nil && store.image(for: urls[2]) != nil)
     }
 
-    @Test func picturesSavedUnderTheOldKeyAreNotShown() throws {
-        let directory = makeTemporaryDirectory()
+    @Test func sameSizeOverwriteDropsTheOldPicture() throws {
+        let store = ThumbnailStore(directory: makeTemporaryDirectory())
         let url = try video()
-        let key = try #require(ResumeStore.key(for: url))
-        let old = SHA256.hash(data: Data(key.utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
-        let store = ThumbnailStore(directory: directory)
         store.save(picture(64, 36), for: url, context: context)
-        try FileManager.default.moveItem(at: try #require(store.fileURL(for: url)), to: directory.appendingPathComponent(old + ".jpg"))
-        #expect(store.image(for: url) == nil)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: 10)], ofItemAtPath: url.path)
+        #expect(!store.has(url) && store.image(for: url) == nil)
+    }
+
+    @Test func sourceReplacedDuringDecodeCannotSaveOldPixels() throws {
+        let store = ThumbnailStore(directory: makeTemporaryDirectory())
+        let url = try video()
+        let identity = try #require(MediaFileIdentity.read(url))
+        try Data(count: 10).write(to: url, options: .atomic)
+        store.save(picture(64, 36), for: url, context: context, identity: identity)
+        #expect(!store.has(url))
     }
 
     @Test func aMissingVideoHasNone() {
         let store = ThumbnailStore(directory: makeTemporaryDirectory())
         #expect(store.image(for: URL(fileURLWithPath: "/nonexistent-\(UUID().uuidString).mp4")) == nil)
+    }
+    @Test func encodingSettingsDoNotReuseOtherPayloads() throws {
+        let dir = makeTemporaryDirectory(), url = try video()
+        let high = ThumbnailStore(directory: dir, encoding: .standard)
+        high.save(picture(64, 36), for: url, context: context)
+        let low = ThumbnailStore(directory: dir, encoding: .init(format: .jpeg, quality: 0.5))
+        #expect(high.has(url) && !low.has(url))
+    }
+    @Test func thumbnailDefaultsAreExplicitAndValidated() {
+        #expect(ThumbnailEncoding.standard.format == .jpeg && ThumbnailEncoding.standard.quality == 0.8)
+        #expect(ThumbnailEncoding(format: .jpeg, quality: .nan).quality == 0.8)
+        #expect(ThumbnailEncoding(format: .jpeg, quality: 2).quality == 1)
+        #expect(ThumbnailEncoding(format: .jpeg, quality: -1).quality == 0.1)
+    }
+    @Test func advancedPreferencesUsePercentQualityAndSafeFallback() {
+        let name = "thumbnail-test-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: name)!
+        defer { defaults.removePersistentDomain(forName: name) }
+        #expect(ThumbnailEncoding.configured(defaults) == .standard)
+        defaults.set("unsupported", forKey: "thumbnail-format")
+        defaults.set(65, forKey: "thumbnail-quality")
+        let encoding = ThumbnailEncoding.configured(defaults)
+        #expect(encoding.format == .jpeg && encoding.quality == 0.65)
+    }
+    @Test func runtimeFailureUsesActualJPEGKey() throws {
+        let image = try #require(context.createCGImage(picture(32, 18), from: CGRect(x: 0, y: 0, width: 32, height: 18)))
+        let requested = ThumbnailEncoding(format: .heic, quality: 0.8)
+        let encoded = requested.encode(image) { _, encoding in
+            encoding.format == .jpeg ? Data([1]) : nil
+        }
+        #expect(encoded?.0 == Data([1]) && encoded?.1.cacheKey == "jpeg-q80")
+    }
+    @Test func optionalEncoderCanReadPersistedJPEGFallbackAfterRelaunch() throws {
+        let dir = makeTemporaryDirectory(), url = try video()
+        let fallback = ThumbnailStore(directory: dir, encoding: .standard)
+        fallback.save(picture(64, 36), for: url, context: context)
+        let relaunched = ThumbnailStore(directory: dir, encoding: .init(format: .heic, quality: 0.8))
+        #expect(relaunched.has(url) && relaunched.image(for: url) != nil)
     }
 }

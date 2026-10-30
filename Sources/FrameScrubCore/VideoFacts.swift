@@ -41,6 +41,11 @@ public enum VideoFacts {
 
     /// Only the facts (the header is read and the streams probed, nothing decoded): a poster that came from the cache.
     public static func probe(url: URL) -> FileFacts? {
-        (try? MediaSource(url: url))?.facts
+        if let cached = FileFactsStore.shared.metadata(for: url) { return cached.facts }
+        let identity = MediaFileIdentity.read(url)
+        guard let source = try? MediaSource(url: url) else { return nil }
+        let metadata = source.metadata
+        if let identity { FileFactsStore.shared.store(metadata, identity: identity) }
+        return metadata.facts
     }
 }

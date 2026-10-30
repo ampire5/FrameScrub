@@ -240,6 +240,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         self.preferences = preferences
         let resumeStore = ResumeStore()   // one store: the core keeps the colour the edits write when it saves the position
         core = PlayerCore(config: config, resumeStore: resumeStore)
+        core.setViewingVisible(false)
         colorMemory = ColorMemory(folders: folderColors, files: resumeStore)
         globalConfig = config
         self.inputMap = inputMap
@@ -286,6 +287,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A `framescrub://open` link: the file (or the Stash scene, found or streamed as for ▶), then its position,
     /// segment and plugin page. A scene's open is asynchronous.
     func open(_ target: OpenLink.Target) {
+        guard !isTerminating else { return }
         if let plugin = target.plugin { showLinkPlugin(plugin) }
         switch target.subject {
         case let .file(url):
@@ -301,6 +303,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `homeFolder`: the folder it was opened from in Home (closing goes back there).
     func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
+        guard !isTerminating else { done?(.superseded); return }
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
         folderReturn = homeFolder.map { (folder: $0, file: url) }
@@ -316,6 +319,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Counts opens and the closes and failures that replace a file on screen: a stream read in the background opens
     /// only if nothing came after it.
     private var fileOpens = 0
+    private var isTerminating = false
     /// The file being read for an open, until it opens or is abandoned, and how to stop its reads.
     private var openingURL: URL?
     private var openingCancellation: OpenCancellation?
@@ -334,7 +338,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// cannot read is then gone past, as a known one is, instead of showing why it did not open.
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
                           landing: LinkTarget? = nil, stepped: Int? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+        guard !isTerminating else { done?(.superseded); return }
         StartupTrace.beginOpen(url.lastPathComponent)
+        MetadataInspectionQueue.shared.cancel()
         abandonOpening()
         folderWait.cancel()   // a step or delete asked for the file before this one
         cancelEdgeDrag()   // the marks it moves are this file's
@@ -365,6 +371,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         closeCore()
         hideHome()
         failureView.isHidden = true
+        updateViewingVisibility()
         window?.representedURL = nil
         updateTitle(url)
         statsFileChanged()
@@ -460,6 +467,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         colorFileChanged()   // before anything below reads the colour
         hideHome()
         failureView.isHidden = true
+        updateViewingVisibility()
         updatePrecisionWheel()
         // The proxy icon (⌘-click shows the path, drag moves the file) asks the file's volume for its icon and name:
         // 0.1–0.4 s on a NAS when asked cold, behind the file's own reads. `facts` has them from the preparation's
@@ -499,6 +507,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
     /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
     private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?, landingTime: Double? = nil) {
+        guard !isTerminating else { prepared.discard(); return }
         holdsSegmentEvents = true
         heldSegmentEvent = nil
         core.open(prepared, fallbackPosition: fallbackPosition, landingTime: landingTime)
@@ -605,6 +614,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func openStashScene(_ scene: StashScene, landing: LinkTarget? = nil, plays: Bool = false,
                                 onFailure: (() -> Void)? = nil) {
+        guard !isTerminating else { return }
         if scene.automatic {
             // Stash also opens a page with autoplay=true on a reload: only a step of ours is answered.
             guard queueGate.isPending else { return }
@@ -773,6 +783,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// the window is the start screen. Home is made the first time and only hidden after that.
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
+        core.setViewingVisible(false)
         let cpu = StartupTrace.threadCPU(), wall = Date(), first = home == nil
         let view = home ?? makeHome()
         cancelStashTitleWait()
@@ -856,6 +867,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         if let titleBeforeHome { window?.title = titleBeforeHome }
         titleBeforeHome = nil
+        updateViewingVisibility()
         window?.makeFirstResponder(videoView)
         updatePrecisionWheel()
         if StartupTrace.enabled, let window {
@@ -1049,13 +1061,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The picture of the file being left, for the start screen. Scaling and encoding it took the main thread at
     /// every switch of file; it runs in the background now (`wait`: at quit, so it is written before the app ends).
     private func saveThumbnail(wait: Bool = false) {
-        guard let url = core.url, let image = videoView.displayedImage else { return }
+        guard let url = core.url, let image = videoView.displayedImage, let identity = core.sourceIdentity else { return }
         let picture = videoView.geometry.applied(to: image)
         let thumbnails = thumbnails
-        let work = { thumbnails.save(picture, for: url, context: Self.thumbnailContext) }
+        let work = { thumbnails.save(picture, for: url, context: Self.thumbnailContext, identity: identity) }
         if wait { thumbnailQueue.sync(execute: work) } else { thumbnailQueue.async(execute: work) }
     }
     private let thumbnailQueue = DispatchQueue(label: "framescrub.thumbnail-save", qos: .utility)
+
+    /// Freeze the last observed view/position before the async quit barrier. Cache data is disposable;
+    /// user state must reach its worker before applicationWillTerminate can exit the process.
+    func prepareUserStateForTermination() async {
+        isTerminating = true
+        core.setViewingVisible(false)
+        stashOpens += 1
+        queueGate.cancel()
+        folderWait.cancel()
+        abandonOpening()
+        core.pause()
+        saveThumbnail()
+        let finishSession = stashSession?.prepareTerminationFlush()
+        core.close()
+        await finishSession?()
+        await core.flushUserState()
+    }
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
@@ -3736,10 +3765,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showCursorAfterScrub()
         updatePrecisionWheel()
     }
-    func windowDidBecomeKey(_ notification: Notification) { updatePrecisionWheel() }
-    func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer(); seekBar.refreshVisibility() }
-    func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer() }
-    func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer() }
+    private func updateViewingVisibility() {
+        let visible = !isTerminating && !showsHome && failureView.isHidden && window?.isVisible == true
+            && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
+        core.setViewingVisible(visible)
+    }
+    func windowDidBecomeKey(_ notification: Notification) { updatePrecisionWheel(); updateViewingVisibility() }
+    func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer(); seekBar.refreshVisibility(); updateViewingVisibility() }
+    func windowDidMiniaturize(_ notification: Notification) { updateStatsTimer(); updateViewingVisibility() }
+    func windowDidDeminiaturize(_ notification: Notification) { updateStatsTimer(); updateViewingVisibility() }
     func windowDidEnterFullScreen(_ notification: Notification) {
         followFullScreenTitlebar(true)
         updatePrecisionWheel()

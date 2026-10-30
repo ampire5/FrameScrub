@@ -32,12 +32,14 @@ let package = Package(
             pkgConfig: "libavformat libavcodec libavutil libswresample libswscale",
             providers: [.brew(["ffmpeg"])]
         ),
+        .systemLibrary(name: "CSQLite"),
         .target(name: "ObjCCatch"),
         .target(
             name: "FrameScrubCore",
             dependencies: [
                 "CFFmpeg",
                 "ObjCCatch",
+                "CSQLite",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),

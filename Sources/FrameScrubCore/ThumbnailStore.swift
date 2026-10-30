@@ -1,43 +1,36 @@
 import CoreImage
-import CryptoKit
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 
-/// A JPEG of the last picture seen in each file (longest side at most `maxSide` pixels), for the start screen. Keyed
-/// like `ResumeStore` (path and size), so a different file saved under the same name has none; only the `limit`
-/// newest are kept. Pictures saved smaller by an older version stay as they are until the file is left again.
-public final class ThumbnailStore: @unchecked Sendable {   // each call reads or writes its own file; the count is locked
+/// Versioned JPEG payloads in the media catalog, keyed by the source's full identity and picture variant.
+/// Encoding, stat, SQLite and decoding run on the caller's existing background picture queues.
+public final class ThumbnailStore: @unchecked Sendable {
     public static let defaultDirectory = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/FrameScrub/thumbnails")
-
+    public static func configuredSide(poster: Bool, defaults: UserDefaults = .standard) -> CGFloat {
+        let key = poster ? "thumbnail-poster-size" : "thumbnail-recent-size"
+        guard defaults.object(forKey: key) != nil else { return poster ? 480 : 1280 }
+        return CGFloat(min(1920, max(128, defaults.integer(forKey: key))))
+    }
     public let directory: URL
     public let limit: Int
     public let maxSide: CGFloat
-    /// Saves since the directory was last pruned: it is listed every few saves, not on each (a folder's posters come
-    /// by the hundred, and each listing reads every file's date).
-    private var savesSincePrune = 0
-    private let lock = NSLock()
-    static let pruneEvery = 50
-
-    public init(directory: URL = ThumbnailStore.defaultDirectory, limit: Int = 200, maxSide: CGFloat = 1280) {
-        self.directory = directory
-        self.limit = limit
-        self.maxSide = maxSide
-    }
-
-    /// Part of each file name: raising it drops every saved picture (2: mirrored display matrices are read upright).
-    static let version = 2
-
-    func fileURL(for video: URL) -> URL? {
-        guard let key = ResumeStore.key(for: video) else { return nil }
-        let hash = SHA256.hash(data: Data("\(key)\n\(Self.version)".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined()
-        return directory.appendingPathComponent(hash + ".jpg")
+    private let catalog: MediaCatalog
+    private let encoding: ThumbnailEncoding
+    private let encodingLock = NSLock()
+    private var runtimeFallback = false
+    public init(directory: URL = ThumbnailStore.defaultDirectory, limit: Int = 200, maxSide: CGFloat = ThumbnailStore.configuredSide(poster: false),
+                encoding: ThumbnailEncoding = .configured()) {
+        self.directory = directory; self.limit = limit; self.maxSide = maxSide
+        self.encoding = encoding
+        let isStandard = directory == Self.defaultDirectory || directory == Self.defaultDirectory.appendingPathComponent("posters")
+        catalog = isStandard ? .shared : MediaCatalog(url: directory.appendingPathComponent("catalog.sqlite"))
     }
 
     /// `picture` is the frame as shown (upright, cropped, square pixels). Failures are ignored: thumbnails are a convenience.
-    public func save(_ picture: CIImage, for video: URL, context: CIContext) {
-        guard let file = fileURL(for: video), picture.extent.width >= 1, picture.extent.height >= 1 else { return }
+    public func save(_ picture: CIImage, for video: URL, context: CIContext, identity expected: MediaFileIdentity? = nil) {
+        guard let identity = expected ?? MediaFileIdentity.read(video), picture.extent.width >= 1, picture.extent.height >= 1 else { return }
         let size = picture.extent.size
         let scale = min(1, maxSide / max(size.width, size.height))
         let target = CGSize(width: max(1, (size.width * scale).rounded()), height: max(1, (size.height * scale).rounded()))
@@ -45,42 +38,45 @@ public final class ThumbnailStore: @unchecked Sendable {   // each call reads or
         let scaled = scale < 1 ? ImageScaling.lanczos(origin, to: target) : origin
         guard let image = context.createCGImage(scaled, from: CGRect(origin: .zero, size: target),
                                                 format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        // Written beside it and moved over it: the start screen may read it meanwhile (saves run in the background).
-        let partial = file.appendingPathExtension("partial")
-        guard let destination = CGImageDestinationCreateWithURL(partial as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
-        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.8] as CFDictionary)
-        guard CGImageDestinationFinalize(destination), rename(partial.path, file.path) == 0 else {
-            try? FileManager.default.removeItem(at: partial)
-            return
-        }
-        // Every tenth of `limit` saves, at most `pruneEvery`: the directory stays within a tenth over its limit.
-        let due = lock.withLock {
-            savesSincePrune += 1
-            guard savesSincePrune >= min(Self.pruneEvery, max(1, limit / 10)) else { return false }
-            savesSincePrune = 0
-            return true
-        }
-        if due { prune() }
+        let requested = activeEncoding
+        guard let (bytes, actual) = requested.encode(image, using: Self.encodeImage) else { return }
+        if actual.format != requested.format { encodingLock.withLock { runtimeFallback = true } }
+        try? catalog.putImage(bytes, identity: identity, variant: variant(actual), limit: limit)
     }
 
-    /// Whether a picture is kept for `video`, without reading it.
+    private var activeEncoding: ThumbnailEncoding {
+        encodingLock.withLock { runtimeFallback ? .init(format: .jpeg, quality: encoding.quality) : encoding }
+    }
+    private func variant(_ encoding: ThumbnailEncoding) -> String {
+        "\(directory.lastPathComponent)-\(Int(maxSide))-v3-\(encoding.cacheKey)"
+    }
+    private static func encodeImage(_ image: CGImage, encoding: ThumbnailEncoding) -> Data? {
+        let bytes = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(bytes, encoding.format.typeIdentifier as CFString, 1, nil) else { return nil }
+        CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: encoding.quality] as CFDictionary)
+        return CGImageDestinationFinalize(destination) ? bytes as Data : nil
+    }
+
+    /// Check the requested encoding first, then its compatible JPEG fallback. The fallback remains visible after
+    /// relaunch; a transient encoder failure cannot hide already-cached preferred-format images either.
+    private var readableVariants: [String] {
+        let preferred = variant(encoding)
+        guard encoding.format != .jpeg else { return [preferred] }
+        return [preferred, variant(.init(format: .jpeg, quality: encoding.quality))]
+    }
     public func has(_ video: URL) -> Bool {
-        fileURL(for: video).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+        guard let identity = MediaFileIdentity.read(video) else { return false }
+        return readableVariants.contains { (try? catalog.hasImage(identity, variant: $0)) ?? false }
     }
 
     public func image(for video: URL) -> CGImage? {
-        guard let file = fileURL(for: video), let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
-        return CGImageSourceCreateImageAtIndex(source, 0, nil)
-    }
-
-    private func prune() {
-        let keys: Set<URLResourceKey> = [.contentModificationDateKey]
-        guard let files = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))
-            .filter({ $0.pathExtension == "jpg" }), files.count > limit else { return }
-        let dated = files.map { ($0, (try? $0.resourceValues(forKeys: keys))?.contentModificationDate ?? .distantPast) }
-        for (file, _) in dated.sorted(by: { $0.1 < $1.1 }).prefix(files.count - limit) {
-            try? FileManager.default.removeItem(at: file)
+        guard let identity = MediaFileIdentity.read(video) else { return nil }
+        for variant in readableVariants {
+            guard let bytes = try? catalog.image(identity, variant: variant),
+                  let source = CGImageSourceCreateWithData(bytes as CFData, nil),
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { continue }
+            return image
         }
+        return nil
     }
 }
