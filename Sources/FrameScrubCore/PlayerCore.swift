@@ -124,6 +124,9 @@ public final class PlayerCore {
     private var scrubTicks = ScrubTicks()
     /// `P`: playback jumps over everything outside the marks and pauses after the last (spec §5); off for each new file.
     public private(set) var playMarksOnly = false
+    public private(set) var sourceIdentity: MediaFileIdentity?
+    private var lastViewedAt: Date?
+    private var viewingVisible = true
     public private(set) var displayedFrame: Int?
     /// Seek latencies (spec §5).
     public private(set) var seekTimer = SeekTimer()
@@ -238,16 +241,19 @@ public final class PlayerCore {
     /// Making it touches nothing: even the volume's kind (a `statfs`, which waits for an SMB server) is asked when it
     /// runs. `cancellation` stops it while it reads.
     public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
-        let config = config, factor = pressureFactor
+        let config = config, factor = pressureFactor, resumeStore = resumeStore
         nonisolated(unsafe) let byteSource = byteSource
         return {
+            resumeStore?.prepare()
+            let identity = MediaFileIdentity.read(url)
             let policy = NetworkPolicy.resolve(config.networkMode, url: url)
             let budget = Self.readCacheBudget(config: config, policy: policy, factor: factor)
             let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
             try cancellation?.watch(readCache)
             let source = try MediaSource(url: url, readCache: readCache)
+            if let identity { FileFactsStore.shared.store(source.metadata, identity: identity) }
             readCache.probe = StreamProbe(source)
-            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source)
+            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source, identity: identity)
         }
     }
 
@@ -265,6 +271,8 @@ public final class PlayerCore {
         let current = session
         let approximate = source.approximateIndex()
         self.url = url
+        sourceIdentity = prepared.identity
+        lastViewedAt = nil
         self.readCache = readCache
         info = source
         index = approximate
@@ -327,6 +335,7 @@ public final class PlayerCore {
     /// `announcing` false: `onSegmentChange` is left for the caller (`open` restoring segments given before it).
     private func close(announcing: Bool) {
         cancelEdgeDrag()   // before the marks are remembered: the drag never reached them
+        // Persist only an observed display date: Home may have hidden this paused video for hours.
         rememberPosition()
         exportFlag?.cancel()
         exportFlag = nil
@@ -990,9 +999,26 @@ public final class PlayerCore {
     private func display(_ frame: DecodedFrame) {
         StartupTrace.markOnce("first frame to view")
         displayedFrame = frame.number
+        if viewingVisible { recordActualView() }
         delegate?.player(self, display: frame)
         if clockWaitsForPicture, !isPaused { restartClock() }
         if isPaused, let seconds = index?.seconds(forFrame: frame.number) { scrubAudio?.frameShown(seconds: seconds) }
+    }
+
+    /// Visibility belongs to the host: hidden/Home/occluded frames still render, but are not visits.
+    /// Revealing a paused picture is an actual visit even though no new frame needs decoding.
+    public func setViewingVisible(_ visible: Bool) {
+        guard viewingVisible != visible else { return }
+        viewingVisible = visible
+        if visible, displayedFrame != nil, url != nil { recordActualView(persistImmediately: true) }
+    }
+
+    private func recordActualView(persistImmediately: Bool = false) {
+        let firstView = lastViewedAt == nil
+        lastViewedAt = Date()
+        if firstView || persistImmediately, let url, let size = readCache?.fileSize, let lastViewedAt {
+            resumeStore?.recordView(for: url, size: size, at: lastViewedAt)
+        }
     }
 
     private func frameInserted(_ n: Int, session current: Int) {
@@ -1768,17 +1794,31 @@ public final class PlayerCore {
 
     /// Saves where the file is (and its A–B range, marks, length) now, as leaving it does: Home shows it over the video.
     public func rememberPosition() {
+        if let lastViewedAt, let url, let size = readCache?.fileSize {
+            resumeStore?.recordView(for: url, size: size, at: lastViewedAt)
+        }
         guard config.resumePlayback, let resumeStore, let url, let index else { return }
-        resumeStore.save(ResumeEntry(position: index.seconds(forFrame: position),
+        let entry = ResumeEntry(position: index.seconds(forFrame: position),
                                      loopA: loopA.map(index.seconds(forFrame:)),
                                      loopB: loopB.map(index.seconds(forFrame:)),
                                      marks: marks.isEmpty ? nil
                                          : marks.segments.map { [index.seconds(forFrame: $0.start), index.seconds(forFrame: $0.end)] }
                                          + (marks.open.map { [[index.seconds(forFrame: $0)]] } ?? []),
                                      duration: durationSeconds > 0 ? durationSeconds : nil,
-                                     color: resumeStore.color(for: url, size: readCache?.fileSize)),   // the colour edits write it themselves
-                         for: url, size: readCache?.fileSize)
+                                     color: resumeStore.color(for: url, size: readCache?.fileSize), lastViewedAt: lastViewedAt)
+        // A shutdown following the termination flush must not enqueue the same state again merely
+        // because ResumeEntry's default updated date is newer. Actual changes still get a fresh date.
+        if let existing = resumeStore.entry(for: url, size: readCache?.fileSize) {
+            var comparable = entry
+            comparable.updated = existing.updated
+            comparable.lastViewedAt = [entry.lastViewedAt, existing.lastViewedAt].compactMap { $0 }.max()
+            if comparable == existing { return }
+        }
+        resumeStore.save(entry, for: url, size: readCache?.fileSize)
     }
+
+    /// A termination barrier only: callers pause/remember first. It never changes frames or viewing dates.
+    public func flushUserState() async { await resumeStore?.flush() }
 
     /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back; `seeks`
     /// false leaves the position (a landing time follows).
@@ -1890,6 +1930,7 @@ public struct PreparedOpen: @unchecked Sendable {
     let policy: NetworkPolicy
     let readCache: ReadCache
     let source: MediaSource
+    let identity: MediaFileIdentity?
 
     /// Releases what was read, for an open that was abandoned.
     public func discard() { readCache.close() }

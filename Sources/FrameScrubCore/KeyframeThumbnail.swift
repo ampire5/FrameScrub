@@ -14,11 +14,16 @@ public enum KeyframeThumbnail {
         public let duration: Double
         /// The stream's facts for the file's card (size, codec, rate, length), from the same open.
         public let facts: FileFacts
+        /// The file identity captured before opening, for replacement-safe picture storage.
+        public let identity: MediaFileIdentity?
     }
 
     /// `seconds` nil looks 10 % into the file (the very first frame is often black). Nil when the file cannot be read.
     public static func make(url: URL, at seconds: Double?) -> Result? {
+        let identity = MediaFileIdentity.read(url)
         guard let source = try? MediaSource(url: url) else { return nil }
+        let metadata = source.metadata
+        if let identity { FileFactsStore.shared.store(metadata, identity: identity) }
         let index = source.approximateIndex()
         let duration = source.durationSeconds
         guard let decoder = try? VideoDecoder(source: source, index: index) else { return nil }
@@ -29,7 +34,7 @@ public enum KeyframeThumbnail {
                                                sampleAspect: source.sampleAspect, detectedCrop: nil)
         let image = FrameImageRenderer.image(for: frame, rotationClockwise: source.rotationClockwise, toneMapToSDR: true)
         return Result(picture: geometry.applied(to: image), seconds: max(0, index.seconds(forPTS: frame.pts)), duration: duration,
-                      facts: source.facts)
+                      facts: metadata.facts, identity: identity)
     }
 
 }
@@ -85,15 +90,19 @@ public final class RecentThumbnailer: @unchecked Sendable {
                     }
                     guard let i else { return }
                     let job = jobs[i]
+                    let identity = MediaFileIdentity.read(job.url)
                     // A pool per file: the picture holds the decoded frame (an IOSurface of VTDecoderXPCService).
                     let facts: FileFacts? = autoreleasepool {
                         guard !job.factsOnly, let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
                             return VideoFacts.probe(url: job.url)   // no picture wanted, or none (no decoder): the facts are known
                         }
-                        store.save(result.picture, for: job.url, context: context)
+                        // A missing pre-open identity cannot safely identify the decoded picture.
+                        if let identity = result.identity {
+                            store.save(result.picture, for: job.url, context: context, identity: identity)
+                        }
                         return result.facts
                     }
-                    guard let facts else { continue }
+                    guard let facts, identity == MediaFileIdentity.read(job.url) else { continue }
                     callbackQueue.async { if !flag.isCancelled { completion(job.url, facts) } }
                 }
             }

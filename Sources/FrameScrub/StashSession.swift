@@ -217,6 +217,31 @@ enum StashFile {
         _ = done.wait(timeout: .now() + 1)
     }
 
+    /// Capture synchronously before the core closes. The returned work touches no player state and
+    /// waits off-main for at most one second, so no live playback can change the sampled quit position.
+    func prepareTerminationFlush() -> (@Sendable () async -> Void)? {
+        guard var scene, let client, let state = sample?() else { leave(); return nil }
+        timer?.invalidate()
+        timer = nil
+        self.scene = nil
+        let requests = scene.activity.flush(position: state.position)
+        guard !requests.isEmpty else { return nil }
+        let id = scene.id
+        return {
+            let done = DispatchSemaphore(value: 0)
+            Task.detached(priority: .utility) {
+                for request in requests { try? await client.send(request, sceneID: id) }
+                done.signal()
+            }
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .utility).async {
+                    _ = done.wait(timeout: .now() + 1)
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     private func tick() {
         guard var scene, let state = sample?() else { return }
         let now = ProcessInfo.processInfo.systemUptime

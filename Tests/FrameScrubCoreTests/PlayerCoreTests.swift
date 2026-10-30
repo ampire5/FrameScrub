@@ -45,6 +45,74 @@ final class HapticLog {
         return (player, delegate, root)
     }
 
+    @Test func actualViewingPersistsEvenWithResumeDisabled() async throws {
+        let store = ResumeStore(url: makeTemporaryDirectory().appendingPathComponent("positions.json"))
+        let (player, delegate, _) = try makePlayer(configure: { $0.resumePlayback = false }, resumeStore: store)
+        #expect(await eventually { !delegate.frames.isEmpty })
+        await Task.detached { store.flushViews() }.value
+        let video = Fixtures.url(Fixtures.h264)
+        let first = try #require(store.entry(for: video)?.lastViewedAt)
+        player.close()
+        await Task.detached { store.flushViews() }.value
+        #expect(store.entry(for: video)?.lastViewedAt == first)
+        #expect(store.entry(for: video)?.position == 0)
+    }
+
+    @Test func preparationWithoutDisplayDoesNotRecordViewing() async throws {
+        let store = temporaryStore()
+        var config = Config()
+        config.resumePlayback = false
+        let player = PlayerCore(config: config, enableAudio: false,
+                                fallbackRoot: makeTemporaryDirectory(), resumeStore: store)
+        let video = Fixtures.url(Fixtures.h264)
+        let prepare = player.preparation(for: video)
+        let prepared = try await Task.detached { try prepare() }.value
+        prepared.discard()
+        player.close()
+        await Task.detached { store.flushViews() }.value
+        #expect(store.entry(for: video)?.lastViewedAt == nil)
+    }
+
+    @Test(arguments: [false, true]) func closingBeforeFirstFrameKeepsPreviousViewingDate(resumePlayback: Bool) async throws {
+        let store = temporaryStore()
+        let video = Fixtures.url(Fixtures.h264)
+        let previous = Date(timeIntervalSince1970: 1000)
+        store.save(ResumeEntry(position: 0, lastViewedAt: previous), for: video)
+        // No suspension between open and close: queued main-actor display callbacks cannot run.
+        let (player, delegate, _) = try makePlayer(configure: { $0.resumePlayback = resumePlayback }, resumeStore: store)
+        #expect(delegate.frames.isEmpty && player.displayedFrame == nil)
+        player.close()
+        await Task.detached { store.flushViews() }.value
+        #expect(store.entry(for: video)?.lastViewedAt == previous)
+    }
+
+    @Test func hiddenFramesDoNotViewAndRevealRecordsOneVisit() async throws {
+        let store = temporaryStore()
+        let (player, delegate, _) = try makePlayer(configure: { $0.resumePlayback = false }, resumeStore: store,
+                                                  beforeOpen: { $0.setViewingVisible(false) })
+        let video = Fixtures.url(Fixtures.h264)
+        #expect(await eventually { !delegate.frames.isEmpty }) // Rendering continues while hidden.
+        await player.flushUserState()
+        #expect(store.entry(for: video)?.lastViewedAt == nil)
+        let displayed = try #require(player.displayedFrame)
+        player.setViewingVisible(true) // Paused picture: no decode/display callback needed for this visit.
+        let first = try #require(store.entry(for: video)?.lastViewedAt)
+        #expect(player.displayedFrame == displayed)
+        player.setViewingVisible(true)
+        #expect(store.entry(for: video)?.lastViewedAt == first)
+        player.setViewingVisible(false)
+        player.seek(toFrame: displayed + 5)
+        #expect(await eventually { player.displayedFrame == displayed + 5 })
+        #expect(store.entry(for: video)?.lastViewedAt == first)
+        player.setViewingVisible(true)
+        let returned = try #require(store.entry(for: video)?.lastViewedAt)
+        #expect(returned > first)
+        player.setViewingVisible(false)
+        player.close()
+        await player.flushUserState()
+        #expect(store.entry(for: video)?.lastViewedAt == returned)
+    }
+
     /// A file read on another thread (`preparation`) opens like `open(url)`, over the file open until then; a
     /// preparation that is discarded leaves the player as it was.
     @Test func aPreparedOpenReplacesTheFileOnScreen() async throws {

@@ -1,72 +1,47 @@
 import Foundation
-import FrameScrubCore
-import HomeScreenModel
 import Testing
+@testable import FrameScrubCore
 
 @Suite struct FileFactsStoreTests {
-    private func file() -> URL {
-        FileManager.default.temporaryDirectory.appendingPathComponent("facts-\(UUID().uuidString)/facts.json")
+    @Test func storesCompleteProbeAndInvalidatesReplacement() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let media = dir.appendingPathComponent("clip.mp4")
+        try FileManager.default.copyItem(at: Fixtures.url(Fixtures.h264), to: media)
+        let id = try #require(MediaFileIdentity.read(media))
+        let value = try MediaSource(url: media).metadata
+        let db = dir.appendingPathComponent("facts.sqlite")
+        let store = FileFactsStore(url: db)
+        store.store(value, identity: id)
+        store.flushWrites()
+        #expect(FileFactsStore(url: db).metadata(for: media) == value)
+        #expect(store.facts(for: [media])[media.path] == value.facts)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: 10)], ofItemAtPath: media.path)
+        #expect(store.metadata(for: media) == nil)
     }
-
-    @Test func factsSurviveARelaunch() {
-        let url = file()
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let store = FileFactsStore(url: url)
-        #expect(store.all().isEmpty)
-        let facts = FileFacts(width: 1920, height: 1080, duration: 65, codec: "HEVC", fps: 30, transfer: .sdr)
-        store.set(facts, for: "/v/a.mp4")
-        store.save()
-        #expect(FileFactsStore(url: url).all() == ["/v/a.mp4": facts])
+    @Test func oldJSONIsLeftUntouchedAndNotImported() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let old = dir.appendingPathComponent("facts.json")
+        let data = Data("{}".utf8)
+        try data.write(to: old)
+        _ = FileFactsStore(url: dir.appendingPathComponent("facts.sqlite")).facts(for: [])
+        #expect(try Data(contentsOf: old) == data)
     }
-
-    @Test func pastTheLimitTheOldestGo() {
-        let store = FileFactsStore(url: file(), limit: 4)
-        for i in 0..<5 { store.set(FileFacts(duration: Double(i)), for: "/v/\(i).mp4") }
-        let kept = store.all()
-        #expect(kept.count <= 4 && kept["/v/4.mp4"]?.duration == 4 && kept["/v/0.mp4"] == nil)
-    }
-
-    /// A facts file of `count` entries `/f/<i>.mp4`, written as the store writes it.
-    private func bigFile(_ count: Int) throws -> URL {
-        let url = file()
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        var facts: [String: FileFacts] = [:]
-        for i in 0..<count { facts["/f/\(i).mp4"] = FileFacts(width: 1920, height: 1080, duration: Double(i), codec: "HEVC") }
-        try JSONEncoder().encode(facts).write(to: url)
-        return url
-    }
-
-    /// Minor 17 of the strip's review: `set` on the main thread waited for a background `all()` decoding the file.
-    /// Async, with no semaphore: a test thread blocked in a wait takes a cooperative thread from the pool that
-    /// `FrameUpscaler`'s `runBlocking` also waits on, and the whole suite stalled (2026-10-28).
-    @Test func setDoesNotWaitForTheFirstRead() async throws {
-        let url = try bigFile(50_000)
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        // What a wait for the read costs here, so the bound holds on a loaded machine (a fixed 5 ms failed once in a
-        // full parallel run at 5.2 ms).
-        let readStart = DispatchTime.now().uptimeNanoseconds
-        _ = FileFactsStore(url: url, limit: 100_000).all()
-        let readTook = Double(DispatchTime.now().uptimeNanoseconds - readStart) / 1e6
-        let store = FileFactsStore(url: url, limit: 100_000)
-        let read = Task.detached { store.all().count }
-        try await Task.sleep(nanoseconds: 2_000_000)
-        let start = DispatchTime.now().uptimeNanoseconds
-        store.set(FileFacts(duration: 1), for: "/x.mp4")
-        let took = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
-        _ = await read.value
-        #expect(took < readTook / 4, "set took \(took) ms, a read \(readTook) ms")
-        let all = store.all()
-        #expect(all["/x.mp4"]?.duration == 1 && all["/f/49999.mp4"]?.duration == 49999)
-    }
-
-    @Test func setBeforeLoadIsKept() throws {
-        let url = try bigFile(3)
-        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
-        let store = FileFactsStore(url: url)
-        store.set(FileFacts(duration: 7), for: "/f/0.mp4")
-        store.set(FileFacts(duration: 8), for: "/new.mp4")
-        let all = store.all()
-        #expect(all.count == 4 && all["/f/0.mp4"]?.duration == 7 && all["/new.mp4"]?.duration == 8)
-        #expect(all["/f/2.mp4"]?.duration == 2)
+    @Test func oneStaleSnapshotDoesNotDiscardOtherFiles() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let a = dir.appendingPathComponent("a.mp4"), b = dir.appendingPathComponent("b.mp4")
+        try Data([1]).write(to: a); try Data([2]).write(to: b)
+        let ia = try #require(MediaFileIdentity.read(a)), ib = try #require(MediaFileIdentity.read(b))
+        let metadata = try MediaSource(url: Fixtures.url(Fixtures.h264)).metadata
+        let store = FileFactsStore(url: dir.appendingPathComponent("catalog.sqlite"))
+        store.store(metadata, identity: ia)
+        store.store(metadata, identity: ib)
+        try Data([3,4]).write(to: a, options: .atomic)
+        store.flushWrites()
+        #expect(store.metadata(for: b) == metadata)
+        #expect(store.metadata(for: a) == nil)
     }
 }

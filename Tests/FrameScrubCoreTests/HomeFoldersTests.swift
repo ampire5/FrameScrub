@@ -62,8 +62,10 @@ import Testing
         let a = BrowserEntry(url: URL(filePath: "/v/a.mp4"), name: "a.mp4", kind: .file)
         let b = BrowserEntry(url: URL(filePath: "/v/b.mp4"), name: "b.mp4", kind: .file)
         let sub = BrowserEntry(url: URL(filePath: "/v/Sub"), name: "Sub", kind: .folder)
-        let out = HomeFolders.withFacts([a, b, sub], resume: { $0 == a.url ? ResumeEntry(position: 30, duration: 120) : nil },
+        let out = HomeFolders.withFacts([a, b, sub], resume: { $0 == a.url ? ResumeEntry(position: 30, duration: 120, lastViewedAt: Date(timeIntervalSince1970: 123)) : nil },
                                         facts: ["/v/b.mp4": FileFacts(duration: 65)])
+        #expect(out[0].lastViewedAt == Date(timeIntervalSince1970: 123))
+        #expect(out[1].lastViewedAt == nil)
         #expect(out[0].subtitle == "0:30 / 2:00" && out[0].progress == 0.25)
         #expect(out[1].subtitle == "1:05" && out[1].progress == nil)
         #expect(out[2].subtitle == nil)
@@ -74,9 +76,10 @@ import Testing
         let a = BrowserEntry(url: URL(filePath: "/v/a.mp4"), name: "a.mp4", kind: .file, date: d2, size: 100)
         let b = BrowserEntry(url: URL(filePath: "/v/b.mp4"), name: "b.mp4", kind: .file, date: d1, size: 50)
         let sub = BrowserEntry(url: URL(filePath: "/v/Sub"), name: "Sub", kind: .folder)
-        let s = HomeFolders.summary(of: [b, sub, a], resume: { $0 == a.url ? ResumeEntry(position: 5) : nil })
+        let s = HomeFolders.summary(of: [b, sub, a], resume: { $0 == a.url ? ResumeEntry(position: 0, lastViewedAt: d2) : nil })
         #expect(s.photos == 2 && s.folders == 1 && s.bytes == 150)
         #expect(s.first == d1 && s.last == d2 && s.viewed == 0.5)
+        #expect(HomeFolders.summary(of: [a, b], resume: { $0 == a.url ? ResumeEntry(position: 5) : nil }).viewed == 0.5)
         #expect(HomeFolders.summary(of: [sub], resume: { _ in nil }).viewed == nil)
         #expect(HomeFolders.coverVideos([b, sub, a]).map(\.lastPathComponent) == ["a.mp4", "b.mp4"])
     }

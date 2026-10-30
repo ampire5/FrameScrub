@@ -18,7 +18,7 @@ import Testing
 
     @Test func everyPageKeyIsAConfKey() {
         for key in rows.compactMap(\.key) {
-            #expect(Config.keys.contains(key) || key == FrameScrubSettingsStore.wheelFreeSpinKey, "\(key)")
+            #expect(Config.keys.contains(key) || key == FrameScrubSettingsStore.wheelFreeSpinKey || FrameScrubSettingsStore.thumbnailKeys.contains(key), "\(key)")
         }
     }
 
@@ -36,7 +36,7 @@ import Testing
 
     @Test func choicesAreValues() {
         for row in rows {
-            guard let key = row.key, key != FrameScrubSettingsStore.wheelFreeSpinKey else { continue }
+            guard let key = row.key, key != FrameScrubSettingsStore.wheelFreeSpinKey, !FrameScrubSettingsStore.thumbnailKeys.contains(key) else { continue }
             switch row.kind {
             case .choice(let items):
                 for item in items {

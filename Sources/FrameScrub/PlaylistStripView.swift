@@ -53,7 +53,6 @@ import HomeScreenModel
     /// How long the rows in view stay put before they are read.
     static let readDelay = 0.1
     private var relayoutPending = false
-    private var factsSave: DispatchWorkItem?
     private var cardHeight = 0.0
     private var pointerInside = false
     private var trackingArea: NSTrackingArea?
@@ -61,7 +60,7 @@ import HomeScreenModel
     private let lastFrames = ThumbnailStore()
     private let posters: PictureQueue = {
         let store = ThumbnailStore(directory: ThumbnailStore.defaultDirectory.appendingPathComponent("posters"),
-                                   limit: 2000, maxSide: 480)
+                                   limit: 2000, maxSide: ThumbnailStore.configuredSide(poster: true))
         return PictureQueue(store: store, thumbnailer: RecentThumbnailer(store: store), prefix: "", atPosition: false)
     }()
 
@@ -96,14 +95,7 @@ import HomeScreenModel
         posters.onPicture = { [weak self] id, image in self?.picture(image, for: URL(filePath: id)) }
         posters.onFacts = { [weak self] url, found in self?.learned(found, for: url) }
         posters.hasFacts = { [weak self] url in self?.facts[url] != nil }
-        let store = FileFactsStore.shared
-        Task { @MainActor [weak self] in   // the file is read off the main thread, once
-            let all = await Task.detached(priority: .utility) { store.all() }.value
-            guard let self else { return }
-            for (path, found) in all where self.facts[URL(filePath: path)] == nil { self.facts[URL(filePath: path)] = found }
-            self.relayoutSoon()
-            self.refreshVisibleText()
-        }
+
     }
 
     @available(*, unavailable)
@@ -476,16 +468,17 @@ import HomeScreenModel
         reading = Task { @MainActor [weak self] in
             let resume = ResumeStore()
             for url in urls {
-                let found = await Task.detached(priority: .utility) { () -> (CGImage?, FileInfo) in
+                let found = await Task.detached(priority: .utility) { () -> (CGImage?, FileInfo, FileFacts?) in
                     let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
                     let size = values?.fileSize.map(Int64.init)
                     let image = lastFrames.image(for: url) ?? posterStore.image(for: url)
                     return (image, FileInfo(size: size, date: values?.contentModificationDate,
-                                            resume: resume.entry(for: url, size: size)))
+                                            resume: resume.entry(for: url, size: size)), FileFactsStore.shared.facts(for: [url])[url.path])
                 }.value
                 guard let self, !Task.isCancelled else { return }
                 self.looked.insert(url)
                 self.fileInfo[url] = found.1
+                self.facts[url] = found.2
                 if let image = found.0 { self.picture(image, for: url) }
             }
             self?.refreshVisibleText()
@@ -501,12 +494,6 @@ import HomeScreenModel
     private func learned(_ found: FileFacts, for url: URL) {
         let had = facts[url]
         facts[url] = found
-        let store = FileFactsStore.shared
-        store.set(found, for: url.path)
-        factsSave?.cancel()
-        let save = DispatchWorkItem { store.save() }
-        factsSave = save
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: save)   // once for a burst, as Home
         if had?.width != found.width || had?.height != found.height { relayoutSoon() }
         refreshVisibleText()
     }

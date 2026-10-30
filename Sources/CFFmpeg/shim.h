@@ -8,6 +8,8 @@
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/display.h>
+#include <libavutil/mastering_display_metadata.h>
+#include <libavutil/dovi_meta.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixdesc.h>
 #include <libswresample/swresample.h>

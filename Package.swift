@@ -20,7 +20,7 @@ let package = Package(
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.2.0"),
-        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.11.8"),
+        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.12.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.7.0"),
         // The Logitech mouse goes through MouseService (a local mirror in .swiftpm/configuration/mirrors.json while
         // working on both).
@@ -32,12 +32,14 @@ let package = Package(
             pkgConfig: "libavformat libavcodec libavutil libswresample libswscale",
             providers: [.brew(["ffmpeg"])]
         ),
+        .systemLibrary(name: "CSQLite"),
         .target(name: "ObjCCatch"),
         .target(
             name: "FrameScrubCore",
             dependencies: [
                 "CFFmpeg",
                 "ObjCCatch",
+                "CSQLite",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),

@@ -17,6 +17,8 @@ public final class FrameScrubSettingsStore: SettingsStore {
     /// The window wrote the wheel mode: the player sets the wheel to it.
     public var onWheelFreeSpinWrite: (() -> Void)?
 
+    public nonisolated static let thumbnailKeys: Set<String> = ["thumbnail-format", "thumbnail-quality", "thumbnail-cache-mib", "thumbnail-poster-size", "thumbnail-recent-size"]
+
     private let preferences: PreferencesStore
     private let defaults: UserDefaults
     private let colorLayers: () -> ColorLayerSnapshot?
@@ -69,11 +71,22 @@ public final class FrameScrubSettingsStore: SettingsStore {
     }
 
     public func value(forKey key: String) -> String? {
+        if key == "thumbnail-poster-size" || key == "thumbnail-recent-size" {
+            return String(Int(ThumbnailStore.configuredSide(poster: key == "thumbnail-poster-size", defaults: defaults)))
+        }
+        if key == "thumbnail-format" { return ThumbnailEncoding.configured(defaults).format.rawValue }
+        if key == "thumbnail-quality" { return String(Int((ThumbnailEncoding.configured(defaults).quality * 100).rounded())) }
+        if key == "thumbnail-cache-mib" { return String(MediaCatalog.configuredImageLimitMiB(defaults)) }
         if key == Self.wheelFreeSpinKey { return wheelFreeSpin ? "yes" : "no" }
         return preferences.config.text(forKey: key).map { Self.shown($0, forKey: key) }
     }
 
     public func defaultValue(forKey key: String) -> String {
+        if key == "thumbnail-poster-size" { return "480" }
+        if key == "thumbnail-recent-size" { return "1280" }
+        if key == "thumbnail-format" { return "jpeg" }
+        if key == "thumbnail-quality" { return "80" }
+        if key == "thumbnail-cache-mib" { return "256" }
         if key == Self.wheelFreeSpinKey { return "yes" }
         return Config().text(forKey: key).map { Self.shown($0, forKey: key) } ?? ""
     }
@@ -90,6 +103,12 @@ public final class FrameScrubSettingsStore: SettingsStore {
 
     /// A line break would write a second line; anything else is what `Config.set` takes.
     public func validate(_ value: String, forKey key: String) -> String? {
+        if key == "thumbnail-poster-size" || key == "thumbnail-recent-size" {
+            return Int(value).map { (128...1920).contains($0) } == true ? nil : "128–1920 px"
+        }
+        if key == "thumbnail-format" { return ThumbnailEncoding.Format(rawValue: value) == nil ? "JPEG, HEIC or AVIF" : nil }
+        if key == "thumbnail-quality" { return Int(value).map { (10...100).contains($0) } == true ? nil : "10–100" }
+        if key == "thumbnail-cache-mib" { return Int(value).map { (16...65536).contains($0) } == true ? nil : "16–65536 MiB" }
         if key == Self.wheelFreeSpinKey { return ["yes", "no"].contains(value) ? nil : "yes or no" }
         var config = preferences.config
         guard value.rangeOfCharacter(from: .newlines) == nil, config.set(key, Self.written(value, forKey: key)) else {
@@ -100,6 +119,13 @@ public final class FrameScrubSettingsStore: SettingsStore {
 
     /// Throws the write error after the value is applied: the app keeps working with it until it quits.
     public func setValue(_ value: String, forKey key: String) throws {
+        if Self.thumbnailKeys.contains(key) {
+            guard validate(value, forKey: key) == nil else { return }
+            if key == "thumbnail-format" { defaults.set(value, forKey: key) }
+            else { defaults.set(Int(value)!, forKey: key) }
+            announce([key])
+            return
+        }
         if key == Self.wheelFreeSpinKey {
             defaults.set(value == "yes", forKey: Self.wheelFreeSpinDefaultsKey)
             announce([key])
@@ -142,7 +168,8 @@ public final class FrameScrubSettingsStore: SettingsStore {
     public func removeValues(forKeys keys: [String]) throws {
         let defaults = Config()
         if keys.contains(Self.wheelFreeSpinKey) { try setValue("yes", forKey: Self.wheelFreeSpinKey) }
-        let conf = keys.filter { $0 != Self.wheelFreeSpinKey }
+        for key in keys where Self.thumbnailKeys.contains(key) { try setValue(defaultValue(forKey: key), forKey: key) }
+        let conf = keys.filter { $0 != Self.wheelFreeSpinKey && !Self.thumbnailKeys.contains($0) }
         guard !conf.isEmpty else { return }
         try preferences.update(conf) { config in
             for key in conf { if let text = defaults.text(forKey: key) { _ = config.set(key, text) } }

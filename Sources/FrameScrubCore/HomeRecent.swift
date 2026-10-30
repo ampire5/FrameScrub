@@ -15,12 +15,12 @@ public enum HomeRecent {
             let entry = resume(url)
             let known = facts[url.path]
             let duration = entry?.duration ?? known?.duration
-            return BrowserEntry(url: url, name: url.lastPathComponent, kind: .file, date: entry?.updated,
+            return BrowserEntry(url: url, name: url.lastPathComponent, kind: .file, date: entry?.lastViewedAt,
                                 isDimmed: dimmed.contains(url.path), canRename: false, canTrash: false,
                                 key: "recent:" + url.path,
                                 subtitle: RecentFiles.timeText(position: entry?.position, duration: duration),
                                 progress: RecentFiles.progress(position: entry?.position, duration: duration),
-                                facts: known)
+                                facts: known, lastViewedAt: entry?.lastViewedAt)
         }
     }
 

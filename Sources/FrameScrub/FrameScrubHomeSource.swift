@@ -22,8 +22,9 @@ import HomeScreenModel
     private let folderPictures: PictureQueue
     /// Facts (size, codec, rate, length) found while making pictures, by path; kept across runs (`FileFactsStore`).
     private var facts: [String: FileFacts] = [:]
+    private var positions: [String: ResumeEntry] = [:]
     private let factsStore = FileFactsStore.shared
-    private var factsSave: DispatchWorkItem?
+    private var metadataInspector: MediaMetadataInspector?
     /// The sorts of Recent and the app's lists, for this run; a folder's are kept (`folderSorts`).
     private var sorts: [BrowserLocation: BrowserSort] = [:]
     private let folderSorts: FolderSorts
@@ -51,19 +52,9 @@ import HomeScreenModel
         recentPictures = PictureQueue(store: thumbnails, thumbnailer: thumbnailer, prefix: "recent:", atPosition: true)
         // A folder of a few hundred videos: ~40 KB each at 480 px; the newest 2 000 are kept.
         let posters = ThumbnailStore(directory: ThumbnailStore.defaultDirectory.appendingPathComponent("posters"),
-                                     limit: 2000, maxSide: 480)
+                                     limit: 2000, maxSide: ThumbnailStore.configuredSide(poster: true))
         folderPictures = PictureQueue(store: posters, thumbnailer: RecentThumbnailer(store: posters), prefix: "",
                                       atPosition: false)
-        let store = factsStore
-        Task { @MainActor [weak self] in   // the file is read off the main thread, once
-            let kept = await Task.detached(priority: .utility) { store.all() }.value
-            guard let self, !kept.isEmpty else { return }
-            self.facts.merge(kept) { now, _ in now }
-            if case .folder? = self.view?.location {   // a folder shown before they came: its cards get them
-                self.relistOnly = true
-                self.view?.reload()
-            }
-        }
         folderPictures.onMade = { [weak self] url in self?.coverPosterMade(url) }
         folderPictures.onHave = { [weak self] url in self?.posterIn(url) }
         for queue in [recentPictures, folderPictures] {
@@ -125,6 +116,28 @@ import HomeScreenModel
                     guard let self, !Task.isCancelled else { return }
                     self.listings[folder] = entries
                     continuation.yield(BrowserListing(entries: self.withFacts(entries), complete: true))
+                    let store = self.factsStore
+                    let loaded = await Task.detached(priority: .utility) {
+                        let urls = entries.filter(\.isFile).map(\.url)
+                        let resume = ResumeStore()
+                        let positions = Dictionary(entries.filter(\.isFile).compactMap { entry -> (String, ResumeEntry)? in
+                            guard let size = entry.size, let saved = resume.entry(for: entry.url, size: size) else { return nil }
+                            return (entry.url.path, saved)
+                        }, uniquingKeysWith: { a, _ in a })
+                        return (store.facts(for: urls), positions)
+                    }.value
+                    guard !Task.isCancelled else { return }
+                    for entry in entries where entry.isFile {
+                        self.facts[entry.url.path] = loaded.0[entry.url.path]
+                        self.positions[entry.url.path] = loaded.1[entry.url.path]
+                    }
+                    if self.view?.location == .folder(folder) {
+                        self.view?.setFacts(loaded.0)
+                        self.view?.setLastViewed(Dictionary(loaded.1.compactMap { path, entry in
+                            entry.lastViewedAt.map { (URL(fileURLWithPath: path), $0) }
+                        }, uniquingKeysWith: { a, _ in a }))
+                    }
+                    continuation.yield(BrowserListing(entries: self.withFacts(entries), complete: true))
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -135,8 +148,7 @@ import HomeScreenModel
     }
 
     private func withFacts(_ entries: [BrowserEntry]) -> [BrowserEntry] {
-        let resume = ResumeStore()
-        return HomeFolders.withFacts(entries, resume: { resume.entry(for: $0) }, facts: facts)
+        return HomeFolders.withFacts(entries, resume: { positions[$0.path] }, facts: facts)
     }
 
     func lastListing(for location: BrowserLocation) -> BrowserListing? {
@@ -244,15 +256,21 @@ import HomeScreenModel
                 guard let self, !Task.isCancelled else { return }
                 if self.folderFacts[entry.url] == nil {
                     let url = entry.url
-                    let read = await Task.detached(priority: .utility) { try? HomeFolders.entries(in: url) }.value
+                    let read = await Task.detached(priority: .utility) { () -> (CardSummary, [URL])? in
+                        guard let entries = try? HomeFolders.entries(in: url) else { return nil }
+                        let store = ResumeStore()
+                        let positions = Dictionary(entries.filter(\.isFile).compactMap { item -> (URL, ResumeEntry)? in
+                            guard let size = item.size, let saved = store.entry(for: item.url, size: size) else { return nil }
+                            return (item.url, saved)
+                        }, uniquingKeysWith: { a, _ in a })
+                        return (HomeFolders.summary(of: entries, resume: { positions[$0] }), HomeFolders.coverVideos(entries))
+                    }.value
                     guard !Task.isCancelled else { return }
                     guard let read else {
                         self.view?.setSummary(CardSummary(problem: .broken), for: entry.id)
                         continue
                     }
-                    let resume = ResumeStore()
-                    self.folderFacts[url] = (HomeFolders.summary(of: read, resume: { resume.entry(for: $0) }),
-                                             HomeFolders.coverVideos(read))
+                    self.folderFacts[url] = (read.0, read.1)
                 }
                 guard let facts = self.folderFacts[entry.url] else { continue }
                 self.view?.setSummary(facts.summary, for: entry.id)
@@ -296,18 +314,12 @@ import HomeScreenModel
         guard facts[url.path] != found else { return }
         let hadLength = facts[url.path]?.duration != nil
         facts[url.path] = found
-        factsStore.set(found, for: url.path)
-        factsSave?.cancel()
-        let store = factsStore
-        let save = DispatchWorkItem { store.save() }
-        factsSave = save
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2, execute: save)   // once for a burst
         if view?.location == .source(HomeRecent.source) {
             view?.setFacts(["recent:" + url.path: found])
         } else {
             view?.setFacts([url.path: found])
         }
-        guard !hadLength, found.duration != nil, ResumeStore().entry(for: url)?.duration == nil else { return }
+        guard !hadLength, found.duration != nil, positions[url.path]?.duration == nil else { return }
         relist?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, let view = self.view else { return }
@@ -321,12 +333,19 @@ import HomeScreenModel
     // MARK: Cards
 
     func menu(for entry: BrowserEntry, in location: BrowserLocation) -> [HomeMenuItem] {
-        var items = [HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
+        var items = [HomeMenuItem(id: "information", title: "File Information…"),
+                     HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
+        if !entry.isFile { items.removeAll { $0.id == "information" } }
         if location == .source(HomeRecent.source) { items.append(HomeMenuItem(id: "remove", title: "Remove from Recent")) }
         return items
     }
 
-    func perform(_ item: String, on entry: BrowserEntry, in location: BrowserLocation) { onMenu?(entry.url, item) }
+    func perform(_ item: String, on entry: BrowserEntry, in location: BrowserLocation) {
+        if item == "information", entry.isFile {
+            if metadataInspector == nil { metadataInspector = MediaMetadataInspector() }
+            metadataInspector?.show(entry)
+        } else { onMenu?(entry.url, item) }
+    }
 
     func open(_ entry: BrowserEntry, in location: BrowserLocation, sort: BrowserSort, how: HomeClick) {
         guard entry.isFile else { return }
@@ -403,17 +422,31 @@ import HomeScreenModel
     /// (only when there are any).
     private func listRecent() -> AsyncThrowingStream<BrowserListing, Error> {
         let urls = recentURLs()
-        let resume = ResumeStore()
-        let entries = { [facts] (dimmed: Set<String>) in
-            HomeRecent.entries(urls, resume: { resume.entry(for: $0) }, facts: facts, dimmed: dimmed)
-        }
+        let first = HomeRecent.entries(urls, resume: { positions[$0.path] }, facts: facts, dimmed: [])
+        let store = factsStore
         return AsyncThrowingStream { continuation in
-            continuation.yield(BrowserListing(entries: entries([]), complete: true))
-            let task = Task { @MainActor in
+            continuation.yield(BrowserListing(entries: first, complete: true))
+            let task = Task { @MainActor [weak self] in
+                let loaded = await Task.detached(priority: .utility) {
+                    let resume = ResumeStore()
+                    let positions = Dictionary(urls.compactMap { url in resume.entry(for: url).map { (url.path, $0) } },
+                                               uniquingKeysWith: { a, _ in a })
+                    return (store.facts(for: urls), positions)
+                }.value
+                guard let self, !Task.isCancelled else { continuation.finish(); return }
+                for url in urls { self.facts[url.path] = loaded.0[url.path]; self.positions[url.path] = loaded.1[url.path] }
+                if self.view?.location == .source(HomeRecent.source) {
+                    self.view?.setLastViewed(Dictionary(loaded.1.compactMap { path, entry in
+                        entry.lastViewedAt.map { (URL(fileURLWithPath: path), $0) }
+                    }, uniquingKeysWith: { a, _ in a }))
+                }
+                let entries = HomeRecent.entries(urls, resume: { loaded.1[$0.path] }, facts: loaded.0, dimmed: [])
+                continuation.yield(BrowserListing(entries: entries, complete: true))
                 let reachable = await PathAvailability.check(urls.map(\.path), timeout: .seconds(1))
                 let gone = Set(urls.map(\.path).filter { reachable[$0] == .some(false) })
                 if !gone.isEmpty, !Task.isCancelled {
-                    continuation.yield(BrowserListing(entries: entries(gone), complete: true))
+                    continuation.yield(BrowserListing(entries: HomeRecent.entries(urls, resume: { loaded.1[$0.path] },
+                                                                                 facts: loaded.0, dimmed: gone), complete: true))
                 }
                 continuation.finish()
             }
