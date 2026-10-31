@@ -322,11 +322,12 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   Thumbnails keep the picture's proportions, rotation and current aspect/crop. Hovering highlights a cell and
   enlarges its cached picture over the film without changing its height or reading the file again.
   The sliders button beside the three view icons opens a live dropdown directly from the film; Right-click ›
-  Time Lens… opens the same retained panel. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–4×)
+  Time Lens… opens the same retained panel. Filmstrip height (36–96 pt, default 48 pt) resizes the strip live and
+  is remembered; hiding and pinning remain separate controls. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–4×)
   are independent. Magnification/area change only geometry, reusing the existing images and sample times.
   Thumbnail crop (0–100%) blends between full-picture fit and horizontal centre crop without changing density.
   Seconds per thumbnail (0.1–30 s) applies only to Segment. Lens controls are inactive in the unmagnified Whole File
-  view. Reset restores magnification/density 2.75×, area 30%, crop 70%, step 1 s.
+  view. Reset restores height 48 pt, magnification/density 2.75×, area 30%, crop 70%, step 1 s.
   Values are remembered; changing them does not seek. Option-scroll adjusts outside density in whole-file modes,
   or the time step in Segment. Missing pictures can fill while the dropdown stays open; gestures/foreground still win.
   Hover always shows the complete picture. Zero crop keeps full-picture cells.
@@ -348,6 +349,11 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   Right-click the timeline for thumbnail sizes, Hide Filmstrip and Always Show Playback Controls. Existing editing
   commands and the mouse's viewing/editing profiles remain available; this stage adds no editing toolbar.
 - Film thumbnails load through one utility decoder while the film is revealed and visible, during playback too.
+  Ready images are shared with hover previews; matching keyframes already in the playback cache are converted
+  to thumbnails off the main thread before requesting another decode. Ready samples fill first, then missing
+  keyframes from the centre out. The shared image pool is limited to 200 entries and 32 MiB of pixels, in addition
+  to the strip's existing two-screenful display cache; it does not retain a second set of full-resolution frames.
+  A seek's unfinished foreground picture defers this work; a picture known to be undecodable releases the wait.
   A read waits if playback's current/next frame is missing, retains its queue and resumes on a delivered frame;
   gestures take priority. Moving samples update a pending batch without resetting its dwell deadline on each tick.
   Existing thumbnails remain visible. `preview=no` disables their decoder as well as hover

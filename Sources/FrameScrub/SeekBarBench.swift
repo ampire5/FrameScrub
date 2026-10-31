@@ -6,6 +6,7 @@ import QuartzCore
 /// A bench of the actual app view, not a duplicate UI in the bench target.
 @MainActor enum SeekBarBench {
     static func run() -> Never {
+        if CommandLine.arguments.contains("--bench-keyframe-cost") { runKeyframeCost() }
         if CommandLine.arguments.contains("--bench-playing-film") { PlayingFilmBench.run() }
         if CommandLine.arguments.contains("--bench-film-loader") { runLoader() }
         let app = NSApplication.shared
@@ -361,6 +362,32 @@ import QuartzCore
             let controls = TimelineLensControls()
             let opened = measure { controls.setValues(seconds: 1, focus: 0.3, crop: 0.7); host.addSubview(controls.view) }
             report("lens-controls-first", 1, [opened])
+            precondition(controls.view.subviews.compactMap { $0 as? NSSlider }.contains {
+                $0.accessibilityLabel() == "Filmstrip height"
+            }, "Film settings must expose the strip height beside the lens controls")
+            let heightSlider = controls.view.subviews.compactMap { $0 as? NSSlider }.first {
+                $0.accessibilityLabel() == "Filmstrip height"
+            }!
+            controls.onHeightChange = { bar.configureFilmHeight($0) }
+            var heightUpdates: [Double] = []
+            for height in [36.0, 96, 57] {
+                heightUpdates.append(measure {
+                    heightSlider.doubleValue = height
+                    NSApp.sendAction(heightSlider.action!, to: heightSlider.target, from: heightSlider)
+                    bar.setFrameSize(NSSize(width: 2560, height: bar.preferredHeight))
+                    bar.layoutSubtreeIfNeeded(); bar.displayIfNeeded()
+                })
+                precondition(bar.preferredHeight == height + 76, "Slider must resize the actual film live")
+                precondition(UserDefaults.standard.double(forKey: "timeline-film-height") == height)
+            }
+            let resized = SeekBarView(frame: .zero)
+            resized.setFilmRevealed(true)
+            precondition(resized.preferredHeight == 133, "A new timeline must restore the chosen 57 pt height")
+            let reset = controls.view.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Reset" }!
+            reset.performClick(nil)
+            precondition(bar.preferredHeight == 124 && heightSlider.doubleValue == 48, "Reset must restore 48 pt")
+            report("film-height-live-65-cells", 1, heightUpdates)
+            print("film-height-check\tpassed: native slider, live geometry, persisted restore, reset")
             if let arg = CommandLine.arguments.firstIndex(of: "--shots") {
                 let bitmap = controls.view.bitmapImageRepForCachingDisplay(in: controls.view.bounds)!
                 controls.view.cacheDisplay(in: controls.view.bounds, to: bitmap)
@@ -368,6 +395,8 @@ import QuartzCore
                     URL(fileURLWithPath: CommandLine.arguments[arg + 1]).appendingPathComponent("lens-controls.png"))
             }
             controls.view.removeFromSuperview()
+            controls.onHeightChange = nil
+            bar.configureFilmHeight(64, save: false)
             bar.setFrameSize(NSSize(width: 900, height: 140))
             bar.configureLens(seconds: 1, focus: 0.3, crop: 0.7, magnification: 2.75, density: 2.75, save: false)
             var prepared = Set<Double>()
@@ -438,6 +467,19 @@ import QuartzCore
                 let cost = measure { tuning.performClick(nil) }
                 precondition(bar.isInteracting, "The on-film tuning button must open the live controls")
                 report("lens-dropdown-open", round, [cost])
+                if round == 1 {
+                    func sliders(in view: NSView) -> [NSSlider] {
+                        view.subviews.flatMap { ($0 as? NSSlider).map { [$0] } ?? sliders(in: $0) }
+                    }
+                    let liveHeight = NSApp.windows.compactMap(\.contentView).flatMap { sliders(in: $0) }.first {
+                        $0.accessibilityLabel() == "Filmstrip height" && $0.window?.isVisible == true
+                    }!
+                    liveHeight.doubleValue = 75
+                    NSApp.sendAction(liveHeight.action!, to: liveHeight.target, from: liveHeight)
+                    bar.setFrameSize(NSSize(width: 900, height: bar.preferredHeight)); bar.layoutSubtreeIfNeeded()
+                    precondition(bar.preferredHeight == 151 && bar.isInteracting,
+                                 "The retained popover must remain open while resizing its owner")
+                }
                 tuning.performClick(nil)
                 let deadline = Date().addingTimeInterval(2)
                 while bar.isInteracting, Date() < deadline { spin(0.02) }
@@ -454,15 +496,27 @@ import QuartzCore
     }
 
     private static func runLoader() -> Never {
+        setbuf(stdout, nil)
         let arg = CommandLine.arguments.firstIndex(of: "--fixture")!
-        let fixture = FrameIndex(pts: (0..<600).map(Int64.init), keyframePTS: [0, 250, 500], timeBase: 1.0 / 30)
+        let url = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
+        let source = try! MediaSource(url: url)
+        let fixture = try! source.buildIndex()
+        let readyFirst = CommandLine.arguments.contains("--expect-ready-first")
+        let playbackCache = FrameCache(budgetBytes: 32 * 1024 * 1024)
+        if readyFirst {
+            let decoder = try! VideoDecoder(source: source, index: fixture)
+            try! decoder.seekToKeyframe(near: 500)
+            playbackCache.insert(try! decoder.nextFrame()!)
+        }
         let loader = FilmstripPreviewLoader(url: URL(fileURLWithPath: CommandLine.arguments[arg + 1]), index: fixture,
-            rotation: 0, width: 320, cache: nil, policy: .network)
+            rotation: 0, width: 320, cache: nil, policy: .network, frameCache: playbackCache)
         var mayRead = !CommandLine.arguments.contains("--expect-resume")
         loader.mayRead = { mayRead }
         var arrivals: [Double] = []
+        var sampleTimes: [Double] = []
         let start = ProcessInfo.processInfo.systemUptime
-        loader.onImage = { _, _ in
+        loader.onImage = { _, seconds in
+            sampleTimes.append(seconds)
             arrivals.append(ProcessInfo.processInfo.systemUptime - start)
             print(String(format: "film-image\t%d\t%.3f ms", arrivals.count, arrivals.last! * 1000))
         }
@@ -476,9 +530,42 @@ import QuartzCore
         let deadline = Date().addingTimeInterval(5)
         while arrivals.count < 3, Date() < deadline { RunLoop.current.run(until: Date().addingTimeInterval(0.01)) }
         precondition(arrivals.count == 3)
+        if readyFirst {
+            precondition(sampleTimes.first == 500.0 / 30, "A reusable last sample must arrive before decoding earlier misses")
+            precondition(loader.decodeCount == 2, "The cached playback keyframe must not be decoded again")
+            print("ready-first-check\tpassed: playback keyframe first, two decodes for three pictures")
+        }
         if CommandLine.arguments.contains("--expect-batch") {
             precondition(arrivals[2] - arrivals[0] < 0.25, "One settled film must not pay a dwell per thumbnail")
         }
+        print("film-decodes\t\(loader.decodeCount)")
         loader.stop(); exit(0)
+    }
+
+    private static func runKeyframeCost() -> Never {
+        let arg = CommandLine.arguments.firstIndex(of: "--fixture")!
+        let url = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
+        DispatchQueue.global(qos: .utility).async {
+            let source = try! MediaSource(url: url)
+            let index = try! source.buildIndex()
+            let keys = try! VideoDecoder(source: MediaSource(url: url), index: index)
+            let exact = try! VideoDecoder(source: MediaSource(url: url), index: index)
+            for round in 1...5 {
+                for keyOnly in (round.isMultiple(of: 2) ? [false, true] : [true, false]) {
+                    let decoder = keyOnly ? keys : exact
+                    let start = ProcessInfo.processInfo.systemUptime
+                    for target in [125, 375, 575] {
+                        if keyOnly { try! decoder.seekToKeyframe(near: target) }
+                        else { try! decoder.seek(toFrame: target) }
+                        precondition(try! decoder.nextFrame() != nil)
+                    }
+                    print(String(format: "decode-cost\t%@\t%d\t%.3f ms", keyOnly ? "keyframe" : "exact", round,
+                                 (ProcessInfo.processInfo.systemUptime - start) * 1000))
+                }
+            }
+            exit(0)
+        }
+        RunLoop.main.run()
+        fatalError("Unreachable")
     }
 }

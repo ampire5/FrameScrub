@@ -24,12 +24,10 @@ import FrameScrubCore
         core.delegate = observer
         try! core.open(url)
         let loader = FilmstripPreviewLoader(url: url, index: core.index!, rotation: 0, width: 320,
-            cache: core.readCache, policy: .network)
+            cache: core.readCache, policy: .network, frameCache: core.cache)
         loader.mayRead = {
             guard bar.showsFilmstrip, !bar.isThumbnailInteraction else { return false }
-            if core.isPaused { return true }
-            let next = min(core.frameCount - 1, core.position + core.direction)
-            return core.cache.contains(core.position) && core.cache.contains(max(0, next))
+            return core.allowsBackgroundPreview
         }
         var images: [Double] = []
         let start = ProcessInfo.processInfo.systemUptime

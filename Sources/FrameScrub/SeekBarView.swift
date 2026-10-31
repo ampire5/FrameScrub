@@ -213,6 +213,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             }
         }
     }
+    func configureFilmHeight(_ height: Double, save: Bool = true) {
+        guard height.isFinite else { return }
+        let value = CGFloat(min(96, max(36, height))).rounded()
+        guard value != stripHeight else { return }
+        applyFilmHeight(value, save: save)
+    }
     func setPlaybackControlsVisible(_ shown: Bool) {
         playbackVisible = shown
         if shown { showControls() }
@@ -693,11 +699,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             panel.onChange = { [weak self] seconds, focus, crop, magnification, density in
                 self?.configureLens(seconds: seconds, focus: focus, crop: crop, magnification: magnification, density: density)
             }
+            panel.onHeightChange = { [weak self] in self?.configureFilmHeight($0) }
             lensPopover.contentViewController = panel
             lensPopover.behavior = .transient; lensPopover.delegate = self
         }
         panel.setValues(seconds: lensSeconds, focus: lensFocus, crop: lensCrop,
-                        magnification: lensMagnification, density: lensDensity, mode: filmMode)
+                        magnification: lensMagnification, density: lensDensity, mode: filmMode, height: Double(stripHeight))
         lensPopover.show(relativeTo: NSRect(x: bounds.midX - 1, y: 29, width: 2, height: visibleFilmHeight),
                          of: self, preferredEdge: .maxY)
     }
@@ -710,9 +717,13 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         updateDesiredImages(); scheduleControlHide(); onEnterExit?()
     }
     @objc private func setFilmHeight(_ item: NSMenuItem) {
-        stripHeight = CGFloat(item.tag)
+        applyFilmHeight(CGFloat(item.tag), save: true)
+    }
+    private func applyFilmHeight(_ height: CGFloat, save: Bool) {
+        stopFilmTransition()
+        stripHeight = height
         cancelFilmstripRequests()
-        UserDefaults.standard.set(Double(stripHeight), forKey: "timeline-film-height")
+        if save { UserDefaults.standard.set(Double(stripHeight), forKey: "timeline-film-height") }
         if stripHeight > 0 { filmRevealed = true }
         else {
             filmRevealed = false; filmHover.isHidden = true; filmPinned = false

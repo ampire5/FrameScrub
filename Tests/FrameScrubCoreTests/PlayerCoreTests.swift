@@ -8,7 +8,8 @@ final class RecordingDelegate: PlayerCoreDelegate {
     var frames: [DecodedFrame] = []
     var messages: [String] = []
     func player(_ player: PlayerCore, display frame: DecodedFrame) { frames.append(frame) }
-    func playerStateDidChange(_ player: PlayerCore) {}
+    var onStateChange: ((PlayerCore) -> Void)?
+    func playerStateDidChange(_ player: PlayerCore) { onStateChange?(player) }
     func player(_ player: PlayerCore, showOSD text: String) { messages.append(text) }
     var copied: [(data: Data, frame: Int, note: String?)] = []
     func player(_ player: PlayerCore, copyImage data: Data, frame: Int, note: String?) { copied.append((data, frame, note)) }
@@ -1005,6 +1006,29 @@ final class HapticLog {
         try await Task.sleep(for: .milliseconds(300))
         #expect(delegate.messages.filter { $0.hasPrefix("Decode error: ") }.count == 1)
         #expect(player.statsText.contains("Last decode error: "))
+    }
+
+    @Test func aPausedMissingFrameNotifiesForegroundCompletionWithoutDisplayingIt() async throws {
+        let (player, delegate, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        let original = try #require(player.index)
+        // A damaged/stale table advertises one frame beyond the stream. Keyframe 500 is still valid.
+        let extended = FrameIndex(pts: (0..<600).map { original.pts(forFrame: $0) }
+            + [original.pts(forFrame: 599) + 1],
+            keyframePTS: Set(original.keyframes.map { original.pts(forFrame: $0) }),
+            timeBase: original.timeBase, zeroPTS: original.zeroPTS)
+        player.indexReady(extended, session: player.session, status: .scanned(seconds: 0))
+        var notified = false
+        delegate.onStateChange = { core in
+            if core.position == 600 && core.cache.isUndecodable(600) { notified = true }
+        }
+        player.seek(toFrame: 600)
+        #expect(await eventually { player.cache.isUndecodable(600) })
+        #expect(await eventually { notified })
+        #expect(player.isPaused && player.displayedFrame != 600)
+        #expect(player.allowsBackgroundPreview)
+        #expect(await eventually { player.cache.contains(599) })
     }
 
     @Test func ignoresAnEmptyExactIndex() async throws {

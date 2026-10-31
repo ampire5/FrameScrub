@@ -2627,9 +2627,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         guard let url = core.url, let index = core.index, let info = core.info else { return }
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
+        let imagePool = PreviewImagePool(url: url, rotationClockwise: info.rotationClockwise)
         let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
                                        widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
-                                       policy: core.networkPolicy)
+                                       policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
         provider.onImage = { [weak self] result in
             guard let self else { return }
             if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
@@ -2644,15 +2645,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         previewProvider = provider
         let loader = FilmstripPreviewLoader(url: url, index: index, rotation: info.rotationClockwise,
-                                            width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy)
+                                            width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy,
+                                            imagePool: imagePool, frameCache: core.cache)
         loader.mayRead = { [weak self] in
             guard let self else { return false }
             guard seekBar.showsFilmstrip, seekBar.alphaValue > 0.01, !seekBar.isThumbnailInteraction, !showsHome,
                   window?.occlusionState.contains(.visible) == true else { return false }
-            if core.isPaused { return true }
-            guard let index = core.index, core.cache.contains(core.position) else { return false }
-            let next = min(index.frameCount - 1, max(0, core.position + core.direction))
-            return core.cache.contains(next)
+            return core.allowsBackgroundPreview
         }
         loader.onImage = { [weak self] image, seconds in self?.seekBar.setFilmstripImage(image, seconds: seconds) }
         filmstripLoader = loader
@@ -3642,6 +3641,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        filmstripLoader?.resume()
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused

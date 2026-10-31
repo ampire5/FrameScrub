@@ -9,14 +9,17 @@ import CoreGraphics
     private let provider: PreviewProvider
     private var pending: [Double] = []
     private var inFlight = false
+    var decodeCount: Int { provider.decodeCount }
 
-    init(url: URL, index: FrameIndex, rotation: Int, width: Int, cache: ReadCache?, policy: NetworkPolicy) {
+    init(url: URL, index: FrameIndex, rotation: Int, width: Int, cache: ReadCache?, policy: NetworkPolicy,
+         imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil) {
         // SeekBarView already waits once for the whole visible batch. Paying the pointer dwell again
         // for each serial cell adds 250 ms per image on network volumes (see timeline bench).
         var settledPolicy = policy
         settledPolicy.previewSettle = 0
         provider = PreviewProvider(url: url, index: index, rotationClockwise: rotation, widthPixels: width,
-                                   readCache: cache, policy: settledPolicy, qos: .utility)
+                                   readCache: cache, policy: settledPolicy, qos: .utility,
+                                   imagePool: imagePool, frameCache: frameCache)
         provider.onImage = { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -47,7 +50,9 @@ import CoreGraphics
     private func advance() {
         guard !inFlight, !pending.isEmpty else { return }
         guard mayRead?() == true else { return }
-        let seconds = pending.removeFirst()
+        // Reuse a ready picture/frame before a disk seek. The remaining misses retain centre-first order.
+        let ready = pending.firstIndex { provider.canReuse(seconds: $0) } ?? pending.startIndex
+        let seconds = pending.remove(at: ready)
         inFlight = true
         provider.request(seconds: seconds)
     }
