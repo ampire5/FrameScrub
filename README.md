@@ -268,6 +268,8 @@ fs.hide();
 
 ## Under the hood
 
+Developer guide: [architecture and code map](docs/architecture.md).
+
 Native Swift and AppKit, with SwiftUI for settings and panels.
 
 | | |
