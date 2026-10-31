@@ -36,6 +36,12 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   PlayerCore checks session/current position and emits a state change even without a displayable frame.
   Hidden/interaction gating and display/state callbacks defer/resume work without polling. Stop suppresses
   queued delivery/completion; old providers can only populate their old per-file pool.
+  Before reveal, a separate bounded prewarm snapshot contains only candidates currently reusable from that pool
+  or playback cache. `readyOnly` requests prohibit fallback to decoding if the source is evicted. Visible requests
+  take priority on the same worker. Exact-index/configuration readiness and display of a missing sample frame
+  trigger planning; all-intra playback does not replan every frame. Folded delivery caches without invalidation.
+  The prewarm gate also excludes active hover preview, export, interactions, Home and occlusion. Unavailable
+  candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
 - Byte input → `ReadCache`/`ByteSource` → `MediaSource`/`VideoDecoder` → `DecoderBackend` (`VTBackend` or
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and

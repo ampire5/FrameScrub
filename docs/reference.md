@@ -354,6 +354,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   keyframes from the centre out. The shared image pool is limited to 200 entries and 32 MiB of pixels, in addition
   to the strip's existing two-screenful display cache; it does not retain a second set of full-resolution frames.
   A seek's unfinished foreground picture defers this work; a picture known to be undecodable releases the wait.
+  Before you reveal the film, it can already prepare its samples from ready playback frames and shared pictures.
+  This early pass performs no new media reads or decoding, yields to foreground actions and stops when no reusable
+  samples remain. Opening the film uses those pictures immediately and requests any missing keyframes normally.
   A read waits if playback's current/next frame is missing, retains its queue and resumes on a delivered frame;
   gestures take priority. Moving samples update a pending batch without resetting its dwell deadline on each tick.
   Existing thumbnails remain visible. `preview=no` disables their decoder as well as hover

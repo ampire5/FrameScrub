@@ -69,3 +69,19 @@ size. PreviewProvider accepts optional shared pool and FrameCache, exposes `canR
 - [x] Compare baseline/final latency and decode counts; document hardware and unmeasured environments.
 - [x] Update architecture/reference; inspect diff for private specifics and unchanged kit pins.
 - [x] Obtain fresh whole-change review, fix important findings, and retain reviewable branch without merging.
+
+### Task 4: User-requested preparation before reveal
+
+**Files:** `PreviewProvider.swift`, `FilmstripPreviewLoader.swift`, `SeekBarView.swift`,
+`PlayerWindowController.swift`, `PreviewTests.swift`, `SeekBarBench.swift`, architecture/reference/bench.
+
+**Interfaces:** `PreviewProvider.request(seconds:readyOnly:)` prohibits decoder fallback for speculative work;
+`FilmstripPreviewLoader.prewarm(_:)` holds only currently reusable candidates and a separate `mayPrewarm` gate;
+`SeekBarView.prewarmFilmstripTimes(center:)` returns missing exact-index samples without reveal/invalidation.
+
+- [x] Add failing ready-only miss regression; verify missing API RED, then no decoder/unavailable side effects GREEN.
+- [x] Share one serial worker, prioritize visible work, bound/filter the warm snapshot, and retain no speculative misses.
+- [x] Wire exact-index and missing-sample-frame triggers; exclude interactions, hover, export, Home and occlusion.
+- [x] Native prewarm bench: blocked foreground prevents work; hidden ready image arrives without decode/redraw;
+  reveal reuses it and decodes only remaining misses. Existing cached-frame test also covers ready-only success.
+- [x] Run full suite and ordinary autoplay/UI regressions; review follow-up and record results.

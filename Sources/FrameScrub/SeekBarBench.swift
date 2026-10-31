@@ -7,6 +7,7 @@ import QuartzCore
 @MainActor enum SeekBarBench {
     static func run() -> Never {
         if CommandLine.arguments.contains("--bench-keyframe-cost") { runKeyframeCost() }
+        if CommandLine.arguments.contains("--bench-film-prewarm") { runPrewarm() }
         if CommandLine.arguments.contains("--bench-playing-film") { PlayingFilmBench.run() }
         if CommandLine.arguments.contains("--bench-film-loader") { runLoader() }
         let app = NSApplication.shared
@@ -384,7 +385,9 @@ import QuartzCore
             resized.setFilmRevealed(true)
             precondition(resized.preferredHeight == 133, "A new timeline must restore the chosen 57 pt height")
             let reset = controls.view.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Reset" }!
-            reset.performClick(nil)
+            // This standalone content controller has no popover visibility hold. Animated performClick pumps
+            // unrelated auto-hide timers; send the real reset action directly to test its resize/persistence.
+            NSApp.sendAction(reset.action!, to: reset.target, from: reset)
             precondition(bar.preferredHeight == 124 && heightSlider.doubleValue == 48, "Reset must restore 48 pt")
             report("film-height-live-65-cells", 1, heightUpdates)
             print("film-height-check\tpassed: native slider, live geometry, persisted restore, reset")
@@ -540,6 +543,72 @@ import QuartzCore
         }
         print("film-decodes\t\(loader.decodeCount)")
         loader.stop(); exit(0)
+    }
+
+    private static func runPrewarm() -> Never {
+        setbuf(stdout, nil)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular); app.finishLaunching()
+        let arg = CommandLine.arguments.firstIndex(of: "--fixture")!
+        let url = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
+        let source = try! MediaSource(url: url)
+        let index = try! source.buildIndex()
+        let saved = ["timeline-film-height", "timeline-film-pinned"].map { ($0, UserDefaults.standard.object(forKey: $0)) }
+        UserDefaults.standard.set(48, forKey: "timeline-film-height")
+        UserDefaults.standard.set(false, forKey: "timeline-film-pinned")
+        let window = FilmBenchWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 200),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.autorecalculatesKeyViewLoop = true
+        let bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 124))
+        window.contentView!.addSubview(bar); window.orderFrontRegardless()
+        bar.setFilmMode(.lens, save: false)
+        bar.updateTimeline(index: index, duration: 20, paused: true, previewSettle: 0)
+        bar.update(frameCount: 600, position: 0, cached: [], loopA: nil, loopB: nil, text: "prewarm")
+        bar.layoutSubtreeIfNeeded(); bar.displayIfNeeded()
+        let times = bar.prewarmFilmstripTimes(center: 0)
+        precondition(times.count >= 2 && times.count <= TimelineFilmLayout.maximumCells)
+        let ready = times[0]
+        let cache = FrameCache(budgetBytes: 32 * 1024 * 1024)
+        let decoder = try! VideoDecoder(source: source, index: index)
+        try! decoder.seekToKeyframe(near: index.frameNumber(forSeconds: ready))
+        cache.insert(try! decoder.nextFrame()!)
+        let loader = FilmstripPreviewLoader(url: url, index: index, rotation: 0, width: 320, cache: nil,
+                                           policy: .local, frameCache: cache)
+        var blocked = true
+        loader.mayRead = { !blocked && bar.showsFilmstrip }
+        loader.mayPrewarm = { !blocked && !bar.showsFilmstrip }
+        var images: [Double] = []
+        let started = ProcessInfo.processInfo.systemUptime
+        loader.onImage = { image, seconds in
+            bar.setFilmstripImage(image, seconds: seconds)
+            if !bar.showsFilmstrip { precondition(!bar.needsDisplay, "Prewarming must not invalidate folded film") }
+            images.append(seconds)
+            print(String(format: "prewarm-image\t%.3f s\t%.3f ms\tshown=%d", seconds,
+                         (ProcessInfo.processInfo.systemUptime - started) * 1000, bar.showsFilmstrip ? 1 : 0))
+        }
+        bar.onFilmstripRequest = { loader.request($0) }
+        func spin(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
+        loader.prewarm(times)
+        spin(0.05)
+        precondition(images.isEmpty && loader.decodeCount == 0, "Foreground work must defer preparation")
+        blocked = false; loader.resume()
+        let warmDeadline = Date().addingTimeInterval(3)
+        while images.isEmpty, Date() < warmDeadline { spin(0.01) }
+        spin(0.15)
+        precondition(images == [ready] && loader.decodeCount == 0 && !bar.showsFilmstrip,
+                     "Only prepared frames may fill hidden film; misses must not decode")
+        precondition(!bar.prewarmFilmstripTimes(center: 0).contains(ready), "Prepared picture must enter the view cache")
+        bar.setFilmRevealed(true); bar.layoutSubtreeIfNeeded()
+        let visibleDeadline = Date().addingTimeInterval(3)
+        while images.count < times.count, Date() < visibleDeadline { spin(0.01) }
+        precondition(images.count == times.count && images.filter { $0 == ready }.count == 1)
+        precondition(loader.decodeCount == times.count - 1, "Reveal must reuse the prepared picture and decode only misses")
+        print("prewarm-check\tpassed: blocked/resume, hidden reuse without decode/redraw, reveal reuses and fills misses")
+        loader.stop(); window.orderOut(nil)
+        for (key, value) in saved {
+            if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }
+        }
+        exit(0)
     }
 
     private static func runKeyframeCost() -> Never {

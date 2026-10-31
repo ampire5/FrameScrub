@@ -87,12 +87,27 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         let key = [Double(film.width), Double(stripHeight), Double(pictureAspect), duration, displayedTime,
                    lensSeconds, lensFocus, lensCrop, Double(filmMode.rawValue), lensMagnification, lensDensity]
         if cachedFilmLayout == nil || layoutKey != key {
-            cachedFilmLayout = TimelineFilmLayout(width: key[0], height: key[1], aspect: key[2], duration: duration,
-                center: displayedTime, secondsPerThumbnail: lensSeconds, focusFraction: lensFocus, cropStrength: lensCrop,
-                mode: filmMode, magnification: lensMagnification, outsideDensity: lensDensity)
+            cachedFilmLayout = makeFilmLayout(center: displayedTime)
             layoutKey = key
         }
         return cachedFilmLayout!
+    }
+    private func makeFilmLayout(center: Double) -> TimelineFilmLayout {
+        TimelineFilmLayout(width: Double(film.width), height: Double(stripHeight), aspect: Double(pictureAspect),
+            duration: duration, center: center, secondsPerThumbnail: lensSeconds, focusFraction: lensFocus,
+            cropStrength: lensCrop, mode: filmMode, magnification: lensMagnification, outsideDensity: lensDensity)
+    }
+    /// The same samples that reveal will draw, without revealing, requesting a read or invalidating the view.
+    func prewarmFilmstripTimes(center: Double) -> [Double] {
+        guard filmstripEnabled, !showsFilmstrip, film.width > 0, index?.isExact == true else { return [] }
+        let layout = makeFilmLayout(center: center)
+        var times: [Double] = []
+        for cell in layout.cells.sorted(by: { abs($0.offset - layout.playheadOffset) < abs($1.offset - layout.playheadOffset) }) {
+            guard let seconds = cell.seconds else { continue }
+            let key = imageTime(seconds)
+            if images[key] == nil, !times.contains(key) { times.append(key) }
+        }
+        return times
     }
     private var scale: TimelineProjection { filmLayout.lens }
 

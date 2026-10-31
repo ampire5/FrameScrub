@@ -32,7 +32,8 @@ public final class PreviewProvider: @unchecked Sendable {
     private var failed = false
     private var stopped = false
     private var decodes = 0
-    private var worker: LatestOnlyWorker<Double>!
+    private struct Request: Sendable { let seconds: Double; let readyOnly: Bool }
+    private var worker: LatestOnlyWorker<Request>!
 
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
                 policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated,
@@ -47,10 +48,12 @@ public final class PreviewProvider: @unchecked Sendable {
         self.widthPixels = max(1, widthPixels)
         settle = policy.previewSettle
         readAhead = policy.sideReadAhead
-        worker = LatestOnlyWorker<Double>(label: "framescrub.preview", qos: qos) { [weak self] seconds in self?.handle(seconds) }
+        worker = LatestOnlyWorker<Request>(label: "framescrub.preview", qos: qos) { [weak self] in self?.handle($0) }
     }
 
-    public func request(seconds: Double) { worker.submit(seconds) }
+    public func request(seconds: Double, readyOnly: Bool = false) {
+        worker.submit(Request(seconds: seconds, readyOnly: readyOnly))
+    }
 
     /// The exact index arrived: later requests use it.
     public func updateIndex(_ newIndex: FrameIndex) { lock.withLock { index = newIndex } }
@@ -71,7 +74,8 @@ public final class PreviewProvider: @unchecked Sendable {
         onRequestFinished = nil
     }
 
-    private func handle(_ seconds: Double) {
+    private func handle(_ request: Request) {
+        let seconds = request.seconds
         defer {
             DispatchQueue.main.async { [weak self] in
                 guard let self, !self.lock.withLock({ self.stopped }) else { return }
@@ -95,6 +99,9 @@ public final class PreviewProvider: @unchecked Sendable {
                 return
             }
         }
+        // A speculative reuse may lose its source frame to eviction before this worker runs. Never turn it
+        // into a new read/decode; only a visible request may fall back to the decoder.
+        guard !request.readyOnly else { return }
         // A share reads one preview in a second or more: let the pointer rest first, and drop this request when it moved on.
         if settle > 0 {
             Thread.sleep(forTimeInterval: settle)

@@ -116,3 +116,37 @@ One minor optimisation remains deferred: a hover request checks reusable picture
 if the film produces that picture during the dwell, hover can still decode it once more afterwards. Rechecking
 at that boundary would avoid this race. It does not change displayed frame identity or increase worker concurrency.
 Physical continuous mouse dragging while the popover anchor resizes, VoiceOver, Intel and real NAS remain unmeasured.
+
+## Follow-up: preparation before reveal
+
+On the same M4 Max/local H.264 fixture, `--bench-film-prewarm` uses the actual view folded in a controlled visible
+window. One sampled keyframe is already decoded in the playback cache; other sampled keyframes are deliberately
+missing. The foreground gate blocks all work for 50 ms. After explicit resume, the prepared picture enters the
+folded view cache at 67.079 ms from submission, with **zero film decodes and no redraw invalidation**. Waiting
+another 150 ms produces no missing-picture decoding. Reveal then reuses that picture and decodes the other two
+at 237.386 / 257.391 ms from initial submission. This is controlled native event/cache testing, not physical UI
+or NAS timing.
+
+The existing worker handles both request classes. Prewarm keeps a bounded snapshot of currently reusable
+candidates, drops misses, and yields to visible work. A ready-only worker request cannot open/seek its decoder,
+even if eviction made the earlier readiness check stale. Tests cover both ready-only success from the playback
+cache and a ready-only miss on an undecodable source, followed by an ordinary request that still reports the
+normal decode failure. This guards against speculative work poisoning the provider's failure state.
+
+Planning is triggered by exact-index/configuration availability and when a displayed frame belongs to the
+bounded missing sample set. A movie whose every frame is intra-coded therefore does not plan once per frame.
+While folded, only cached pictures/full frames are reused: no extra file/network reader or decode concurrency.
+Active hover preview, interactions, export, Home, occlusion and unresolved foreground work defer the pass.
+No speculative miss queue or repeating wakeup is added.
+
+Follow-up full suite: 1793 Core + 35 settings tests passed (1828 total), Core50.641s; ordinary autoplay passed.
+Read-only follow-up review found no Important/Critical issue. One Minor opportunity remains: if prewarm is
+skipped/deferred by occlusion or hover while paused, it may wait for the next real frame/state/index event after
+that gate clears. Explicit restoration/hover-exit retry could capture more opportunities; visible film loading
+and foreground correctness are unaffected. Intel, actual NAS and physical restoration/hover interaction remain
+unmeasured. The standalone reset bench sends the button's real action directly: its animated test-only click
+could pump an unrelated auto-hide timer because that standalone content view has no native popover hold.
+
+```sh
+FrameScrub --bench-timeline --bench-film-prewarm --fixture "$PWD/Tests/Fixtures/h264_cfr_gop250.mp4"
+```

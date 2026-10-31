@@ -108,7 +108,7 @@ import FrameScrubCore
 }
 
 /// A controlled visible surface for scheduler tests even when the desktop is covered by the calling app.
-private final class FilmBenchWindow: NSWindow {
+final class FilmBenchWindow: NSWindow {
     override var occlusionState: NSWindow.OcclusionState { [.visible] }
 }
 

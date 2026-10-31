@@ -70,6 +70,22 @@ import Testing
 
     // MARK: PreviewProvider
 
+    @Test func readyOnlyMissNeverOpensTheDecoderOrPoisonsLaterRequests() async throws {
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index,
+            rotationClockwise: 0, widthPixels: 160)
+        defer { provider.stop() }
+        let images = collect(provider)
+        let finished = Locked(false), unavailable = Locked(false)
+        provider.onRequestFinished = { finished.mutate { $0 = true } }
+        provider.onUnavailable = { unavailable.mutate { $0 = true } }
+        provider.request(seconds: 12, readyOnly: true)
+        #expect(await eventually { finished.value })
+        #expect(images.value.isEmpty && !unavailable.value && provider.decodeCount == 0)
+        provider.request(seconds: 12)
+        #expect(await eventually { unavailable.value })
+    }
+
     @Test func providersShareThumbnailsWithoutDecodingAgain() async throws {
         let url = Fixtures.url(Fixtures.h264)
         let (_, index) = try openIndexed(Fixtures.h264)
@@ -117,7 +133,7 @@ import Testing
         defer { provider.stop() }
         let images = collect(provider)
         #expect(provider.canReuse(seconds: 12))
-        provider.request(seconds: 12)
+        provider.request(seconds: 12, readyOnly: true)
         #expect(await eventually { images.value.count == 1 })
         #expect(provider.decodeCount == 0)
         #expect(abs(try #require(images.value.first).frameSeconds - 250.0 / 30) < 0.00001)

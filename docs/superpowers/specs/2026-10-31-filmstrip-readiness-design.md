@@ -30,6 +30,16 @@ or increasing decode concurrency. Keep the existing keyframe sampling and naviga
 
 ## Verification and limits
 
+### Follow-up: preparation before reveal
+
+User requested early preparation with harmonious resource priorities. While the strip is folded, take a bounded
+snapshot of its missing samples after the exact index arrives and when a keyframe is displayed. Reuse only shared
+images or already decoded playback keyframes; a worker must not fall back to opening/seeking a decoder if such
+a frame disappears. Use the existing serial utility worker, yield to visible requests and foreground work, stop
+when no reusable candidate remains, and do not redraw the folded strip. Disable during gestures, hover preview,
+export, Home and occlusion. There is no full-file pre-generation, new reader or repeating timer. The upcoming
+reveal consumes these same cached pictures; ordinary missing-keyframe decoding remains demand-driven.
+
 Use existing native filmstrip/PlayerCore benches for first image, visible-batch completion, playback progression,
 foreground deferral/resume, cached reuse, hidden idle behaviour, live resizing and first/return popover CPU time.
 Add focused regression coverage for cache identity, no-decode reuse, bounded work and old-file cancellation.
