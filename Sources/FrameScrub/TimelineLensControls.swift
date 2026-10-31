@@ -8,7 +8,7 @@ final class TimelineLensControls: NSViewController {
     private let height = NSSlider(value: 48, minValue: 36, maxValue: 96, target: nil, action: nil)
     private let magnify = NSSlider(value: 2.75, minValue: 1, maxValue: 3.8, target: nil, action: nil)
     private let focus = NSSlider(value: 0.3, minValue: 0.08, maxValue: 0.75, target: nil, action: nil)
-    private let density = NSSlider(value: 2.75, minValue: 0.5, maxValue: 4, target: nil, action: nil)
+    private let density = NSSlider(value: 2.75, minValue: 0.5, maxValue: TimelineFilmLayout.maximumOutsideDensity, target: nil, action: nil)
     private let crop = NSSlider(value: 0.7, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let seconds = NSSlider(value: 0, minValue: -1, maxValue: log10(30), target: nil, action: nil)
     private let values = (0..<6).map { _ in NSTextField(labelWithString: "") }
@@ -55,7 +55,8 @@ final class TimelineLensControls: NSViewController {
         self.seconds.toolTip = mode == .segment ? "Time between fixed segment samples" : "Available in Segment view"
         self.seconds.doubleValue = log10(min(30, max(0.1, seconds)))
         self.focus.doubleValue = min(0.75, max(0.08, focus)); self.crop.doubleValue = min(1, max(0, crop))
-        magnify.doubleValue = min(3.8, max(1, magnification)); self.density.doubleValue = min(4, max(0.5, density))
+        magnify.doubleValue = min(3.8, max(1, magnification))
+        self.density.doubleValue = min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, density))
         self.height.doubleValue = height.isFinite ? min(96, max(36, height)) : 48
         refreshLabels()
     }

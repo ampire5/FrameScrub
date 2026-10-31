@@ -215,7 +215,9 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         lensFocus = focus.isFinite ? min(0.75, max(0.08, focus)) : 0.3
         lensCrop = crop.isFinite ? min(1, max(0, crop)) : 0.7
         if let magnification { lensMagnification = magnification.isFinite ? min(3.8, max(1, magnification)) : 2.75 }
-        if let density { lensDensity = density.isFinite ? min(4, max(0.5, density)) : 2.75 }
+        if let density {
+            lensDensity = density.isFinite ? min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, density)) : 2.75
+        }
         if save { saveLensPreferences() }
         requestedTimes = []; updateDesiredImages(); updateFilmHover(); needsDisplay = true
     }
@@ -577,7 +579,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 let delta = abs(dx) > abs(dy) ? -dx : dy
                 let amount = delta * (event.hasPreciseScrollingDeltas ? 0.02 : 0.2)
                 if filmMode == .segment { lensSeconds = min(30, max(0.1, lensSeconds * exp(amount))) }
-                else { lensDensity = min(4, max(0.5, lensDensity * exp(-amount))) }
+                else { lensDensity = min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, lensDensity * exp(-amount))) }
                 requestedTimes = []; updateFilmHover(); needsDisplay = true
             } else if event.hasPreciseScrollingDeltas && abs(dx) > abs(dy) {
                 stopFilmTransition()

@@ -79,6 +79,18 @@ import Testing
         #expect(model(2, 0).cells.map(\.seconds) == model(2, 1).cells.map(\.seconds))
         #expect(model(2, 0).cells.map(\.width) == model(2, 1).cells.map(\.width))
     }
+    @Test func densityAboveFourAddsSamplesWithoutExceedingTheVisibleLimit() {
+        for mode in TimelineFilmMode.allCases {
+            func model(_ density: Double, width: Double = 900) -> TimelineFilmLayout {
+                TimelineFilmLayout(width: width, height: 96, aspect: 2.35, duration: 2400, center: 720,
+                    secondsPerThumbnail: 1, focusFraction: 0.3, cropStrength: 0.7,
+                    mode: mode, outsideDensity: density)
+            }
+            #expect(model(8).cells.count > model(4).cells.count)
+            #expect(model(8, width: 8192).cells.count <= TimelineFilmLayout.maximumCells)
+            #expect(model(1e6).cells.map(\.seconds) == model(8).cells.map(\.seconds))
+        }
+    }
     @Test func independentParameterExtremesKeepInverseMappingValid() {
         for mode in TimelineFilmMode.allCases {
             for strength in [1.0, 3.8] {

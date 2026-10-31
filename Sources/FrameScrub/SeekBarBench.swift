@@ -316,7 +316,7 @@ import QuartzCore
                 NSBezierPath(ovalIn: NSRect(x: 130, y: 60, width: 60, height: 60)).fill()
                 return true
             }.cgImage(forProposedRect: nil, context: nil, hints: nil)!
-            for density in [1.0, 2.75, 4] {
+            for density in [1.0, 2.75, 4, 8] {
                 bar.configureLens(seconds: 1, focus: 0.3, crop: 0.7, magnification: 2.75, density: density, save: false)
                 bar.updateTimeline(index: index, duration: 3000, paused: true, uprightSize: NSSize(width: 320, height: 180))
                 bar.update(frameCount: 72000, position: 24000, cached: [], loopA: nil, loopB: nil, text: "density")
@@ -363,6 +363,11 @@ import QuartzCore
             let controls = TimelineLensControls()
             let opened = measure { controls.setValues(seconds: 1, focus: 0.3, crop: 0.7); host.addSubview(controls.view) }
             report("lens-controls-first", 1, [opened])
+            let densitySlider = controls.view.subviews.compactMap { $0 as? NSSlider }.first {
+                $0.accessibilityLabel() == "Outside density"
+            }!
+            controls.setValues(seconds: 1, focus: 0.3, crop: 0.7, density: 8)
+            precondition(densitySlider.doubleValue == 8, "The density slider must accept and restore 8×")
             precondition(controls.view.subviews.compactMap { $0 as? NSSlider }.contains {
                 $0.accessibilityLabel() == "Filmstrip height"
             }, "Film settings must expose the strip height beside the lens controls")

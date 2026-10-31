@@ -150,3 +150,12 @@ could pump an unrelated auto-hide timer because that standalone content view has
 ```sh
 FrameScrub --bench-timeline --bench-film-prewarm --fixture "$PWD/Tests/Fixtures/h264_cfr_gop250.mp4"
 ```
+
+## Higher density limit
+
+The density maximum is now 8× (formerly 4×), with one shared limit for layout, slider restoration, programmatic
+updates and Option-scroll. Default/reset remain 2.75×. The regression failed at the former clamp because 8×
+produced the same count as 4×; it passes now in all three projections and checks the 65-cell bound at 8192 pt
+and clamping of oversized inputs. Full suite: 1794 Core + 35 settings tests passed (1829 total), Core47.364s.
+The native bench includes 8× density and restoring 8× into the actual slider. Existing pending/cache/concurrency
+limits remain unchanged; higher selected density can request more samples within those limits.

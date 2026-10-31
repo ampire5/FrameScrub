@@ -323,7 +323,7 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   enlarges its cached picture over the film without changing its height or reading the file again.
   The sliders button beside the three view icons opens a live dropdown directly from the film; Right-click ›
   Time Lens… opens the same retained panel. Filmstrip height (36–96 pt, default 48 pt) resizes the strip live and
-  is remembered; hiding and pinning remain separate controls. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–4×)
+  is remembered; hiding and pinning remain separate controls. Magnification (1–3.8×), lens area (8–75%) and outside density (0.5–8×)
   are independent. Magnification/area change only geometry, reusing the existing images and sample times.
   Thumbnail crop (0–100%) blends between full-picture fit and horizontal centre crop without changing density.
   Seconds per thumbnail (0.1–30 s) applies only to Segment. Lens controls are inactive in the unmagnified Whole File
