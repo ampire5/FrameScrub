@@ -11,14 +11,14 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Toolchain
         run: swift --version
       # Homebrew's ffmpeg tool encodes the test fixtures; the app links its own FFmpeg (next steps).
       - name: Homebrew tools
         run: brew install ffmpeg meson ninja pkgconf
       - name: Cache FFmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .deps/arm64
           key: deps-arm64-${{ hashFiles('scripts/build-deps.sh') }}
@@ -31,7 +31,7 @@ jobs:
       # The whole output; the job's log and summary carry the failed tests (scripts/test-report.sh).
       - name: Upload the test log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-log
           path: .build/test.log
@@ -43,7 +43,7 @@ jobs:
         run: scripts/make-app.sh
       - name: Upload the app
         run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-arm64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: FrameScrub-macOS-arm64
           path: FrameScrub-macOS-arm64.zip
@@ -58,7 +58,7 @@ jobs:
     env:
       DEPS_ARCH: x86_64
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Rosetta and Xcode 26
         run: |
           /usr/bin/pgrep -q oahd || sudo softwareupdate --install-rosetta --agree-to-license
@@ -72,7 +72,7 @@ jobs:
       - name: Homebrew tools
         run: brew install ffmpeg nasm meson ninja pkgconf
       - name: Cache FFmpeg
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: .deps/x86_64
           key: deps-x86_64-${{ hashFiles('scripts/build-deps.sh') }}
@@ -83,7 +83,7 @@ jobs:
       # For the Intel Mac workflow (intel-mac.yml), whose runner has no FFmpeg with x264/x265 to make them.
       - name: Upload the fixtures
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fixtures
           path: Tests/Fixtures
@@ -92,7 +92,7 @@ jobs:
         run: scripts/test.sh --no-parallel   # timing tests share 3 cores badly in parallel
       - name: Upload the test log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: test-log-x86_64
           path: .build/test.log
@@ -101,7 +101,7 @@ jobs:
         run: scripts/make-app.sh
       - name: Upload the app
         run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-x86_64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: FrameScrub-macOS-x86_64
           path: FrameScrub-macOS-x86_64.zip
