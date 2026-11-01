@@ -48,3 +48,9 @@ Learned from the settings window, where switching categories took 0.2–2.5 s.
   the window out synchronously.
 - Building a screen cannot be cut into pieces, so it cannot be hidden in idle time: building pages ahead is allowed only
   when one piece fits the frame budget; otherwise a click lands in the block.
+
+## Architecture entry point
+
+Read [docs/architecture.md](docs/architecture.md) before changing a subsystem. Follow its source/test entry points,
+and update it in the same change when ownership, data flow, target dependencies or cancellation changes.
+Historical plans and specs explain decisions; verify current behavior against the architecture map and source.
