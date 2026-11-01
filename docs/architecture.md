@@ -41,6 +41,13 @@ safe on arbitrary threads. `NetworkPolicy` governs reads; `ReadCache` bounds byt
 selection, cancels superseded jobs, and suppresses their completion. Open/close must cancel obsolete media work.
 Do not add parallel probes or per-frame filesystem operations to the controller.
 
+## App icon collection
+
+`FrameScrubCore/AppIcon.swift` lists loose user icons and one-level folder packs under the user icon directory;
+`FrameScrub/AppIconSwitcher.swift` supplies the grouped choices to SettingsKit’s icon picker and applies the selection.
+Pack icons are stored as file paths in the existing `app-icon` setting. Hidden files and duplicate PNG/ICNS
+representations of the same name are omitted. Artwork remains user supplied, outside the repository.
+
 ## Persistence and integrations
 
 `MediaCatalog` is the disposable SQLite catalog behind media facts and thumbnails; `FileFactsStore` and

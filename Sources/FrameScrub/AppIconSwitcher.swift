@@ -27,22 +27,24 @@ final class AppIconSwitcher {
         picker?.show()
     }
 
-    /// `horse` and the bundled alternates (Built-in), the pictures in ~/.config/framescrub/icons and `current` when it
-    /// is a path (Yours), each with its file (the bundle's own for `horse` without a file of that name); the picker makes
+    /// `horse` and bundled alternates (Built-in), loose user pictures (Yours), one section per folder pack, and
+    /// the current external path (Other), each with its file; the picker makes
     /// their thumbnails off the main thread.
     static func choices(current: String) -> [IconChoice] {
         let builtIn = [AppIcon.bundle] + AppIcon.alternates.filter { bundled($0) != nil }
-        var words = builtIn
-        let files = (try? FileManager.default.contentsOfDirectory(at: AppIcon.userDirectory, includingPropertiesForKeys: nil)) ?? []
-        let own = files.filter { ["png", "icns"].contains($0.pathExtension.lowercased()) }
-            .compactMap { AppIcon.normalized($0.deletingPathExtension().lastPathComponent) }
-        for name in Set(own).sorted() where !words.contains(name) { words.append(name) }
-        if AppIcon.isPath(current) { words.append(current) }
-        return words.map { word in
+        var choices = builtIn.map { word in
             let url = AppIcon.url(for: word, bundled: bundled)
                 ?? (word == AppIcon.bundle ? Bundle.main.url(forResource: "AppIcon", withExtension: "icns") : nil)
             return IconChoice(word: word, file: url, section: builtIn.contains(word) ? "Built-in" : "Yours")
         }
+        for icon in AppIcon.userIcons() where !builtIn.contains(icon.value) {
+            choices.append(IconChoice(word: icon.value, file: icon.file,
+                                      section: icon.pack?.lastPathComponent ?? "Yours", pack: icon.pack?.path))
+        }
+        if AppIcon.isPath(current), !choices.contains(where: { $0.word == current }) {
+            choices.append(IconChoice(word: current, file: AppIcon.url(for: current, bundled: bundled), section: "Other"))
+        }
+        return choices
     }
 
     private static func bundled(_ name: String) -> URL? {

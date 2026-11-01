@@ -17,6 +17,47 @@ public enum AppIcon {
     /// Where your own pictures go: ~/.config/framescrub/icons/<name>.icns or .png.
     public static var userDirectory: URL { Config.directory.appendingPathComponent("icons", isDirectory: true) }
 
+    public struct UserIcon {
+        public let value: String
+        public let file: URL
+        public let pack: URL?
+    }
+
+    /// Loose icons keep their short names; each immediate subfolder is a pack. Prefer ICNS when both formats
+    /// exist for one name. Linked folders are supported, so apps can share a user's collection.
+    public static func userIcons(in directory: URL = userDirectory) -> [UserIcon] {
+        let files = FileManager.default
+        func contents(_ folder: URL) -> [URL] {
+            ((try? files.contentsOfDirectory(at: folder.resolvingSymlinksInPath(), includingPropertiesForKeys: [.isDirectoryKey],
+                                            options: [.skipsHiddenFiles])) ?? []).sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+        }
+        func pictures(_ entries: [URL], pack: URL?) -> [UserIcon] {
+            var names = Set<String>()
+            return entries.filter { ["icns", "png"].contains($0.pathExtension.lowercased()) }.sorted {
+                let left = $0.pathExtension.lowercased() == "icns" ? 0 : 1
+                let right = $1.pathExtension.lowercased() == "icns" ? 0 : 1
+                return left == right ? $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending : left < right
+            }.compactMap { file in
+                guard ["icns", "png"].contains(file.pathExtension.lowercased()),
+                      (try? file.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true,
+                      let name = pack == nil ? normalized(file.deletingPathExtension().lastPathComponent)
+                                             : file.deletingPathExtension().lastPathComponent.lowercased(),
+                      names.insert(name).inserted else { return nil }
+                return UserIcon(value: pack == nil ? name : file.path, file: file, pack: pack)
+            }.sorted { $0.file.lastPathComponent.localizedStandardCompare($1.file.lastPathComponent) == .orderedAscending }
+        }
+        let entries = contents(directory)
+        var result = pictures(entries, pack: nil)
+        for folder in entries where folder.pathExtension.lowercased() != "icon" {
+            var isDirectory: ObjCBool = false
+            guard files.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue else { continue }
+            result += pictures(contents(folder), pack: folder)
+        }
+        return result
+    }
+
     /// Whether `value` names a file rather than an icon.
     public static func isPath(_ value: String) -> Bool { value.contains("/") || value.hasPrefix("~") }
 
