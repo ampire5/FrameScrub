@@ -20,6 +20,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let gestures: GestureRouter
     /// The bound mouse buttons, from AppKit and from the Logitech mouse (`mouseBridge`).
     private let buttons: MouseButtonRouter
+    /// Folder history uses the same duplicate/drag protection, with no player holds or wheel chords.
+    private let homeButtons = MouseButtonRouter(map: InputMap(bindings: [
+        KeyChord(key: "MBTN_BACK"): .playlistPrev,
+        KeyChord(key: "MBTN_FORWARD"): .playlistNext,
+    ]), longPressMilliseconds: 400)
     /// The Logitech mouse, once `AppDelegate` has made it (after the first window is up); nil without it.
     private var mouseBridge: LogiMouseBridge?
     /// The mouse's haptics: `core.onHaptic` and the app's own events, for keyboard and mouse input only.
@@ -784,6 +789,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// the window is the start screen. Home is made the first time and only hidden after that.
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
+        homeButtons.cancelAll()
         core.setViewingVisible(false)
         let cpu = StartupTrace.threadCPU(), wall = Date(), first = home == nil
         let view = home ?? makeHome()
@@ -855,6 +861,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Back to the video (or to the reason a file failed): Home stays in the window, hidden and parked.
     func hideHome() {
         guard let home, !homeHost.isHidden else { return }
+        homeButtons.cancelAll()
         let cpu = StartupTrace.threadCPU(), wall = Date()
         homeHost.isHidden = true
         home.isParked = true
@@ -949,6 +956,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self.window?.title = title
         }
         browser.onResize = { [weak self] in self?.resizeHomeCards($0) }
+        browser.onOtherMouse = { [weak self] event, down in
+            guard let self, event.buttonNumber == 3 || event.buttonNumber == 4,
+                  let button = MouseButton(appKitButtonNumber: event.buttonNumber) else { return false }
+            if down {
+                homeButtons.appKitDown(button, keys: [], rightHeld: false, at: event.timestamp)
+            } else {
+                homeButtons.appKitUp(button, at: event.timestamp)
+            }
+            return true
+        }
         view.onSidebarToggle = { [weak self] in self?.toggleHomeSidebar() }
         view.onDrop = { [weak self] url in self?.open(url) }
         // Esc on Home goes back to the open video, unless a field is being typed in (the filter, a rename): the browser
@@ -2312,6 +2329,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Everything the mouse buttons have in flight: presses (and the button timer), the edge drag.
     private func cancelMouseInput() {
         buttons.cancelAll()
+        homeButtons.cancelAll()
         cancelEdgeDrag()
         edgeDragSuppressed = nil
     }
@@ -2320,6 +2338,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The bound mouse buttons (`MouseButtonRouter`) and the player's haptics.
     private func setUpMouse() {
+        homeButtons.onFire = { [weak self] chords in
+            guard let self, showsHome, let browser = home?.browser,
+                  browser.location != HomeRecent.location(of: .stash) else { return }
+            for chord in chords {
+                if chord.key == "MBTN_BACK" { browser.goBack() }
+                if chord.key == "MBTN_FORWARD" { browser.goForward() }
+            }
+        }
         haptics.config = { [weak self] in self?.core.config ?? Config() }
         core.onHaptic = { [weak self] in self?.haptics.play($0) }   // filtered by the input running (`haptics.from`)
         core.onSeekHaptic = { [weak self] in self?.haptics.play($0, mouseOnly: true) }   // a seek's step: the mouse only
@@ -2345,6 +2371,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         mouseBridge = bridge
         haptics.bridge = bridge
         buttons.heard = { [weak bridge] in bridge?.watching ?? [] }
+        homeButtons.heard = { [weak bridge] in bridge?.watching ?? [] }
         bridge.onButton = { [weak self] button, pressed, time in self?.mouseButton(button, pressed: pressed, at: time) }
         bridge.onHighResolution = { [weak self] on in
             self?.gestures.wheelEventsPerNotch = on ? GestureRouter.precisionEventsPerNotch : 1
@@ -2409,6 +2436,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func mouseButton(_ button: MouseButton, pressed: Bool, at time: Double) {
         guard pressed else {
             guard NSApp.isActive else { cancelMouseInput(); return }
+            homeButtons.mouseRelease(button, at: time)
             buttons.mouseRelease(button, at: time)
             return
         }
@@ -2423,16 +2451,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             }
         }
         if showsHome, let browser = home?.browser {
-            // Home's history (the Stash page keeps its own): a watched button reaches them through AppKit, a taken one
-            // only from here. A dropped press's release finds nothing held.
+            // Web pages keep their own swipe handling; folder history merges HID and AppKit clicks.
             let page = browser.location == HomeRecent.location(of: .stash) ? stashLibrary : nil
             switch SideButtonFilter.homePress(button, mode: core.config.mxSideButtons, stashPageShown: page != nil) {
             case .pass: break
             case .drop: return
             case .pageBack: page?.goBack(); return
             case .pageForward: page?.goForward(); return
-            case .browserBack: browser.goBack(); return
-            case .browserForward: browser.goForward(); return
+            case .browserBack, .browserForward:
+                let underPointer = NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0)
+                homeButtons.mousePress(button, keys: [], rightHeld: false, at: time,
+                                       watched: core.config.mxSideButtons == .watch,
+                                       overOwnWindow: underPointer == window?.windowNumber)
+                return
             }
         }
         let rightHeld = NSEvent.pressedMouseButtons & 0b10 != 0

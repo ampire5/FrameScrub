@@ -4,6 +4,19 @@ import Testing
 /// Ported from Loupe's `ButtonGesturesTests` (without its `+MOVE`, thumb-wheel, wheel-step and right-drag cases: the
 /// stepping is `GestureRouter`'s, the right button is `VideoView`'s), plus the `_DBL` cases of the old `ButtonPresses`.
 @Suite struct ButtonGesturesTests {
+    @Test func historyButtonsAreReleaseOnlyAndHaveNoPlayerHoldActions() {
+        var gestures = ButtonGestures(map: InputMap(bindings: [
+            KeyChord(key: "MBTN_BACK"): .playlistPrev,
+            KeyChord(key: "MBTN_FORWARD"): .playlistNext,
+        ]), longPress: 0.4, doubleInterval: 0.3)
+        #expect(gestures.press(.back, keys: [], rightHeld: false, at: 1).isEmpty)
+        #expect(gestures.tick(at: 2).fires.isEmpty)
+        #expect(gestures.release(.back, at: 2) == [KeyChord(key: "MBTN_BACK")])
+        #expect(gestures.press(.forward, keys: [], rightHeld: false, at: 3).isEmpty)
+        gestures.move(dx: 100, dy: 0)
+        #expect(gestures.release(.forward, at: 4).isEmpty)
+    }
+
     /// The default map with every mouse-button binding switched off, then `text` on top.
     static func map(_ text: String) -> InputMap {
         var map = InputMap()

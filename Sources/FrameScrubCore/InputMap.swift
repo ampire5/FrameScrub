@@ -667,6 +667,12 @@ public struct InputMap: Equatable {
         }
     }
 
+    /// An exact command surface without the player's default bindings (for example, browser history).
+    public init(bindings: [KeyChord: Command]) {
+        self.bindings = bindings
+        self.layers = bindings.mapValues { _ in .builtIn }
+    }
+
     /// Whether `chord` is one of the layout's second keys for its command (shown after the main key).
     public func isSecondary(_ chord: KeyChord) -> Bool { secondary.contains(chord) }
 

@@ -51,6 +51,9 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   Folder/Recent listing streams stay open for coalesced metadata updates; new durations update that subscription
   without resetting the browser. Replacing/cancelling the subscription cancels its read; a generation token keeps
   an old termination callback from clearing the new subscriber. Leaving Home cancels pending metadata publication.
+  Folder-history side buttons merge AppKit and MouseService events through a separate `MouseButtonRouter` with
+  only release-time Back/Forward taps. This retains duplicate/drag/swipe cancellation even when MouseService
+  consumes AppKit's copy; Home visibility changes cancel pending taps. Web pages retain their own swipe handling.
   `FolderChangeMonitor` opens an event-only directory descriptor off the main thread and coalesces native directory
   events (including SMB) without polling. It reconciles the descriptor-open race once, stops while Home/window is
   hidden, and reconciles again on return. Folder enumeration/metadata reads use one utility `LatestOnlyWorker`

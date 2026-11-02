@@ -93,16 +93,16 @@ public struct SideButtonFilter: Sendable {
         case drop
         /// Back / forward in the Stash page's (or a plugin page's) history: a taken button never reaches it through AppKit.
         case pageBack, pageForward
-        /// Back / forward in Home's browser history, for the same reason.
+        /// Back / forward in Home's folder history, through the app's deduplicating click router.
         case browserBack, browserForward
     }
 
-    /// Back and forward run no binding on Home: they go through its history (the browser's, or the Stash page's while
-    /// it shows). A watched button reaches them through AppKit, so the mouse's own copy is dropped; a taken one only
-    /// from here. Other buttons pass.
+    /// Folder history consumes both watched and taken buttons through the app's deduplicating click router:
+    /// MouseService or Mac Mouse Fix may consume the AppKit copy to synthesize a page swipe. Web pages handle
+    /// that swipe themselves, so only taken buttons need explicit page navigation. Other buttons pass.
     public static func homePress(_ b: MouseButton, mode: SideButtonsMode, stashPageShown: Bool) -> HomePress {
         guard b == .back || b == .forward else { return .pass }
-        guard mode == .take else { return .drop }
+        guard mode == .take || (mode == .watch && !stashPageShown) else { return .drop }
         if stashPageShown { return b == .back ? .pageBack : .pageForward }
         return b == .back ? .browserBack : .browserForward
     }

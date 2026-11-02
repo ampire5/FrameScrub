@@ -1,4 +1,6 @@
 import Testing
+import Foundation
+import HomeScreenModel
 @testable import FrameScrubCore
 
 /// Ported from Loupe's `SideButtonsTests` (the `AppKitButtonFilter` cases): when AppKit's events of a side button are
@@ -132,12 +134,27 @@ import Testing
 
     // MARK: Home
 
-    /// Watched: AppKit's own event reaches Home (its browser's history or the Stash page), so the mouse's copy goes.
-    @Test func watchedBackAndForwardAreLeftToAppKitOnHome() {
-        for page in [false, true] {
-            #expect(SideButtonFilter.homePress(.back, mode: .watch, stashPageShown: page) == .drop)
-            #expect(SideButtonFilter.homePress(.forward, mode: .watch, stashPageShown: page) == .drop)
+    /// The web page handles the system's synthesized swipe, so its watched HID copy is dropped.
+    @Test func watchedBackAndForwardAreLeftToTheWebPage() {
+        #expect(SideButtonFilter.homePress(.back, mode: .watch, stashPageShown: true) == .drop)
+        #expect(SideButtonFilter.homePress(.forward, mode: .watch, stashPageShown: true) == .drop)
+    }
+
+    /// MouseService can consume AppKit's buttons to synthesize page swipes. The watched HID copy must
+    /// still reach folder history; a web page receives the synthesized swipe itself.
+    @Test func watchedButtonsNavigateFolderHistoryWithoutAppKit() {
+        var history = BrowserHistory(start: .places)
+        history.go(to: .folder(URL(fileURLWithPath: "/example")))
+        switch SideButtonFilter.homePress(.back, mode: .watch, stashPageShown: false) {
+        case .browserBack: _ = history.back()
+        default: break
         }
+        #expect(history.current == .places)
+        switch SideButtonFilter.homePress(.forward, mode: .watch, stashPageShown: false) {
+        case .browserForward: _ = history.forward()
+        default: break
+        }
+        #expect(history.current == .folder(URL(fileURLWithPath: "/example")))
     }
 
     /// Taken: AppKit never sees them, so they go through the browser's history, or the Stash page's while it shows.
