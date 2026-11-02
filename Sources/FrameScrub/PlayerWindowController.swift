@@ -971,8 +971,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // Esc on Home goes back to the open video, unless a field is being typed in (the filter, a rename): the browser
         // and the window keep Esc to themselves, so it is taken here first.
         homeKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.keyCode == 53, event.window === self.window,
-                  !(self.window?.firstResponder is NSText), self.returnFromHome() else { return event }
+            guard let self, event.window === self.window,
+                  !(self.window?.firstResponder is NSText) else { return event }
+            if event.keyCode == 53, self.returnFromHome() { return nil }
+            // Home's card view owns first responder, so its unhandled keys do not
+            // reach VideoView. Route this window-settings command explicitly;
+            // keep navigation, text entry and playback commands with Home.
+            guard self.showsHome,
+                  let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode,
+                      characters: KeyboardLayout.characters(for: event), modifiers: Modifiers(event.modifierFlags)),
+                  self.inputMap.command(for: chord) == .toggleSubjectFocusPanel else { return event }
+            if !event.isARepeat { self.runInput(.toggleSubjectFocusPanel, from: .keyboard) }
             return nil
         }
         home = view
@@ -1636,7 +1645,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.canRedo = { [weak self] in self?.core.canRedoMarks ?? false }
         videoView.onMagnify = { [weak self] in self?.handleMagnify($0) }
         videoView.onMouseButton = { [weak self] in self?.runBinding(KeyChord(key: $0)) }
-        videoView.onLeftClick = { [weak self] in self?.slots.hideOverlays() }
+        videoView.onLeftClick = { [weak self] in
+            self?.slots.hideOverlays()
+        }
         videoView.zoomAllowed = { [weak self] in self.map { !$0.showsHome && $0.core.info != nil } ?? false }
         videoView.onOtherButton = { [weak self] button, keys, rightHeld, time in
             self?.buttons.appKitDown(button, keys: keys, rightHeld: rightHeld, at: time)
@@ -1972,6 +1983,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showMessage(core.hasAudio ? "Scrub pitch: \(next.rawValue)" : "No audio")
         case .cycleAspect:
             cycleAspect()
+        case .toggleSubjectFocus:
+            setSubjectFocus(videoView.subjectFocus == nil ? Self.subjectFocusStyle : nil)
+        case .cycleSubjectFocus:
+            let settings = SubjectFocusSettings.shared
+            setSubjectFocus(settings.select(settings.next(after: videoView.subjectFocus ?? Self.subjectFocusStyle)))
+        case .toggleSubjectFocusPanel:
+            slots.toggleSubjectFocusPanel()
         case .cycleUpscaler:
             let next: Upscaler = core.config.saveUpscaler == .ml ? .lanczos : .ml
             do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = next } } catch {
@@ -2675,9 +2693,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                        policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
         provider.onImage = { [weak self] result in
             guard let self else { return }
+            let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
             if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
             previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
             updatePreviewView()
+            if PlaybackDiagnostics.enabled {
+                let report = PlaybackDiagnostics.shared
+                report.record("callback_ui_ms", (PlaybackDiagnostics.now() - start) * 1000, group: "preview.ui")
+                report.record("request_to_ui_ready_ms", (PlaybackDiagnostics.now() - result.requestedAt) * 1000, group: "preview.ui")
+            }
         }
         provider.onUnavailable = { [weak self] in
             self?.previewProvider?.stop()
@@ -3056,6 +3080,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let pin = previewPin, abs(fraction - pin.fraction) * (seekBar.bounds.width - 24) > Self.pinSlack { previewPin = nil }
     }
 
+    private var diagnosticSweepStarted = false
+    private func diagnosticSweep(step: Int) {
+        guard step < 100 else { hover(nil); return }
+        hover(0.1 + Double(step % 40) * 0.02)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.diagnosticSweep(step: step + 1) }
+    }
+
     private func hover(_ fraction: Double?) {
         previewFraction = fraction
         guard let fraction, let index = core.index else {
@@ -3095,6 +3126,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private static let thumbnailContext = CIContext(options: [.cacheIntermediates: false])
 
     private func updatePreviewView() {
+        let diagnosticStart = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
+        defer { if PlaybackDiagnostics.enabled {
+            PlaybackDiagnostics.shared.record("update_view_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: "preview.ui")
+        } }
         guard let frame = previewFrame, let index = core.index, let container = window?.contentView else { return }
         let lens = KeyframeLens(index: index, frame: frame)
         seekBar.previewFrame = frame
@@ -3147,6 +3182,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
         slots = SlotsController(container: container, above: failureView, config: globalConfig, playlistView: playlistPanel)
         slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
+        slots.makeSubjectFocusPanel = { [weak self] in
+            let panel = SubjectFocusPanelView()
+            panel.currentStyle = { [weak self] in self?.videoView.subjectFocus }
+            panel.setStyle = { [weak self] in self?.setSubjectFocus($0) }
+            panel.lastStyle = { Self.subjectFocusStyle }
+            self?.subjectFocusPanel = panel
+            return panel
+        }
         slots.onLayout = { [weak self] video, visible in self?.slotsLaidOut(video: video, visible: visible) }
         slots.onPersist = { [weak self] edge, setting in self?.persistSlot(edge, setting) }
         slots.onMessage = { [weak self] in self?.showMessage($0) }
@@ -3632,6 +3675,78 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// For the ticks of Playback › Colour: the open file's colour over framescrub.conf.
     var colorConfig: Config { core.config }
 
+    // MARK: Subject Focus (spike)
+
+    /// The style `H` and the menu last chose, shared by the windows (kept, as the panel's settings are).
+    private static var subjectFocusStyle = UserDefaults.standard.string(forKey: "SubjectFocus.style")
+        .flatMap(SubjectFocusStyle.init(rawValue:)) ?? .studio {
+        didSet { UserDefaults.standard.set(subjectFocusStyle.rawValue, forKey: "SubjectFocus.style") }
+    }
+    /// The panel in a slot's tab (⌥H), once made.
+    private weak var subjectFocusPanel: SubjectFocusPanelView?
+    private static var focusFromEnvironmentDone = false
+
+    /// Bench (`FRAMESCRUB_FOCUS_PANEL=bench`): the main thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) for ⌥H showing
+    /// the panel's tab (the first time builds it), a slider step and ⌥H hiding it, 5 rounds, logged.
+    private func benchSubjectFocusPanel(round: Int = 1) {
+        guard round <= 5 else { return }
+        func cpu() -> Double { var t = timespec(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &t); return Double(t.tv_sec) * 1e3 + Double(t.tv_nsec) / 1e6 }
+        var t = cpu()
+        slots.toggleSubjectFocusPanel()
+        let shown = cpu() - t
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, let panel = subjectFocusPanel else { return }
+            var slides: [Double] = []
+            for k in 0..<10 { t = cpu(); panel.benchSlide(to: -1 + Double(k) * 0.2); slides.append(cpu() - t) }
+            t = cpu()
+            slots.toggleSubjectFocusPanel()
+            NSLog("subject focus panel bench: round %d, show %.2f ms, slider step %.2f ms (max %.2f), hide %.2f ms", round,
+                  shown, slides.reduce(0, +) / Double(slides.count), slides.max()!, cpu() - t)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in self?.benchSubjectFocusPanel(round: round + 1) }
+        }
+    }
+
+    /// Bench: `FRAMESCRUB_FOCUS_SCRUB=<frames a step>,<steps a second>` pauses and scrubs like the wheel, 40 steps
+    /// forward and 20 back, round, for a minute (Subject Focus's scrub masks, `FRAMESCRUB_FOCUS_LOG=1`).
+    private func startScrubBench() {
+        let parts = (ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SCRUB"] ?? "").split(separator: ",").compactMap { Int($0) }
+        guard parts.count == 2, parts[1] > 0 else { return }
+        let step = parts[0], interval = 1 / Double(parts[1])
+        var n = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self else { return }
+            if !core.isPaused { core.pause() }
+            Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
+                guard let self, n < Int(60 / interval) else { timer.invalidate(); return }
+                core.scrub(by: n % 60 < 40 ? step : -step, ticks: false)
+                n += 1
+            }
+        }
+    }
+    /// The style on screen; nil: off.
+    var subjectFocus: SubjectFocusStyle? { videoView.subjectFocus }
+
+    /// On in `style`, or off (nil), with its OSD line.
+    func setSubjectFocus(_ style: SubjectFocusStyle?) {
+        if let style { Self.subjectFocusStyle = style }
+        videoView.setSubjectFocus(style)
+        subjectFocusPanel?.refresh()
+        let settings = SubjectFocusSettings.shared
+        showMessage(style.map { "Subject Focus: \(settings.title(of: settings.choice(for: $0)))" } ?? "Subject Focus: off")
+    }
+
+    /// View › Subject Focus › Subject: All People / Main People, for every window.
+    func setSubjectMainPeople(_ on: Bool) {
+        SubjectFocusSettings.shared.mainPeople = on
+        showMessage(on ? "Subject Focus: main people" : "Subject Focus: all people")
+    }
+
+    /// View › Subject Focus › Mask: RVM (the user's models) or Vision, for every window.
+    func setSubjectMatting(_ rvm: Bool) {
+        SubjectFocusSettings.shared.matting = rvm
+        showMessage(rvm ? "Subject Focus mask: RVM" : "Subject Focus mask: Vision")
+    }
+
     /// For Playback › Colour › Reset File / Folder Colour: whether there is anything to reset.
     func hasOwnColor(_ level: ColorLevel) -> Bool { colorMemory.hasOwn(level) }
 
@@ -3691,7 +3806,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     // MARK: PlayerCoreDelegate
 
     func player(_ player: PlayerCore, display frame: DecodedFrame) {
-        videoView.show(frame)
+        // FRAMESCRUB_FOCUS=<style>: Subject Focus on with the first frame (self-tests and benches)
+        if !Self.focusFromEnvironmentDone, let name = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS"] {
+            Self.focusFromEnvironmentDone = true
+            if let style = SubjectFocusStyle(rawValue: name) { setSubjectFocus(style) }
+            startScrubBench()
+            switch ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_PANEL"] {   // benches, screenshots
+            case "1": slots.toggleSubjectFocusPanel()
+            case "bench": DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.benchSubjectFocusPanel() }
+            default: break
+            }
+        }
+        videoView.show(frame, playing: !core.isPaused)
+        if !diagnosticSweepStarted, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_SWEEP"] == "1" {
+            diagnosticSweepStarted = true
+            if PlaybackDiagnostics.enabled, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_4K"] == "1",
+               let window {
+                let scale = window.backingScaleFactor
+                window.setContentSize(NSSize(width: 3840 / scale, height: 2160 / scale))
+                window.contentView?.layoutSubtreeIfNeeded()
+            }
+            core.play()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.diagnosticSweep(step: 0) }
+        }
         // All-intra video has a keyframe on every tick. Only the bounded missing sample set triggers planning.
         if filmstripPrewarmFrames.contains(frame.number) {
             prewarmFilmstrip()
@@ -3706,6 +3843,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func playerStateDidChange(_ player: PlayerCore) {
         filmstripLoader?.resume()
+        videoView.diagnosticPlaybackChanged(playing: !core.isPaused)
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused

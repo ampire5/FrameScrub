@@ -44,6 +44,14 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   trigger planning; all-intra playback does not replan every frame. Folded delivery caches without invalidation.
   The prewarm gate also excludes active hover preview, export, interactions, Home and occlusion. Unavailable
   candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
+- `VideoView` applies optional Subject Focus before display scaling. `SubjectMasker` owns one mask worker and one
+  replaceable pending job; recurrent model state stays on that worker. Models remain user supplied outside the repo.
+  `SubjectFocusPanelView` is a transient singleton native tab registered by the app's `SlotsController` adapter;
+  the shared Slots host owns its capsule, width, pinning, backdrop and visibility. No second slot implementation is used.
+- Opt-in `PlaybackDiagnostics` (Core) bounds recent samples and configuration groups, writes local JSON on a utility
+  queue, and distinguishes GPU execution from physical drawable presentation. Decoder and preview workers record
+  their own stages; the app records masks, UI and display events. App termination flushes diagnostics after its
+  existing asynchronous user-state persistence. See [pipeline diagnostics](bench/playback-diagnostics.md).
 - Byte input → `ReadCache`/`ByteSource` → `MediaSource`/`VideoDecoder` → `DecoderBackend` (`VTBackend` or
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and

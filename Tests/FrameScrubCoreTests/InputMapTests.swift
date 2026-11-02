@@ -353,7 +353,11 @@ import Testing
         #expect(map.command(for: KeyChord(key: "k")) == .markSnap)
         #expect(map.command(for: KeyChord.parse("Meta+C")!) == .saveClip)
         #expect(map.command(for: KeyChord(key: "q")) == .quit)
-        #expect(map.bindings.count == 132)   // ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
+        #expect(map.command(for: KeyChord(key: "h")) == .toggleSubjectFocus)
+        #expect(map.command(for: KeyChord(key: "h", modifiers: .shift)) == .cycleSubjectFocus)
+        #expect(Command.parse("cycle-subject-focus") == .cycleSubjectFocus)
+        #expect(map.command(for: KeyChord.parse("Alt+h")!) == .toggleSubjectFocusPanel)
+        #expect(map.bindings.count == 135)   // h ⇧H ⌥H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)
@@ -609,5 +613,14 @@ import Testing
         #expect(all.contains { $0.chord == KeyChord(key: "SPACE") && $0.command == .ignore })
         #expect(all.count == map.bindings.count)
         #expect(all.map(\.chord.description) == all.map(\.chord.description).sorted())
+    }
+}
+
+extension InputMapTests {
+    @Test func subjectFocusSettingsPanelCanOpenOverHome() {
+        #expect(Command.toggleSubjectFocusPanel.worksWithoutPlayer)
+        // Opening settings does not allow playback controls through Home.
+        #expect(!Command.cyclePause.worksWithoutPlayer)
+        #expect(!Command.frameStep.worksWithoutPlayer)
     }
 }

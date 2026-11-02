@@ -113,6 +113,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         self.controller = controller
         observeHandOver()
         controller.showWindow(nil)
+        if PlaybackDiagnostics.enabled,
+           let seconds = ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_SECONDS"].flatMap(Double.init),
+           seconds.isFinite, seconds >= 5, seconds <= 3600 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+                // AppKit's nested termination loop must not hold a main-dispatch block:
+                // asynchronous user-state persistence resumes through that same executor.
+                RunLoop.main.perform(inModes: [.common]) { NSApp.terminate(nil) }
+            }
+        }
         NSApp.activate()
         StartupTrace.mark("window shown")
         // The mouse search runs off the launch path: after the window is up (mouse spec §3.2, §8).
@@ -239,6 +248,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         flushingUserState = true
         Task { @MainActor in
             await controller.prepareUserStateForTermination()
+            if PlaybackDiagnostics.enabled {
+                await withCheckedContinuation { continuation in
+                    PlaybackDiagnostics.shared.flush { continuation.resume() }
+                }
+            }
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
@@ -531,6 +545,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    /// View › Subject Focus: on/off (H) and the styles (⇧H steps through them); a style turns it on.
+    private func makeSubjectFocusMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Subject Focus", action: nil, keyEquivalent: "")
+        let submenu = NSMenu(title: "Subject Focus")
+        submenu.addItem(commandItem("Subject Focus", .toggleSubjectFocus, key: "", modifiers: []))   // h stays an input.conf binding
+        submenu.addItem(commandItem("Subject Focus Panel", .toggleSubjectFocusPanel, key: "", modifiers: []))   // ⌥H too
+        submenu.addItem(.separator())
+        for (tag, style) in SubjectFocusStyle.allCases.enumerated() {
+            let entry = NSMenuItem(title: style.title, action: #selector(setSubjectFocusStyle(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
+        // Mask: RVM needs the models the user prepares (docs/subject-focus-rvm.md); greyed without them.
+        submenu.addItem(.separator())
+        for (tag, title) in [(1, "Mask: RVM"), (0, "Mask: Vision")] {
+            let entry = NSMenuItem(title: title, action: #selector(setSubjectMatting(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
+        submenu.addItem(.separator())
+        for (tag, title) in [(0, "Subject: All People"), (1, "Subject: Main People")] {
+            let entry = NSMenuItem(title: title, action: #selector(setSubjectMainPeople(_:)), keyEquivalent: "")
+            entry.tag = tag
+            entry.target = self
+            submenu.addItem(entry)
+        }
+        item.submenu = submenu
+        return item
+    }
+
+    @objc func setSubjectMainPeople(_ sender: NSMenuItem) {
+        controller?.setSubjectMainPeople(sender.tag == 1)
+    }
+
+    @objc func setSubjectFocusStyle(_ sender: NSMenuItem) {
+        controller?.setSubjectFocus(SubjectFocusStyle.allCases[sender.tag])
+    }
+
+    @objc func setSubjectMatting(_ sender: NSMenuItem) {
+        controller?.setSubjectMatting(sender.tag == 1)
+    }
+
     private func makeUpscalerMenu() -> NSMenuItem {
         let item = NSMenuItem(title: "Upscaler for Saved Frames", action: nil, keyEquivalent: "")
         let submenu = NSMenu(title: "Upscaler for Saved Frames")
@@ -600,6 +658,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // While a text field (the playlist filter, ⌘G) is typed in, ⌘⌫ deletes text there, never the video.
         if let box = item.representedObject as? CommandBox, box.command == .deleteFile,
            NSApp.keyWindow?.firstResponder is NSText { return false }
+        if item.action == #selector(setSubjectFocusStyle(_:)) {
+            item.state = controller?.subjectFocus == SubjectFocusStyle.allCases[item.tag] ? .on : .off
+            return controller?.hasOpenFile == true && controller?.showsHome != true
+        }
+        if item.action == #selector(setSubjectMainPeople(_:)) {
+            item.state = (item.tag == 1) == SubjectFocusSettings.shared.mainPeople ? .on : .off
+        }
+        if item.action == #selector(setSubjectMatting(_:)) {
+            item.state = (item.tag == 1) == SubjectFocusSettings.shared.matting ? .on : .off
+            return item.tag == 0 || SubjectMatting.isAvailable
+        }
+        if let box = item.representedObject as? CommandBox, box.command == .toggleSubjectFocus {
+            item.state = controller?.subjectFocus != nil ? .on : .off
+        }
         if item.action == #selector(setSaveUpscaler(_:)), let config = preferences?.config {
             item.state = (item.tag == 0) == (config.saveUpscaler == .ml) ? .on : .off
         }
@@ -772,6 +844,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(makePreviewSizeMenu())
         viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
         viewMenu.addItem(makeUpscalerMenu())
+        viewMenu.addItem(makeSubjectFocusMenu())
         viewMenu.addItem(commandItem("Next Aspect Ratio", .cycleAspect, key: "", modifiers: []))   // a stays an input.conf binding
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
         viewMenu.addItem(commandItem("Find in Folder…", .playlistFilter, key: "f"))

@@ -14,6 +14,9 @@ import Slots
     var onPageDropped: ((PluginPanel) -> Void)?
     var topInset: CGFloat { get { host.topInset } set { host.topInset = newValue } }
     let playlistView: PlaylistPanelView
+    var makeSubjectFocusPanel: (() -> SubjectFocusPanelView)?
+    private var subjectFocusPanel: SubjectFocusPanelView?
+    private static let subjectFocus = SlotTabID(rawValue: "subject-focus")
     private let host: Slots.SlotsController
     private var plugins: [PluginEntry]
     private var linkPlugin: PluginEntry?
@@ -29,6 +32,7 @@ import Slots
         host.revealBand = CGFloat(config.slotRevealDistance)
         registerPlaylist()
         registerPlugins()
+        registerSubjectFocus()
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var s = config.slots[edge] ?? .default(for: edge)
@@ -93,6 +97,31 @@ import Slots
     }
     private func edge(showing id: SlotTabID) -> SlotEdge? { SlotEdge.allCases.first { host.activeTab($0) == id } }
     private var firstEmpty: SlotEdge? { [SlotEdge.right, .left, .bottom].first { host.configuration($0).tabs.isEmpty } }
+    /// A transient native tab: its contents/settings remain app-owned, the shared host owns presentation.
+    func toggleSubjectFocusPanel() {
+        let id = Self.subjectFocus, edge = edge(holding: Self.subjectFocus) ?? .right
+        if host.isShown(edge), host.activeTab(edge) == id {
+            host.hide(edge)
+            if let own = host.tabIDs(in: edge).first(where: { $0 != id }) { host.select(own, edge: edge) }
+            return
+        }
+        host.add(id, edge: edge, transient: true)
+        host.select(id, edge: edge)
+        host.show(edge)
+    }
+    private func registerSubjectFocus() {
+        host.register(SlotTabDescriptor(id: Self.subjectFocus, title: "Subject Focus", symbol: "person.crop.rectangle", singleton: true) { [weak self] _ in
+            guard let self else { return nil }
+            if subjectFocusPanel == nil { subjectFocusPanel = makeSubjectFocusPanel?() }
+            guard let panel = subjectFocusPanel else { return nil }
+            panel.prepare()
+            let page = SlotPage(view: panel, visibilityChanged: { [weak panel] shown in
+                if shown { panel?.refresh() }
+            })
+            page.isTyping = { [weak panel] in panel?.isEditingText ?? false }
+            return page
+        })
+    }
     func togglePlaylist() {
         let id = Self.playlist, edge = edge(holding: Self.playlist) ?? firstEmpty ?? .right
         if host.isShown(edge), host.activeTab(edge) == id { host.hide(edge); return }

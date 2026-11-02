@@ -153,6 +153,8 @@ public enum Command: Equatable, Sendable {
     /// `reset-color file|folder`: drop the colour values of the file or of its folder.
     case resetColor(ColorLevel)
     case toggleScrubAudio, toggleScrubAudioPitch
+    /// Subject Focus (spike): the background effect around the people on/off, its next style, and its panel in a slot.
+    case toggleSubjectFocus, cycleSubjectFocus, toggleSubjectFocusPanel
     case cycleAspect
     case windowScale(Double), windowFit
     case copyFrame, revealFrames
@@ -169,7 +171,7 @@ public enum Command: Equatable, Sendable {
     public var worksWithoutPlayer: Bool {
         switch self {
         case .cycleFullscreen, .setFullscreen, .cycleOntop, .quit, .cycleMouseProfile, .toggleUpscaler, .cycleUpscaler,
-             .pluginAction, .ignore:
+             .toggleSubjectFocusPanel, .pluginAction, .ignore:
             return true
         default:
             return false
@@ -255,6 +257,9 @@ public enum Command: Equatable, Sendable {
         case .toggleVibrance: return "toggle-vibrance"
         case .toggleScrubAudio: return "toggle-scrub-audio"
         case .toggleScrubAudioPitch: return "toggle-scrub-audio-pitch"
+        case .toggleSubjectFocus: return "toggle-subject-focus"
+        case .cycleSubjectFocus: return "cycle-subject-focus"
+        case .toggleSubjectFocusPanel: return "toggle-subject-focus-panel"
         case .toggleAutoColor: return "toggle-auto-color"
         case let .saveAutoColor(folder): return folder ? "save-auto-color folder" : "save-auto-color"
         case let .saveVibrance(folder): return folder ? "save-vibrance folder" : "save-vibrance"
@@ -357,6 +362,9 @@ public enum Command: Equatable, Sendable {
         case ("toggle-vibrance", nil): return .toggleVibrance
         case ("toggle-scrub-audio", nil): return .toggleScrubAudio
         case ("toggle-scrub-audio-pitch", nil): return .toggleScrubAudioPitch
+        case ("toggle-subject-focus", nil): return .toggleSubjectFocus
+        case ("cycle-subject-focus", nil): return .cycleSubjectFocus
+        case ("toggle-subject-focus-panel", nil): return .toggleSubjectFocusPanel
         case ("toggle-auto-color", nil): return .toggleAutoColor
         case ("save-auto-color", nil): return .saveAutoColor(folder: false)
         case ("save-auto-color", "folder"): return args.count == 1 ? .saveAutoColor(folder: true) : nil
@@ -403,6 +411,9 @@ public struct InputMap: Equatable {
 
     /// `key-layout=classic`: the mpv-style keys FrameScrub started with.
     public static let defaultConfig = """
+    h toggle-subject-focus
+    H cycle-subject-focus
+    Alt+h toggle-subject-focus-panel
     SPACE cycle pause
     p cycle pause
     MBTN_RIGHT cycle pause
@@ -540,6 +551,9 @@ public struct InputMap: Equatable {
     /// `key-layout=left-hand`: everything frequent under the left hand (pairs: the left key goes back, the right one
     /// forward), while the right hand stays on the mouse or TourBox.
     public static let leftHandConfig = """
+    h toggle-subject-focus
+    H cycle-subject-focus
+    Alt+h toggle-subject-focus-panel
     SPACE cycle pause
     q frame-back-step
     e frame-step
