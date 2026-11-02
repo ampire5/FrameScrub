@@ -29,6 +29,17 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  Folder/Recent listing streams stay open for coalesced metadata updates; new durations update that subscription
+  without resetting the browser. Replacing/cancelling the subscription cancels its read; a generation token keeps
+  an old termination callback from clearing the new subscriber. Leaving Home cancels pending metadata publication.
+  `FolderChangeMonitor` opens an event-only directory descriptor off the main thread and coalesces native directory
+  events (including SMB) without polling. It reconciles the descriptor-open race once, stops while Home/window is
+  hidden, and reconciles again on return. Folder enumeration/metadata reads use one utility `LatestOnlyWorker`
+  with one replaceable pending read; stale results are discarded. View › Refresh (⌘R) uses the same listing stream.
+  Thumbnail workers report failure as well as success. `PictureQueue` finishes failed jobs and suppresses repeated
+  attempts until refresh; confirmed damaged versions are marked in shared `UnreadableFiles` and omitted from Home.
+  Failure stamps come from the attempted file identity; network/read errors do not mark files damaged. Source
+  updates and new filesystem events preserve a user pause of thumbnail generation.
 - Plugin page → `PluginPanel` / bridge → core plugin messages/policies/actions → application/player commands.
   Keep external page data separate from trusted application configuration.
 
@@ -40,6 +51,10 @@ safe on arbitrary threads. `NetworkPolicy` governs reads; `ReadCache` bounds byt
 `LatestOnlyWorker` coalesces replacement work. `MetadataInspectionQueue` has one running probe and one pending
 selection, cancels superseded jobs, and suppresses their completion. Open/close must cancel obsolete media work.
 Do not add parallel probes or per-frame filesystem operations to the controller.
+
+Closing the sole player window requests termination through the run loop. Do not enter AppKit's async termination
+wait from a main-queue block: the main-actor user-state flush must be able to run and reply to `.terminateLater`.
+`FrameScrub --bench-close-window` checks the real launch/close/flush path in a separate process with a watchdog.
 
 ## App icon collection
 

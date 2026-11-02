@@ -16,6 +16,10 @@ import HomeScreenModel
     private let recentURLs: () -> [URL]
     private let stashPage: () -> NSView?
     private let hasStash: () -> Bool
+    private let unreadable: UnreadableFiles
+    private let folderMonitor = FolderChangeMonitor()
+    private var watchingVisible = true
+    private var thumbnailsPaused = false
     /// Recent's pictures: the last frame seen in each file (`ThumbnailStore`), a keyframe where it was left for those
     /// without one. A folder's: a keyframe near a tenth of each video, kept apart (`posters`, more of them, smaller).
     private let recentPictures: PictureQueue
@@ -35,20 +39,42 @@ import HomeScreenModel
     /// Folder cards' facts and the videos their covers are made of, by folder, for this run; the run filling them.
     private var folderFacts: [URL: (summary: CardSummary, cover: [URL])] = [:]
     private var factsTask: Task<Void, Never>?
+    private var folderCardIDs: [String] = []
     /// A video whose poster is being made for a folder's cover, and that folder card's id.
     private var coverFor: [String: (id: String, folder: URL)] = [:]
-    /// Set while a folder is listed again only for its cards' lengths: the kept listing, no read.
-    private var relistOnly = false
+    private typealias ListingContinuation = AsyncThrowingStream<BrowserListing, Error>.Continuation
+    /// Metadata updates go through the existing subscription, keeping the grid, pictures and scroll alive.
+    private var activeListing: (id: UUID, location: BrowserLocation, continuation: ListingContinuation, flag: CancellationFlag, needsPictures: Bool)?
+    private var recentDimmed: Set<String> = []
     private var relist: DispatchWorkItem?
+
+    private func keepListing(_ continuation: ListingContinuation, at location: BrowserLocation) -> UUID {
+        let old = activeListing
+        let id = UUID()
+        activeListing = (id, location, continuation, CancellationFlag(), true)
+        folderMonitor.stop()
+        old?.flag.cancel()
+        old?.continuation.finish()
+        return id
+    }
+
+    private func endListing(_ id: UUID) {
+        if activeListing?.id == id {
+            activeListing?.flag.cancel()
+            activeListing = nil
+            folderMonitor.stop()
+        }
+    }
 
     init(folderSorts: FolderSorts, defaultSort: @escaping () -> BrowserSort, recentURLs: @escaping () -> [URL],
          thumbnails: ThumbnailStore, thumbnailer: RecentThumbnailer, stashPage: @escaping () -> NSView?,
-         hasStash: @escaping () -> Bool) {
+         hasStash: @escaping () -> Bool, unreadable: UnreadableFiles? = nil) {
         self.folderSorts = folderSorts
         self.defaultSort = defaultSort
         self.recentURLs = recentURLs
         self.stashPage = stashPage
         self.hasStash = hasStash
+        self.unreadable = unreadable ?? UnreadableFiles()
         recentPictures = PictureQueue(store: thumbnails, thumbnailer: thumbnailer, prefix: "recent:", atPosition: true)
         // A folder of a few hundred videos: ~40 KB each at 480 px; the newest 2 000 are kept.
         let posters = ThumbnailStore(directory: ThumbnailStore.defaultDirectory.appendingPathComponent("posters"),
@@ -60,6 +86,7 @@ import HomeScreenModel
         for queue in [recentPictures, folderPictures] {
             queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
             queue.onFacts = { [weak self] url, facts in self?.factsFound(url, facts) }
+            queue.onFailure = { [weak self] url, failure in self?.pictureFailed(url, failure) }
             queue.hasFacts = { [weak self] url in self?.facts[url.path] != nil }
         }
     }
@@ -95,60 +122,136 @@ import HomeScreenModel
         }
     }
 
-    /// The kept listing at once (marked provisional), then the folder as read now, off the main thread; with
-    /// `relistOnly`, the kept one alone with the lengths found since.
+    /// The kept listing at once (marked provisional), then the folder as read now, off the main thread.
+    /// The stream stays open for metadata updates until the browser leaves or explicitly reloads it.
     private func listFolder(_ folder: URL) -> AsyncThrowingStream<BrowserListing, Error> {
         let kept = listings[folder]
-        let onlyKept = relistOnly && kept != nil
-        relistOnly = false
         return AsyncThrowingStream { continuation in
+            let id = self.keepListing(continuation, at: .folder(folder))
             if let kept {
-                var listing = BrowserListing(entries: self.withFacts(kept), complete: onlyKept)
-                listing.isProvisional = !onlyKept
+                var listing = BrowserListing(entries: self.withFacts(kept), complete: false)
+                listing.isProvisional = true
                 continuation.yield(listing)
-                if onlyKept { continuation.finish(); return }
             }
-            let task = Task { @MainActor [weak self] in
-                do {
-                    let entries = try await Task.detached(priority: .userInitiated) {
-                        try HomeFolders.entries(in: folder)
-                    }.value
-                    guard let self, !Task.isCancelled else { return }
-                    self.listings[folder] = entries
-                    continuation.yield(BrowserListing(entries: self.withFacts(entries), complete: true))
-                    let store = self.factsStore
-                    let loaded = await Task.detached(priority: .utility) {
-                        let urls = entries.filter(\.isFile).map(\.url)
-                        let resume = ResumeStore()
-                        let positions = Dictionary(entries.filter(\.isFile).compactMap { entry -> (String, ResumeEntry)? in
-                            guard let size = entry.size, let saved = resume.entry(for: entry.url, size: size) else { return nil }
-                            return (entry.url.path, saved)
-                        }, uniquingKeysWith: { a, _ in a })
-                        return (store.facts(for: urls), positions)
-                    }.value
-                    guard !Task.isCancelled else { return }
-                    for entry in entries where entry.isFile {
-                        self.facts[entry.url.path] = loaded.0[entry.url.path]
-                        self.positions[entry.url.path] = loaded.1[entry.url.path]
-                    }
-                    if self.view?.location == .folder(folder) {
-                        self.view?.setFacts(loaded.0)
-                        self.view?.setLastViewed(Dictionary(loaded.1.compactMap { path, entry in
-                            entry.lastViewedAt.map { (URL(fileURLWithPath: path), $0) }
-                        }, uniquingKeysWith: { a, _ in a }))
-                    }
-                    continuation.yield(BrowserListing(entries: self.withFacts(entries), complete: true))
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
+            self.watchFolder(folder, id: id)
+            self.readFolder(folder, id: id)
+            continuation.onTermination = { [weak self] _ in
+                Task { @MainActor in self?.endListing(id) }
+            }
+        }
+    }
+
+    private struct FolderRead: Sendable {
+        let folder: URL
+        let id: UUID
+        let flag: CancellationFlag
+    }
+
+    /// A stalled SMB listing holds one utility worker; rapid changes/navigation replace its one pending request.
+    private lazy var folderReader = LatestOnlyWorker<FolderRead>(label: "framescrub.home-listing", qos: .utility) { [weak self] request in
+        guard !request.flag.isCancelled else { return }
+        do {
+            let entries = try HomeFolders.entries(in: request.folder)
+            guard !request.flag.isCancelled else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.folderEntries(entries, request: request) }
+            }
+            let urls = entries.filter(\.isFile).map(\.url)
+            let resume = ResumeStore()
+            let positions = Dictionary(entries.filter(\.isFile).compactMap { entry -> (String, ResumeEntry)? in
+                guard let size = entry.size, let saved = resume.entry(for: entry.url, size: size) else { return nil }
+                return (entry.url.path, saved)
+            }, uniquingKeysWith: { a, _ in a })
+            let facts = FileFactsStore.shared.facts(for: urls)
+            guard !request.flag.isCancelled else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.folderMetadata(facts, positions: positions, entries: entries, request: request) }
+            }
+        } catch {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.activeListing?.id == request.id else { return }
+                    self.activeListing?.continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    private func readFolder(_ folder: URL, id: UUID) {
+        guard let active = activeListing, active.id == id else { return }
+        folderReader.submit(FolderRead(folder: folder, id: id, flag: active.flag))
+    }
+
+    private func watchFolder(_ folder: URL, id: UUID) {
+        guard watchingVisible else { return }
+        folderMonitor.watch(folder) { [weak self] in
+            MainActor.assumeIsolated { self?.readFolder(folder, id: id) }
+        }
+    }
+
+    private func folderEntries(_ entries: [BrowserEntry], request: FolderRead) {
+        guard activeListing?.id == request.id, !request.flag.isCancelled else { return }
+        let first = activeListing?.needsPictures == true
+        activeListing?.needsPictures = false
+        let old = Dictionary((listings[request.folder] ?? []).map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        listings[request.folder] = entries
+        folderFacts[request.folder] = nil
+        folderVideos = withFacts(entries).filter(\.isFile).map(\.url)
+        let current = Set(folderVideos)
+        let retries = folderPictures.retryFailures().intersection(current)
+        let changed = entries.filter { entry in
+            entry.isFile && current.contains(entry.url) && (old[entry.url]?.date != entry.date || old[entry.url]?.size != entry.size)
+        }.map(\.url)
+        let wanted = Set(changed).union(retries)
+        for url in wanted { havePosters.remove(url.path) }
+        activeListing?.continuation.yield(BrowserListing(entries: withFacts(entries), complete: true))
+        if progressFolder == request.folder, !thumbnailsPaused {
+            if first {
+                folderPictures.want(inViewVideos.filter { current.contains($0) }.map(\.path), rest: folderVideos)
+                wantFolderCards(folderCardIDs, in: request.folder)
+            } else if !wanted.isEmpty {
+                folderPictures.want(folderVideos.filter { wanted.contains($0) }.map(\.path))
+            }
+        }
+        showProgress()
+    }
+
+    private func folderMetadata(_ loaded: [String: FileFacts], positions saved: [String: ResumeEntry],
+                                entries: [BrowserEntry], request: FolderRead) {
+        guard activeListing?.id == request.id, !request.flag.isCancelled else { return }
+        for entry in entries where entry.isFile {
+            facts[entry.url.path] = loaded[entry.url.path]
+            positions[entry.url.path] = saved[entry.url.path]
+        }
+        view?.setFacts(loaded)
+        view?.setLastViewed(Dictionary(saved.compactMap { path, entry in
+            entry.lastViewedAt.map { (URL(fileURLWithPath: path), $0) }
+        }, uniquingKeysWith: { a, _ in a }))
+        activeListing?.continuation.yield(BrowserListing(entries: withFacts(entries), complete: true))
+    }
+
+    /// Explicit refresh and filesystem events use the same subscription: no empty grid or lost pictures.
+    func refresh() {
+        recentPictures.retryFailures()
+        if let active = activeListing, case .folder(let folder) = active.location {
+            readFolder(folder, id: active.id)
+        } else {
+            view?.reload()
+        }
+    }
+
+    func setWatchingVisible(_ visible: Bool) {
+        guard watchingVisible != visible else { return }
+        watchingVisible = visible
+        if visible, let active = activeListing, case .folder(let folder) = active.location {
+            watchFolder(folder, id: active.id) // initial callback reconciles changes missed while invisible
+        } else {
+            folderMonitor.stop()
         }
     }
 
     private func withFacts(_ entries: [BrowserEntry]) -> [BrowserEntry] {
-        return HomeFolders.withFacts(entries, resume: { positions[$0.path] }, facts: facts)
+        return HomeFolders.withFacts(entries.filter { !unreadable.contains($0) }, resume: { positions[$0.path] }, facts: facts)
     }
 
     func lastListing(for location: BrowserLocation) -> BrowserListing? {
@@ -182,7 +285,7 @@ import HomeScreenModel
             recentPictures.want(ids)
         } else {
             guard case .folder(let folder)? = view?.location else { return }
-            let videos = (listings[folder] ?? []).filter(\.isFile).map(\.url)
+            let videos = withFacts(listings[folder] ?? []).filter(\.isFile).map(\.url)
             let inView = ids.filter { $0.hasPrefix("/") }.map { URL(filePath: $0, directoryHint: .notDirectory) }
                 .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
             if progressFolder != folder {
@@ -191,7 +294,8 @@ import HomeScreenModel
             }
             folderVideos = videos
             inViewVideos = inView
-            folderPictures.want(ids.filter { $0.hasPrefix("/") }, rest: videos)
+            folderPictures.want(ids.filter { $0.hasPrefix("/") }, rest: thumbnailsPaused ? [] : videos,
+                                allowGeneration: !thumbnailsPaused)
             wantFolderCards(ids, in: folder)
             showProgress()
         }
@@ -210,32 +314,56 @@ import HomeScreenModel
     }
 
     /// The folder's posters: those in view first, then the rest; the pill lights only after a second of work.
-    private func showProgress(paused: Bool = false) {
-        guard let view, !folderVideos.isEmpty else { return }
+    private func showProgress(paused suppliedPause: Bool? = nil) {
+        let paused = suppliedPause ?? thumbnailsPaused
+        guard let view else { return }
+        guard !folderVideos.isEmpty else { view.setProgress(nil, delay: .zero); return }
+        let current = Set(folderVideos)
+        let visible = inViewVideos.filter { current.contains($0) }
         let done = folderVideos.filter { havePosters.contains($0.path) }.count
-        let inViewDone = inViewVideos.filter { havePosters.contains($0.path) }.count
+        let inViewDone = visible.filter { havePosters.contains($0.path) }.count
         let total = folderVideos.count
         let state = ThumbsProgressState(
             fraction: Double(done) / Double(total),
             text: paused ? "Paused · \(done) / \(total)" : "Posters \(done) / \(total)", paused: paused,
-            rows: [.init(title: "In view", done: inViewDone, total: inViewVideos.count),
-                   .init(title: "Rest of folder", done: done - inViewDone, total: total - inViewVideos.count)],
+            rows: [.init(title: "In view", done: inViewDone, total: visible.count),
+                   .init(title: "Rest of folder", done: done - inViewDone, total: total - visible.count)],
             pauseNote: paused ? "Paused" : nil, pausedByUser: paused, working: done < total)
         view.setProgress(state, delay: .seconds(1))
     }
 
     /// The pill's Pause / Resume: the folder's posters stop, or are asked for again.
     func pauseThumbs(_ on: Bool, in location: BrowserLocation) {
+        thumbnailsPaused = on
         if on {
             folderPictures.stop()
+            factsTask?.cancel()
+            factsTask = nil
+            view?.stopWaiting(for: Array(coverFor.values.map(\.id)))
+            coverFor = [:]
             showProgress(paused: true)
         } else {
-            view?.reload()
+            folderPictures.want(inViewVideos.map(\.path), rest: folderVideos)
+            if case .folder(let folder) = location {
+                view?.resumeWaiting(for: folderCardIDs)
+                wantFolderCards(folderCardIDs, in: folder)
+            }
+            showProgress()
         }
     }
 
-    /// Home hidden or left a place: no more pictures for it.
-    func stopImages() {
+    /// Home hidden: stop its subscription too, so returning re-reads files and saved playback progress.
+    /// A location change has already subscribed to the new place before `moved` arrives: keep that subscription.
+    func stopImages(keepingListing: Bool = false) {
+        if !keepingListing {
+            let listing = activeListing
+            activeListing = nil
+            listing?.flag.cancel()
+            listing?.continuation.finish()
+            folderMonitor.stop()
+        }
+        relist?.cancel()
+        relist = nil
         recentPictures.stop()
         folderPictures.stop()
         factsTask?.cancel()
@@ -250,6 +378,7 @@ import HomeScreenModel
         guard let entries = listings[folder] else { return }
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder }
+        folderCardIDs = folders.map(\.id)
         factsTask?.cancel()
         factsTask = Task { @MainActor [weak self] in
             for entry in folders {
@@ -288,7 +417,7 @@ import HomeScreenModel
         guard !Task.isCancelled else { return }
         guard !pictures.isEmpty else {
             view.stopWaiting(for: [id])
-            if let first = videos.first, coverFor[first.path] == nil {
+            if !thumbnailsPaused, let first = videos.first, coverFor[first.path] == nil {
                 coverFor[first.path] = (id, folder)
                 folderPictures.enqueue(first)
             }
@@ -308,8 +437,8 @@ import HomeScreenModel
         Task { @MainActor [weak self] in await self?.makeCover(card.id, folder: card.folder, from: facts.cover) }
     }
 
-    /// A file's facts are new: its card in view shows them at once (`setFacts`); a length new to it lists the cards
-    /// again from what is kept (no read), once for a burst, for the progress line.
+    /// A file's facts are new: its card in view shows them at once (`setFacts`); a new length updates the listing
+    /// through its open stream, once for a burst. Reloading the browser would discard every card and picture.
     private func factsFound(_ url: URL, _ found: FileFacts) {
         guard facts[url.path] != found else { return }
         let hadLength = facts[url.path]?.duration != nil
@@ -322,12 +451,43 @@ import HomeScreenModel
         guard !hadLength, found.duration != nil, positions[url.path]?.duration == nil else { return }
         relist?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, let view = self.view else { return }
-            if case .folder = view.location { self.relistOnly = true }
-            view.reload()
+            self?.publishListing()
         }
         relist = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    private func publishListing() {
+        guard let active = activeListing, view?.location == active.location else { return }
+        let entries: [BrowserEntry]
+        switch active.location {
+        case .folder(let folder):
+            guard let kept = listings[folder] else { return }
+            entries = withFacts(kept)
+            folderVideos = entries.filter(\.isFile).map(\.url)
+        case .source(HomeRecent.source):
+            entries = HomeRecent.entries(recentURLs(), resume: { positions[$0.path] }, facts: facts, dimmed: recentDimmed)
+                .filter { !unreadable.contains($0) }
+        default: return
+        }
+        active.continuation.yield(BrowserListing(entries: entries, complete: true))
+    }
+
+    private func pictureFailed(_ url: URL, _ failure: RecentThumbnailer.Failure) {
+        if failure.marksUnreadable, let identity = failure.identity {
+            let entry = listings[url.deletingLastPathComponent()]?.first { $0.url == url }
+            let sameSize = entry?.size.map { $0 == identity.size } ?? true
+            let sameDate = entry?.date.map { $0 == identity.modificationDate } ?? true
+            if sameSize && sameDate {
+                unreadable.mark(url, date: identity.modificationDate, size: identity.size)
+                publishListing()
+            } else if let active = activeListing, case .folder(let folder) = active.location {
+                readFolder(folder, id: active.id) // another version is listed: reconcile before judging it
+            }
+        }
+        if let card = coverFor.removeValue(forKey: url.path) { view?.stopWaiting(for: [card.id]) }
+        posterIn(url) // transient read failures finish the attempt too, without being labelled damaged
+        showProgress()
     }
 
     // MARK: Cards
@@ -413,7 +573,11 @@ import HomeScreenModel
     var sendsCardFacts: Bool { true }
 
     func moved(from old: BrowserLocation?, to new: BrowserLocation) {
-        if old != new { stopImages() }
+        if old != new {
+            thumbnailsPaused = false
+            folderCardIDs = []
+            stopImages(keepingListing: true)
+        }
     }
 
     // MARK: Recent
@@ -422,10 +586,12 @@ import HomeScreenModel
     /// (only when there are any).
     private func listRecent() -> AsyncThrowingStream<BrowserListing, Error> {
         let urls = recentURLs()
+        recentDimmed = []
         let first = HomeRecent.entries(urls, resume: { positions[$0.path] }, facts: facts, dimmed: [])
         let store = factsStore
         return AsyncThrowingStream { continuation in
-            continuation.yield(BrowserListing(entries: first, complete: true))
+            let id = self.keepListing(continuation, at: .source(HomeRecent.source))
+            continuation.yield(BrowserListing(entries: first.filter { !self.unreadable.contains($0) }, complete: true))
             let task = Task { @MainActor [weak self] in
                 let loaded = await Task.detached(priority: .utility) {
                     let resume = ResumeStore()
@@ -441,16 +607,19 @@ import HomeScreenModel
                     }, uniquingKeysWith: { a, _ in a }))
                 }
                 let entries = HomeRecent.entries(urls, resume: { loaded.1[$0.path] }, facts: loaded.0, dimmed: [])
-                continuation.yield(BrowserListing(entries: entries, complete: true))
+                continuation.yield(BrowserListing(entries: entries.filter { !self.unreadable.contains($0) }, complete: true))
                 let reachable = await PathAvailability.check(urls.map(\.path), timeout: .seconds(1))
                 let gone = Set(urls.map(\.path).filter { reachable[$0] == .some(false) })
                 if !gone.isEmpty, !Task.isCancelled {
+                    self.recentDimmed = gone
                     continuation.yield(BrowserListing(entries: HomeRecent.entries(urls, resume: { loaded.1[$0.path] },
-                                                                                 facts: loaded.0, dimmed: gone), complete: true))
+                                                                                 facts: loaded.0, dimmed: gone).filter { !self.unreadable.contains($0) }, complete: true))
                 }
-                continuation.finish()
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { [weak self] _ in
+                task.cancel()
+                Task { @MainActor in self?.endListing(id) }
+            }
         }
     }
 }

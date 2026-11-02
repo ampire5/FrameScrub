@@ -572,9 +572,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func smallerCards(_ sender: Any?) { controller?.resizeHomeCards(.smallerSize) }
     @objc func defaultCardSize(_ sender: Any?) { controller?.resizeHomeCards(.reset) }
     @objc func showHome(_ sender: Any?) { controller?.showHome() }
+    @objc func refreshHome(_ sender: Any?) { controller?.refreshHome() }
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(refreshHome(_:)) { return controller?.canRefreshHome == true }
         if item.action == #selector(toggleFilmstrip(_:)) {
             item.title = controller?.filmstripShown == true ? "Fold Filmstrip" : "Show Filmstrip"
             return controller?.currentURL != nil && controller?.showsHome != true
@@ -742,6 +744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let home = viewMenu.addItem(withTitle: "Home", action: #selector(showHome(_:)), keyEquivalent: "h")
         home.keyEquivalentModifierMask = [.command, .shift]
         home.target = self
+        viewMenu.addItem(withTitle: "Refresh", action: #selector(refreshHome(_:)), keyEquivalent: "r").target = self
         let sidebar = viewMenu.addItem(withTitle: "Toggle Home Sidebar", action: #selector(toggleHomeSidebar(_:)), keyEquivalent: "s")
         sidebar.keyEquivalentModifierMask = [.command, .control]
         sidebar.target = self

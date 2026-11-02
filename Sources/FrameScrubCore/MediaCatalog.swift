@@ -12,6 +12,12 @@ public struct MediaFileIdentity: Codable, Hashable, Sendable {
     public let modifiedSeconds: Int64
     public let modifiedNanoseconds: Int64
 
+    /// Preserve the filesystem's precision without rounding nanoseconds at the larger Unix epoch offset.
+    public var modificationDate: Date {
+        Date(timeIntervalSinceReferenceDate: Double(modifiedSeconds) - Date.timeIntervalBetween1970AndReferenceDate
+             + Double(modifiedNanoseconds) / 1e9)
+    }
+
     public static func read(_ url: URL) -> Self? {
         guard url.isFileURL else { return nil }
         var value = stat()

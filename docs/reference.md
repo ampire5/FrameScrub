@@ -404,6 +404,12 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
   its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
   the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
+  the cache. **View → Refresh** (⌘R) re-reads the file view without clearing its pictures or scroll. Adding, removing
+  and renaming files automatically updates the visible folder, including on SMB. Monitoring pauses when Home or
+  its window is hidden. Empty/damaged videos found while making posters are skipped and hidden for that file's
+  current date/size; replacing or repairing the file lets it appear again on refresh. Read/network failures are
+  retried by Refresh without labelling the file damaged. A user pause of thumbnail generation survives folder updates.
+  Posters are stored in
   the same SQLite cache (480 pixels, the newest 2000 posters), with versioned metadata including codecs,
   streams, geometry, colour/HDR, audio, subtitles and declared text tags. F2 renames,
   ⌘⌫ moves to the Trash, ⌘↑ goes up, ⌘[ / ⌘] go back and forward, typing a name selects it. A video opened from a

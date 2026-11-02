@@ -4,6 +4,35 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct KeyframeThumbnailTests {
+    @Test func identityDateMatchesTheListingDate() throws {
+        let url = makeTemporaryDirectory().appendingPathComponent("video.mp4")
+        try Data().write(to: url)
+        let identity = try #require(MediaFileIdentity.read(url))
+        let listed = try url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        #expect(identity.modificationDate == listed)
+    }
+    @Test(arguments: ["", "not a video"])
+    func aDamagedFileReportsFailureAndDoesNotBlockTheNextPoster(payload: String) throws {
+        let directory = makeTemporaryDirectory()
+        let bad = directory.appendingPathComponent("damaged.mp4")
+        try Data(payload.utf8).write(to: bad)
+        let worker = RecentThumbnailer(store: ThumbnailStore(directory: directory.appendingPathComponent("pictures")),
+                                       callbackQueue: DispatchQueue(label: "test.thumbnail-completion"))
+        let failed = DispatchSemaphore(value: 0), completed = DispatchSemaphore(value: 0)
+        worker.start([.init(url: bad, seconds: nil), .init(url: Fixtures.url(Fixtures.withAudioGOP25), seconds: nil)],
+                     failed: { url, failure in
+                         #expect(url == bad)
+                         #expect(failure.marksUnreadable)
+                         failed.signal()
+                     }) { url, _ in
+            #expect(url == Fixtures.url(Fixtures.withAudioGOP25))
+            completed.signal()
+        }
+        #expect(completed.wait(timeout: .now() + 5) == .success)
+        #expect(failed.wait(timeout: .now() + 1) == .success)
+        worker.cancel()
+    }
+
     @Test func picksTheKeyframeAtOrBeforeThePositionAndKnowsTheLength() throws {
         let result = try #require(KeyframeThumbnail.make(url: Fixtures.url(Fixtures.withAudioGOP25), at: 2.5))
         #expect(abs(result.duration - 4) < 0.1)

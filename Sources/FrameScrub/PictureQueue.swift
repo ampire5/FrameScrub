@@ -14,6 +14,7 @@ import HomeScreenModel
     var onMade: ((URL) -> Void)?
     /// A file has its picture: found kept, or just made.
     var onHave: ((URL) -> Void)?
+    var onFailure: ((URL, RecentThumbnailer.Failure) -> Void)?
 
     let store: ThumbnailStore
     private let thumbnailer: RecentThumbnailer
@@ -22,6 +23,8 @@ import HomeScreenModel
     private let atPosition: Bool
     private var reading: Task<Void, Never>?
     private var pending: [URL] = []
+    private var failed: Set<URL> = []
+    private var generation = 0
     /// Of `pending`, the files whose picture is kept: only their facts are wanted.
     private var factsOnly: Set<URL> = []
 
@@ -34,7 +37,7 @@ import HomeScreenModel
 
     /// The cards `ids` (in view first) get their pictures; then the files of `rest` (a folder's other videos) are
     /// made ahead, after those, without being read.
-    func want(_ ids: [String], rest: [URL] = []) {
+    func want(_ ids: [String], rest: [URL] = [], allowGeneration: Bool = true) {
         let store = store, idPrefix = prefix
         let urls = ids.filter { $0.hasPrefix(idPrefix) }
             .map { URL(filePath: String($0.dropFirst(idPrefix.count)), directoryHint: .notDirectory) }
@@ -57,6 +60,7 @@ import HomeScreenModel
                     missing.append(url)
                 }
             }
+            guard allowGeneration else { return }
             let asked = Set(urls)
             let ahead = rest.filter { !asked.contains($0) }
             let kept = await Task.detached(priority: .background) { Set(ahead.filter { store.has($0) }) }.value
@@ -66,7 +70,7 @@ import HomeScreenModel
             let waiting = Set(self.pending)   // a folder can hold thousands: sets, not array scans
             let newProbes = probes.filter { !waiting.contains($0) }
             self.factsOnly.formUnion(newProbes)
-            let new = missing.filter { !waiting.contains($0) } + newProbes   // the probes after the pictures in view
+            let new = (missing.filter { !waiting.contains($0) } + newProbes).filter { !self.failed.contains($0) }
             guard !new.isEmpty else { return }
             let first = Set(new)
             self.pending = new + self.pending.filter { !first.contains($0) }   // what is in view first
@@ -80,14 +84,22 @@ import HomeScreenModel
             RecentThumbnailer.Job(url: $0, seconds: resume?.entry(for: $0).flatMap { $0.position > 0 ? $0.position : nil },
                                   factsOnly: factsOnly.contains($0))
         }
-        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers) { [weak self] url, facts in
+        thumbnailer.start(jobs, localWorkers: atPosition ? 1 : RecentThumbnailer.localWorkers, failed: { [weak self] url, failure in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.pending.removeAll { $0 == url }
+                self.factsOnly.remove(url)
+                self.failed.insert(url)
+                self.onFailure?(url, failure)
+            }
+        }) { [weak self] url, facts in
             MainActor.assumeIsolated { self?.made(url, facts: facts) }
         }
     }
 
     /// One more file to make, after those waiting, without dropping the asks in progress.
     func enqueue(_ url: URL) {
-        guard !pending.contains(url) else { return }
+        guard !pending.contains(url), !failed.contains(url) else { return }
         pending.append(url)
         startPending()
     }
@@ -103,23 +115,31 @@ import HomeScreenModel
     }
 
     func stop() {
+        generation += 1
         reading?.cancel()
         reading = nil
         pending = []
         factsOnly = []
+        failed = []
         thumbnailer.cancel()
+    }
+
+    @discardableResult func retryFailures() -> Set<URL> {
+        defer { failed = [] }
+        return failed
     }
 
     private func made(_ url: URL, facts: FileFacts) {
         pending.removeAll { $0 == url }
         onFacts?(url, facts)
         if factsOnly.remove(url) != nil { return }   // the picture was there already
-        let store = store, id = prefix + url.path
+        let store = store, id = prefix + url.path, generation = generation
         Task { @MainActor [weak self] in
             let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
-            if let image { self?.onPicture?(id, image) }
-            self?.onHave?(url)
-            self?.onMade?(url)
+            guard let self, self.generation == generation else { return }
+            if let image { self.onPicture?(id, image) }
+            self.onHave?(url)
+            self.onMade?(url)
         }
     }
 }

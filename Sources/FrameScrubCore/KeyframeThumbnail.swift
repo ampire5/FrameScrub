@@ -1,3 +1,4 @@
+import CFFmpeg
 import CoreImage
 import Foundation
 import HomeScreenModel
@@ -20,15 +21,20 @@ public enum KeyframeThumbnail {
 
     /// `seconds` nil looks 10 % into the file (the very first frame is often black). Nil when the file cannot be read.
     public static func make(url: URL, at seconds: Double?) -> Result? {
+        try? makeThrowing(url: url, at: seconds)
+    }
+
+    static func makeThrowing(url: URL, at seconds: Double?) throws -> Result {
         let identity = MediaFileIdentity.read(url)
-        guard let source = try? MediaSource(url: url) else { return nil }
+        let source = try MediaSource(url: url)
         let metadata = source.metadata
         if let identity { FileFactsStore.shared.store(metadata, identity: identity) }
         let index = source.approximateIndex()
         let duration = source.durationSeconds
-        guard let decoder = try? VideoDecoder(source: source, index: index) else { return nil }
+        let decoder = try VideoDecoder(source: source, index: index)
         let target = index.frameNumber(forSeconds: seconds ?? duration * 0.1)
-        guard (try? decoder.seekToKeyframe(near: target)) != nil, let frame = (try? decoder.nextFrame()) ?? nil else { return nil }
+        try decoder.seekToKeyframe(near: target)
+        guard let frame = try decoder.nextFrame() else { throw FFmpegError(cff_averror_invaliddata(), "no video frame") }
         let upright = FrameImageRenderer.uprightSize(of: frame, rotationClockwise: source.rotationClockwise)
         let geometry = DisplayGeometry.resolve(mode: .auto, upright: upright, rotationClockwise: source.rotationClockwise,
                                                sampleAspect: source.sampleAspect, detectedCrop: nil)
@@ -41,8 +47,14 @@ public enum KeyframeThumbnail {
 
 /// Fills in the start screen's missing pictures one file at a time, in the background. Each picture goes to the
 /// `ThumbnailStore`; `completion` then gets the file and its facts (its length among them). A job with `factsOnly`
-/// (its picture is kept already) only probes the file. A new `start` or `cancel` drops what is left.
+/// (its picture is kept already) only probes the file. `failed` terminates unsuccessful jobs, including those without
+/// any metadata; no second probe of a failed decode. A new `start` or `cancel` drops what is left.
 public final class RecentThumbnailer: @unchecked Sendable {
+    public struct Failure: Sendable {
+        public let error: OpenFailure
+        public let identity: MediaFileIdentity?
+        public var marksUnreadable: Bool { error.marksUnreadable }
+    }
     public struct Job: Sendable {
         public let url: URL
         /// Where the file was left; nil when it has no position.
@@ -71,7 +83,9 @@ public final class RecentThumbnailer: @unchecked Sendable {
 
     /// Files on this Mac's own disks are made `localWorkers` at a time; on a share (or a volume that does not say), one
     /// at a time, as its reads are the slow part.
-    public func start(_ jobs: [Job], localWorkers: Int = 1, completion: @escaping @Sendable (URL, FileFacts) -> Void) {
+    public func start(_ jobs: [Job], localWorkers: Int = 1,
+                      failed: @escaping @Sendable (URL, Failure) -> Void = { _, _ in },
+                      completion: @escaping @Sendable (URL, FileFacts) -> Void) {
         let flag = CancellationFlag()
         lock.withLock {
             current?.cancel()
@@ -92,18 +106,31 @@ public final class RecentThumbnailer: @unchecked Sendable {
                     let job = jobs[i]
                     let identity = MediaFileIdentity.read(job.url)
                     // A pool per file: the picture holds the decoded frame (an IOSurface of VTDecoderXPCService).
-                    let facts: FileFacts? = autoreleasepool {
-                        guard !job.factsOnly, let result = KeyframeThumbnail.make(url: job.url, at: job.seconds) else {
-                            return VideoFacts.probe(url: job.url)   // no picture wanted, or none (no decoder): the facts are known
-                        }
+                    let outcome: Swift.Result<FileFacts, Error> = autoreleasepool { Swift.Result {
+                        if identity?.size == 0 { throw FFmpegError(cff_averror_invaliddata(), "empty video") }
+                        if job.factsOnly { return try VideoFacts.probeThrowing(url: job.url) }
+                        let result = try KeyframeThumbnail.makeThrowing(url: job.url, at: job.seconds)
                         // A missing pre-open identity cannot safely identify the decoded picture.
                         if let identity = result.identity {
                             store.save(result.picture, for: job.url, context: context, identity: identity)
                         }
                         return result.facts
+                    } }
+                    let current = identity == MediaFileIdentity.read(job.url)
+                    callbackQueue.async {
+                        guard !flag.isCancelled else { return }
+                        guard current else {
+                            failed(job.url, Failure(error: OpenFailure(POSIXError(.ESTALE)), identity: identity))
+                            return
+                        }
+                        switch outcome {
+                        case .success(let facts): completion(job.url, facts)
+                        case .failure(let error):
+                            let cause: Error
+                            if case BackendError.fatal(let underlying) = error { cause = underlying } else { cause = error }
+                            failed(job.url, Failure(error: OpenFailure(cause), identity: identity))
+                        }
                     }
-                    guard let facts, identity == MediaFileIdentity.read(job.url) else { continue }
-                    callbackQueue.async { if !flag.isCancelled { completion(job.url, facts) } }
                 }
             }
         }

@@ -835,6 +835,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             view.browser.show(location, selecting: selecting)
         }
         hasShownHome = true
+        homeSource?.setWatchingVisible(window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
         updatePrecisionWheel()
         if core.url == nil {
             videoView.onNextPicture = nil
@@ -901,7 +902,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             },
             thumbnails: thumbnails, thumbnailer: recentThumbnailer,
             stashPage: { [weak self] in self?.makeStashLibrary() },
-            hasStash: { [weak self] in self?.core.config.stashEnabled ?? false })
+            hasStash: { [weak self] in self?.core.config.stashEnabled ?? false }, unreadable: unreadable)
         let view = HomeView(source: source)
         source.view = view.browser
         view.browser.unreadable = unreadable
@@ -968,6 +969,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         do { try preferences.update(["home-sidebar"]) { $0.homeSidebar = shown } } catch {
             showMessage("Cannot save settings: \(error)", duration: 4)
         }
+    }
+
+    var canRefreshHome: Bool { showsHome && home?.browser.location != .source(HomeRecent.stash) }
+    func refreshHome() {
+        guard canRefreshHome else { return }
+        homeSource?.refresh()
     }
 
     /// File › Copy Path (⌥⌘C, as Finder's Copy as Pathname), and Recent's Copy Path.
@@ -1092,6 +1099,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         stashSession?.flushBeforeQuit()
         for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
         slotWrites = [:]
+        homeSource?.stopImages()
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)
         memoryPressure?.cancel()
@@ -3753,7 +3761,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showCursorAfterScrub()
         shutdown()
         // The app has exactly one player window; without it nothing can play, even if Settings is still open.
-        DispatchQueue.main.async { NSApp.terminate(nil) }
+        // AppKit waits in a nested run loop for .terminateLater. Enter it from the run loop, not a main-queue
+        // block: that block would prevent the main-actor persistence task from running and replying to AppKit.
+        NSApp.perform(#selector(NSApplication.terminate(_:)), with: nil, afterDelay: 0)
     }
 
     func windowDidChangeScreen(_ notification: Notification) { updateScreenPixelSize() }
@@ -3766,6 +3776,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         updatePrecisionWheel()
     }
     private func updateViewingVisibility() {
+        homeSource?.setWatchingVisible(showsHome && window?.isVisible == true && window?.isMiniaturized == false
+                                      && window?.occlusionState.contains(.visible) == true)
         let visible = !isTerminating && !showsHome && failureView.isHidden && window?.isVisible == true
             && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
         core.setViewingVisible(visible)
