@@ -82,6 +82,13 @@ public final class PlayerCore {
     public private(set) var readCache: ReadCache?
     /// How hard the open file may be read (`network-mode` and the file's volume), decided when it opens.
     public private(set) var networkPolicy = NetworkPolicy.local
+    /// A terminal missing picture has finished foreground work too; side previews must not wait for it forever.
+    public var allowsBackgroundPreview: Bool {
+        guard let index, index.frameCount > 0, cache.isResolved(position) else { return false }
+        if isPaused { return true }
+        let next = min(index.frameCount - 1, max(0, position + direction))
+        return cache.isResolved(next)
+    }
     public private(set) var index: FrameIndex?
     public private(set) var position = 0
     public private(set) var isPaused = true
@@ -293,6 +300,9 @@ public final class PlayerCore {
                                  policy: networkPolicy, frameRate: source.frameRate)
         filler.onInsert = { [weak self] n in
             DispatchQueue.main.async { self?.frameInserted(n, session: current) }
+        }
+        filler.onFocusUnavailable = { [weak self] n in
+            DispatchQueue.main.async { self?.focusUnavailable(n, session: current) }
         }
         filler.onError = { [weak self] error in
             DispatchQueue.main.async { self?.decodeFailed(error, session: current) }
@@ -1019,6 +1029,11 @@ public final class PlayerCore {
         if firstView || persistImmediately, let url, let size = readCache?.fileSize, let lastViewedAt {
             resumeStore?.recordView(for: url, size: size, at: lastViewedAt)
         }
+    }
+
+    private func focusUnavailable(_ n: Int, session current: Int) {
+        guard current == session, n == position, cache.isUndecodable(n) else { return }
+        showCurrent() // wakes deferred side work even when there is no new display-frame callback
     }
 
     private func frameInserted(_ n: Int, session current: Int) {

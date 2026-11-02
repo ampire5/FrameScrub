@@ -70,6 +70,150 @@ import Testing
 
     // MARK: PreviewProvider
 
+    @Test func readyOnlyMissNeverOpensTheDecoderOrPoisonsLaterRequests() async throws {
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index,
+            rotationClockwise: 0, widthPixels: 160)
+        defer { provider.stop() }
+        let images = collect(provider)
+        let finished = Locked(false), unavailable = Locked(false)
+        provider.onRequestFinished = { finished.mutate { $0 = true } }
+        provider.onUnavailable = { unavailable.mutate { $0 = true } }
+        provider.request(seconds: 12, readyOnly: true)
+        #expect(await eventually { finished.value })
+        #expect(images.value.isEmpty && !unavailable.value && provider.decodeCount == 0)
+        provider.request(seconds: 12)
+        #expect(await eventually { unavailable.value })
+    }
+
+    @Test func providersShareThumbnailsWithoutDecodingAgain() async throws {
+        let url = Fixtures.url(Fixtures.h264)
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let pool = PreviewImagePool(url: url, rotationClockwise: 0)
+        let hover = PreviewProvider(url: url, index: index, rotationClockwise: 0, widthPixels: 320, imagePool: pool)
+        let film = PreviewProvider(url: url, index: index, rotationClockwise: 0, widthPixels: 160, imagePool: pool)
+        defer { hover.stop(); film.stop() }
+        let first = collect(hover), second = collect(film)
+        hover.request(seconds: 9)
+        #expect(await eventually { first.value.count == 1 })
+        #expect(film.canReuse(seconds: 10))
+        film.request(seconds: 10)
+        #expect(await eventually { second.value.count == 1 })
+        #expect(film.decodeCount == 0)
+        #expect(abs(try #require(second.value.first).frameSeconds - 250.0 / 30) < 0.00001)
+    }
+
+    @Test func smallFilmImageDoesNotReduceHoverResolution() async throws {
+        let url = Fixtures.url(Fixtures.h264)
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let pool = PreviewImagePool(url: url, rotationClockwise: 0)
+        let film = PreviewProvider(url: url, index: index, rotationClockwise: 0, widthPixels: 80, imagePool: pool)
+        let hover = PreviewProvider(url: url, index: index, rotationClockwise: 0, widthPixels: 320, imagePool: pool)
+        defer { film.stop(); hover.stop() }
+        let first = collect(film), second = collect(hover)
+        film.request(seconds: 9)
+        #expect(await eventually { first.value.count == 1 })
+        #expect(!hover.canReuse(seconds: 9))
+        hover.request(seconds: 9)
+        #expect(await eventually { second.value.count == 1 })
+        #expect(try #require(second.value.first).image.width == 320)
+        #expect(hover.decodeCount == 1)
+    }
+
+    @Test func matchingPlaybackFrameAvoidsOpeningPreviewDecoder() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let decoder = try VideoDecoder(source: source, index: index)
+        try decoder.seekToKeyframe(near: 360)
+        let frame = try #require(try decoder.nextFrame())
+        let cache = FrameCache(budgetBytes: 32 * 1024 * 1024)
+        cache.insert(frame)
+        // The URL cannot be decoded: a delivered image must have come from the playback cache.
+        let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index,
+            rotationClockwise: 0, widthPixels: 160, frameCache: cache)
+        defer { provider.stop() }
+        let images = collect(provider)
+        #expect(provider.canReuse(seconds: 12))
+        provider.request(seconds: 12, readyOnly: true)
+        #expect(await eventually { images.value.count == 1 })
+        #expect(provider.decodeCount == 0)
+        #expect(abs(try #require(images.value.first).frameSeconds - 250.0 / 30) < 0.00001)
+    }
+
+    @Test func nearbyPlaybackFramesAndApproximateNumbersCannotMasqueradeAsKeyframes() throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let decoder = try VideoDecoder(source: source, index: index)
+        try decoder.seek(toFrame: 251)
+        let frame = try #require(try decoder.nextFrame())
+        let cache = FrameCache(budgetBytes: 32 * 1024 * 1024)
+        cache.insert(frame)
+        let exact = PreviewProvider(url: Fixtures.url(Fixtures.h264), index: index,
+            rotationClockwise: 0, widthPixels: 160, frameCache: cache)
+        let approximate = PreviewProvider(url: Fixtures.url(Fixtures.h264),
+            index: .approximate(startPTS: 0, ticksPerFrame: 1, frameCount: 600, timeBase: 1.0 / 30),
+            rotationClockwise: 0, widthPixels: 160, frameCache: cache)
+        defer { exact.stop(); approximate.stop() }
+        #expect(!exact.canReuse(seconds: 12))
+        #expect(!approximate.canReuse(seconds: 251.0 / 30))
+    }
+
+    @Test func poolHonoursSourceRotationResolutionAndBounds() throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let frame = try #require(try VideoDecoder(source: source, index: index).nextFrame())
+        let image = try #require(FrameImageRenderer().thumbnail(for: frame, rotationClockwise: 0, width: 160))
+        let url = Fixtures.url(Fixtures.h264)
+        let pool = PreviewImagePool(url: url, rotationClockwise: 0, capacity: 2)
+        pool.set(image, pts: 0, widthPixels: 160)
+        #expect(pool.image(pts: 0, widthPixels: 80) != nil)
+        #expect(pool.image(pts: 0, widthPixels: 320) == nil)
+        for (sourceURL, rotation) in [(Fixtures.url(Fixtures.withAudio), 0), (url, 90)] {
+            let provider = PreviewProvider(url: sourceURL, index: index, rotationClockwise: rotation,
+                widthPixels: 80, imagePool: pool)
+            #expect(!provider.canReuse(seconds: 0))
+            provider.stop()
+        }
+        pool.set(image, pts: 250, widthPixels: 160)
+        pool.set(image, pts: 500, widthPixels: 160)
+        #expect(pool.image(pts: 0, widthPixels: 80) == nil)
+        #expect(pool.count == 2)
+        let tiny = PreviewImagePool(url: url, rotationClockwise: 0, budgetBytes: 1)
+        tiny.set(image, pts: 0, widthPixels: 160)
+        #expect(tiny.count == 0)
+        let budget = PreviewImagePool(url: url, rotationClockwise: 0,
+            budgetBytes: image.bytesPerRow * image.height * 2)
+        for pts: Int64 in [0, 250, 500] { budget.set(image, pts: pts, widthPixels: 160) }
+        #expect(budget.count == 2 && budget.image(pts: 0, widthPixels: 160) == nil)
+    }
+
+    @Test func approximateDecodeIsReusedByActualPTSAfterExactIndexArrives() async throws {
+        let url = Fixtures.url(Fixtures.h264)
+        let approximate = try MediaSource(url: url).approximateIndex()
+        let (_, exact) = try openIndexed(Fixtures.h264)
+        let provider = PreviewProvider(url: url, index: approximate, rotationClockwise: 0, widthPixels: 160)
+        defer { provider.stop() }
+        let images = collect(provider)
+        provider.request(seconds: 12)
+        #expect(await eventually { images.value.count == 1 })
+        provider.updateIndex(exact)
+        provider.request(seconds: 9)
+        #expect(await eventually { images.value.count == 2 })
+        #expect(provider.decodeCount == 1)
+        #expect(abs(try #require(images.value.last).frameSeconds - 250.0 / 30) < 0.00001)
+    }
+
+    @Test func stoppingSuppressesQueuedImageAndCompletion() async throws {
+        let (_, index) = try openIndexed(Fixtures.h264)
+        let provider = PreviewProvider(url: Fixtures.url(Fixtures.h264), index: index,
+            rotationClockwise: 0, widthPixels: 160, policy: .network)
+        let images = collect(provider)
+        let completions = Locked(0)
+        provider.onRequestFinished = { completions.mutate { $0 += 1 } }
+        provider.request(seconds: 9)
+        provider.stop()
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(images.value.isEmpty && completions.value == 0)
+        #expect(provider.decodeCount == 0)
+    }
+
     @Test func aFailedRequestStillReleasesTheSequentialLoader() async throws {
         let (_, index) = try openIndexed(Fixtures.h264)
         let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index, rotationClockwise: 0, widthPixels: 160)
@@ -135,9 +279,13 @@ import Testing
         let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index, rotationClockwise: 0, widthPixels: 160)
         defer { provider.stop() }
         let unavailable = Locked(false)
+        let completed = Locked(0)
         provider.onUnavailable = { unavailable.mutate { $0 = true } }
+        provider.onRequestFinished = { completed.mutate { $0 += 1 } }
         provider.request(seconds: 1)
-        #expect(await eventually { unavailable.value })
+        #expect(await eventually { unavailable.value && completed.value == 1 })
+        provider.request(seconds: 2)
+        #expect(await eventually { completed.value == 2 })
     }
 }
 

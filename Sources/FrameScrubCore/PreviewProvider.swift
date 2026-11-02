@@ -8,8 +8,8 @@ public struct PreviewImage: @unchecked Sendable {
 }
 
 /// Thumbnails for the seek bar (spec §7.3): a background decoder with its own demuxer returns the keyframe
-/// at or before the requested time. Requests collapse to the latest; the last 200 thumbnails are cached by
-/// keyframe pts (an approximate index does not know keyframes, so it only caches after decoding).
+/// at or before the requested time. Requests collapse to the latest. Ready images and matching playback
+/// keyframes are reused before opening the decoder; thumbnail rendering stays on this provider's worker.
 public final class PreviewProvider: @unchecked Sendable {
     public var onImage: ((PreviewImage) -> Void)?          // main queue
     public var onUnavailable: (() -> Void)?                // main queue; the file cannot be previewed
@@ -23,8 +23,9 @@ public final class PreviewProvider: @unchecked Sendable {
     private let widthPixels: Int
     private var readThrottle: PreviewReadThrottle
     private let readAhead: Bool
-    private let renderer = FrameImageRenderer()
-    private let cache = LRUCache<Int64, CGImage>(capacity: 200)
+    private lazy var renderer = FrameImageRenderer() // worker-only, including Core Image context creation
+    private let imagePool: PreviewImagePool
+    private let frameCache: FrameCache?
     private let lock = NSLock()
     private var index: FrameIndex
     private var decoder: VideoDecoder?
@@ -33,40 +34,55 @@ public final class PreviewProvider: @unchecked Sendable {
     private var decodes = 0
     private var requestedGeneration = 0
     private var deliveredGeneration = 0
-    private struct Request: Sendable { let seconds: Double; let generation: Int }
+    private struct Request: Sendable { let seconds: Double; let readyOnly: Bool; let generation: Int }
     private var worker: LatestOnlyWorker<Request>!
 
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
-                policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated) {
+                policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated,
+                imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil) {
         self.url = url
         self.readCache = readCache
         self.index = index
+        self.imagePool = imagePool.flatMap { $0.matches(url: url, rotationClockwise: rotationClockwise) ? $0 : nil }
+            ?? PreviewImagePool(url: url, rotationClockwise: rotationClockwise)
+        self.frameCache = frameCache
         rotation = rotationClockwise
         self.widthPixels = max(1, widthPixels)
         readThrottle = PreviewReadThrottle(interval: policy.previewSettle)
         readAhead = policy.sideReadAhead
-        worker = LatestOnlyWorker<Request>(label: "framescrub.preview", qos: qos) { [weak self] request in self?.handle(request) }
+        worker = LatestOnlyWorker<Request>(label: "framescrub.preview", qos: qos) { [weak self] in self?.handle($0) }
     }
 
-    public func request(seconds: Double) {
-        let generation = lock.withLock { requestedGeneration += 1; return requestedGeneration }
-        let request = Request(seconds: seconds, generation: generation)
-        // Cache lookup stays available even while the sole worker is waiting on
-        // a cold-read deadline or decoding. Every LRU access uses this same lock.
-        let cached: (CGImage, Double)? = lock.withLock {
-            guard !stopped, !failed, index.isExact else { return nil }
-            let key = index.pts(forFrame: index.keyframe(atOrBefore: index.frameNumber(forSeconds: seconds)))
-            return cache.get(key).map { ($0, index.seconds(forPTS: key)) }
+    public func request(seconds: Double, readyOnly: Bool = false) {
+        let (generation, current, skip) = lock.withLock { () -> (Int, FrameIndex, Bool) in
+            requestedGeneration += 1
+            return (requestedGeneration, index, stopped || failed)
         }
-        if let (image, frameSeconds) = cached {
-
-            deliver(image, request: request, frameSeconds: frameSeconds)
-            DispatchQueue.main.async { [weak self] in self?.onRequestFinished?() }
-        } else { worker.submit(request) }
+        guard !skip else { finishRequest(); return }
+        let request = Request(seconds: seconds, readyOnly: readyOnly, generation: generation)
+        // Shared ready images bypass a worker waiting on a cold-read deadline or decoding.
+        if current.isExact {
+            let key = current.pts(forFrame: current.keyframe(atOrBefore: current.frameNumber(forSeconds: seconds)))
+            if let image = imagePool.image(pts: key, widthPixels: widthPixels) {
+                deliver(image, request: request, frameSeconds: current.seconds(forPTS: key))
+                finishRequest()
+                return
+            }
+        }
+        worker.submit(request)
     }
 
     /// The exact index arrived: later requests use it.
     public func updateIndex(_ newIndex: FrameIndex) { lock.withLock { index = newIndex } }
+
+    /// Cheap readiness check for the bounded film scheduler: no I/O, rendering or full-cache scan.
+    public func canReuse(seconds: Double) -> Bool {
+        let current = lock.withLock { index }
+        guard current.isExact else { return false }
+        let n = current.keyframe(atOrBefore: current.frameNumber(forSeconds: seconds))
+        let pts = current.pts(forFrame: n)
+        return imagePool.contains(pts: pts, widthPixels: widthPixels) || frameCache?.frame(n)?.pts == pts
+    }
 
     public func stop() {
         lock.withLock { stopped = true }
@@ -77,17 +93,28 @@ public final class PreviewProvider: @unchecked Sendable {
 
     private func handle(_ request: Request) {
         let seconds = request.seconds
-        defer { DispatchQueue.main.async { [weak self] in self?.onRequestFinished?() } }
+        defer { finishRequest() }
         let (current, skip) = lock.withLock { (index, stopped || failed) }
         guard !skip else { return }
         let n = current.frameNumber(forSeconds: seconds)
         let key: Int64? = current.isExact ? current.pts(forFrame: current.keyframe(atOrBefore: n)) : nil
-        if let key, let hit = lock.withLock({ cache.get(key) }) {
+        if let key, let hit = imagePool.image(pts: key, widthPixels: widthPixels) {
             deliver(hit, request: request, frameSeconds: current.seconds(forPTS: key))
             return
         }
-        // Limit cold reads on a share without starving the preview while the pointer moves.
-        // The latest pending request takes the elapsed slot instead of restarting a debounce.
+        if let key {
+            let keyframe = current.keyframe(atOrBefore: n)
+            if let frame = frameCache?.frame(keyframe), frame.pts == key,
+               let image = renderer.thumbnail(for: frame, rotationClockwise: rotation, width: widthPixels) {
+                imagePool.set(image, pts: frame.pts, widthPixels: widthPixels)
+                deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts))
+                return
+            }
+        }
+        // A speculative reuse may lose its source frame to eviction before this worker runs. Never turn it
+        // into a new read/decode; only a visible request may fall back to the decoder.
+        guard !request.readyOnly else { return }
+        // Limit cold reads without starving a moving pointer; ready-only work never reaches this path.
         let delay = readThrottle.delay(at: ProcessInfo.processInfo.systemUptime)
         if delay > 0 {
             Thread.sleep(forTimeInterval: delay)
@@ -98,7 +125,10 @@ public final class PreviewProvider: @unchecked Sendable {
         if decoder == nil {
             do { decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache, readAhead: readAhead), index: current) } catch {
                 lock.withLock { failed = true }
-                DispatchQueue.main.async { [weak self] in self?.onUnavailable?() }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, !self.lock.withLock({ self.stopped }) else { return }
+                    self.onUnavailable?()
+                }
                 return
             }
         }
@@ -109,10 +139,17 @@ public final class PreviewProvider: @unchecked Sendable {
             guard let frame = try decoder.nextFrame(),
                   let image = renderer.thumbnail(for: frame, rotationClockwise: rotation, width: widthPixels) else { return }
             lock.withLock { decodes += 1 }
-            lock.withLock { cache.set(key ?? frame.pts, image) }
+            imagePool.set(image, pts: frame.pts, widthPixels: widthPixels)
             deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts))
         } catch {
             decoder = nil      // a transient seek/decode error drops this request; the next one reopens the file
+        }
+    }
+
+    private func finishRequest() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.lock.withLock({ self.stopped }) else { return }
+            self.onRequestFinished?()
         }
     }
 
@@ -121,14 +158,12 @@ public final class PreviewProvider: @unchecked Sendable {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             let deliverable = self.lock.withLock { () -> Bool in
-                // A slow cold result is still useful while a newer cold request
-                // waits. Only a newer image already delivered makes it obsolete.
+                // A slow cold result is useful until a newer ready image has actually been delivered.
                 guard !self.stopped, request.generation > self.deliveredGeneration else { return false }
                 self.deliveredGeneration = request.generation
                 return true
             }
-            guard deliverable else { return }
-            self.onImage?(result)
+            if deliverable { self.onImage?(result) }
         }
     }
 }

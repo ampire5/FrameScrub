@@ -112,6 +112,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let seekBar = SeekBarView()
     private var seekBarHeight: NSLayoutConstraint!
     private var filmstripLoader: FilmstripPreviewLoader?
+    private var filmstripPrewarmFrames = Set<Int>()
     private let backButton = BackButton()
     private let previewView = PreviewView()
     /// The playlist's view; shown in whichever slot holds the playlist.
@@ -1537,6 +1538,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.filmstripLoader?.updateIndex($0)
             self?.pluginGrabber?.updateIndex($0)
             self?.sceneSearch?.updateIndex($0)
+            self?.prewarmFilmstrip()
         }
         core.onIndexProgress = { [weak self] in self?.showIndexing($0) }
         seekBar.alphaValue = 0
@@ -2619,6 +2621,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let key = PreviewKey(enabled: core.config.preview, width: CGFloat(core.config.previewWidth), url: core.url, scale: scale)
         if !force, key == previewKey { return }
         previewKey = nil
+        filmstripPrewarmFrames.removeAll()
         filmstripLoader?.stop()
         filmstripLoader = nil
         seekBar.resetFilmstrip()
@@ -2635,9 +2638,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         guard let url = core.url, let index = core.index, let info = core.info else { return }
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
+        let imagePool = PreviewImagePool(url: url, rotationClockwise: info.rotationClockwise)
         let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
                                        widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
-                                       policy: core.networkPolicy)
+                                       policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
         provider.onImage = { [weak self] result in
             guard let self else { return }
             if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
@@ -2652,18 +2656,34 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         previewProvider = provider
         let loader = FilmstripPreviewLoader(url: url, index: index, rotation: info.rotationClockwise,
-                                            width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy)
+                                            width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy,
+                                            imagePool: imagePool, frameCache: core.cache)
         loader.mayRead = { [weak self] in
             guard let self else { return false }
             guard seekBar.showsFilmstrip, seekBar.alphaValue > 0.01, !seekBar.isThumbnailInteraction, !showsHome,
                   window?.occlusionState.contains(.visible) == true else { return false }
-            if core.isPaused { return true }
-            guard let index = core.index, core.cache.contains(core.position) else { return false }
-            let next = min(index.frameCount - 1, max(0, core.position + core.direction))
-            return core.cache.contains(next)
+            return core.allowsBackgroundPreview
+        }
+        loader.mayPrewarm = { [weak self] in
+            guard let self else { return false }
+            return seekBar.filmstripEnabled && !seekBar.showsFilmstrip && !seekBar.isInteracting
+                && previewFraction == nil && !showsHome && !core.isExporting
+                && window?.occlusionState.contains(.visible) == true && core.allowsBackgroundPreview
         }
         loader.onImage = { [weak self] image, seconds in self?.seekBar.setFilmstripImage(image, seconds: seconds) }
         filmstripLoader = loader
+        prewarmFilmstrip()
+    }
+
+    private func prewarmFilmstrip() {
+        guard let loader = filmstripLoader, let index = core.index, index.isExact, seekBar.filmstripEnabled,
+              !seekBar.showsFilmstrip, !showsHome, window?.occlusionState.contains(.visible) == true else { return }
+        seekBar.updateTimeline(index: core.index, duration: core.durationSeconds, paused: core.isPaused,
+                               uprightSize: uprightVideoSize, geometry: videoView.geometry,
+                               previewSettle: core.networkPolicy.previewSettle)
+        let times = seekBar.prewarmFilmstripTimes(center: core.currentSeconds)
+        filmstripPrewarmFrames = Set(times.map { index.frameNumber(forSeconds: $0) })
+        loader.prewarm(times)
     }
 
     /// Sorts and filters the folder's last listing (only `url` until the folder has been read).
@@ -3641,6 +3661,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     func player(_ player: PlayerCore, display frame: DecodedFrame) {
         videoView.show(frame)
+        // All-intra video has a keyframe on every tick. Only the bounded missing sample set triggers planning.
+        if filmstripPrewarmFrames.contains(frame.number) {
+            prewarmFilmstrip()
+        }
         filmstripLoader?.resume()
         lastFrame = frame
         checkSceneCut(frame)
@@ -3650,6 +3674,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        filmstripLoader?.resume()
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused

@@ -5,6 +5,9 @@ Machine: Mac16,6 (Apple Silicon), macOS 27.2 (26B123), native debug build, 2026-
 `swift build --jobs 4`, then `.build/debug/FrameScrub --bench-close-window` in a desktop session. The benchmark
 launches the real application, closes its main window after launch, and gives the real async user-state flush ten
 seconds to finish. An independent utility-queue watchdog exits with status 1 if the process stays alive.
+The benchmark can select a visible main-eligible window even when the desktop denies foreground focus, rather
+than depending on `NSApp.mainWindow` being assigned. A timeout before the closing message means launch/window
+selection failed, not that termination deadlocked.
 
 | Version | Result |
 |---|---|

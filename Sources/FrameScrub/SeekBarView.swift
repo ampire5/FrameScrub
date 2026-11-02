@@ -87,12 +87,27 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         let key = [Double(film.width), Double(stripHeight), Double(pictureAspect), duration, displayedTime,
                    lensSeconds, lensFocus, lensCrop, Double(filmMode.rawValue), lensMagnification, lensDensity]
         if cachedFilmLayout == nil || layoutKey != key {
-            cachedFilmLayout = TimelineFilmLayout(width: key[0], height: key[1], aspect: key[2], duration: duration,
-                center: displayedTime, secondsPerThumbnail: lensSeconds, focusFraction: lensFocus, cropStrength: lensCrop,
-                mode: filmMode, magnification: lensMagnification, outsideDensity: lensDensity)
+            cachedFilmLayout = makeFilmLayout(center: displayedTime)
             layoutKey = key
         }
         return cachedFilmLayout!
+    }
+    private func makeFilmLayout(center: Double) -> TimelineFilmLayout {
+        TimelineFilmLayout(width: Double(film.width), height: Double(stripHeight), aspect: Double(pictureAspect),
+            duration: duration, center: center, secondsPerThumbnail: lensSeconds, focusFraction: lensFocus,
+            cropStrength: lensCrop, mode: filmMode, magnification: lensMagnification, outsideDensity: lensDensity)
+    }
+    /// The same samples that reveal will draw, without revealing, requesting a read or invalidating the view.
+    func prewarmFilmstripTimes(center: Double) -> [Double] {
+        guard filmstripEnabled, !showsFilmstrip, film.width > 0, index?.isExact == true else { return [] }
+        let layout = makeFilmLayout(center: center)
+        var times: [Double] = []
+        for cell in layout.cells.sorted(by: { abs($0.offset - layout.playheadOffset) < abs($1.offset - layout.playheadOffset) }) {
+            guard let seconds = cell.seconds else { continue }
+            let key = imageTime(seconds)
+            if images[key] == nil, !times.contains(key) { times.append(key) }
+        }
+        return times
     }
     private var scale: TimelineProjection { filmLayout.lens }
 
@@ -200,7 +215,9 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         lensFocus = focus.isFinite ? min(0.75, max(0.08, focus)) : 0.3
         lensCrop = crop.isFinite ? min(1, max(0, crop)) : 0.7
         if let magnification { lensMagnification = magnification.isFinite ? min(3.8, max(1, magnification)) : 2.75 }
-        if let density { lensDensity = density.isFinite ? min(4, max(0.5, density)) : 2.75 }
+        if let density {
+            lensDensity = density.isFinite ? min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, density)) : 2.75
+        }
         if save { saveLensPreferences() }
         requestedTimes = []; updateDesiredImages(); updateFilmHover(); needsDisplay = true
     }
@@ -212,6 +229,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 UserDefaults.standard.set(value, forKey: key)
             }
         }
+    }
+    func configureFilmHeight(_ height: Double, save: Bool = true) {
+        guard height.isFinite else { return }
+        let value = CGFloat(min(96, max(36, height))).rounded()
+        guard value != stripHeight else { return }
+        applyFilmHeight(value, save: save)
     }
     func setPlaybackControlsVisible(_ shown: Bool) {
         playbackVisible = shown
@@ -556,7 +579,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 let delta = abs(dx) > abs(dy) ? -dx : dy
                 let amount = delta * (event.hasPreciseScrollingDeltas ? 0.02 : 0.2)
                 if filmMode == .segment { lensSeconds = min(30, max(0.1, lensSeconds * exp(amount))) }
-                else { lensDensity = min(4, max(0.5, lensDensity * exp(-amount))) }
+                else { lensDensity = min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, lensDensity * exp(-amount))) }
                 requestedTimes = []; updateFilmHover(); needsDisplay = true
             } else if event.hasPreciseScrollingDeltas && abs(dx) > abs(dy) {
                 stopFilmTransition()
@@ -693,11 +716,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             panel.onChange = { [weak self] seconds, focus, crop, magnification, density in
                 self?.configureLens(seconds: seconds, focus: focus, crop: crop, magnification: magnification, density: density)
             }
+            panel.onHeightChange = { [weak self] in self?.configureFilmHeight($0) }
             lensPopover.contentViewController = panel
             lensPopover.behavior = .transient; lensPopover.delegate = self
         }
         panel.setValues(seconds: lensSeconds, focus: lensFocus, crop: lensCrop,
-                        magnification: lensMagnification, density: lensDensity, mode: filmMode)
+                        magnification: lensMagnification, density: lensDensity, mode: filmMode, height: Double(stripHeight))
         lensPopover.show(relativeTo: NSRect(x: bounds.midX - 1, y: 29, width: 2, height: visibleFilmHeight),
                          of: self, preferredEdge: .maxY)
     }
@@ -710,9 +734,13 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         updateDesiredImages(); scheduleControlHide(); onEnterExit?()
     }
     @objc private func setFilmHeight(_ item: NSMenuItem) {
-        stripHeight = CGFloat(item.tag)
+        applyFilmHeight(CGFloat(item.tag), save: true)
+    }
+    private func applyFilmHeight(_ height: CGFloat, save: Bool) {
+        stopFilmTransition()
+        stripHeight = height
         cancelFilmstripRequests()
-        UserDefaults.standard.set(Double(stripHeight), forKey: "timeline-film-height")
+        if save { UserDefaults.standard.set(Double(stripHeight), forKey: "timeline-film-height") }
         if stripHeight > 0 { filmRevealed = true }
         else {
             filmRevealed = false; filmHover.isHidden = true; filmPinned = false

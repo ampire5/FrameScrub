@@ -10,7 +10,8 @@ import AppKit
         }
         Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { timer in
             MainActor.assumeIsolated {
-                guard let window = NSApp.mainWindow else { return }
+                // A desktop launch may show the window without granting this test process foreground focus.
+                guard let window = NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.canBecomeMain }) else { return }
                 timer.invalidate()
                 if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                                 timestamp: 0, windowNumber: window.windowNumber, context: nil,

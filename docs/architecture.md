@@ -25,6 +25,25 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   its weak `PlayerCoreDelegate` delivers frames and state/feedback to the UI.
 - Open/seek/input → controller → `PlayerCore` → index/cache/decoder work → delegate frame → `VideoView`.
   `PictureQueue` and `PreviewProvider` concern presentation/previews, not a second playback source of truth.
+- `PlayerWindowController.configurePreview` creates one `PreviewImagePool` per open-file preview configuration,
+  shared by hover `PreviewProvider` and `FilmstripPreviewLoader`'s provider. It bounds small SDR images by entries
+  and pixel bytes, with actual PTS/rotation/resolution identity. Providers reuse matching `FrameCache` keyframes
+  before opening their own decoder; Core Image construction/rendering stays on each provider's worker.
+  Shared-pool hits can bypass a busy provider worker; delivery generations prevent an older cold result from
+  replacing a newer ready image. Network throttling applies only to cold reads, with the first read immediate.
+  The film loader selects reusable samples first, then centre-first misses, with one utility request in flight
+  and at most `TimelineFilmLayout.maximumCells` pending times. `PlayerCore.allowsBackgroundPreview` requires
+  resolved foreground work (cached or terminally undecodable current frame, also the next frame while playing).
+  `CacheFiller.onFocusUnavailable` reports the unresolved-to-undecodable focus transition outside its lock;
+  PlayerCore checks session/current position and emits a state change even without a displayable frame.
+  Hidden/interaction gating and display/state callbacks defer/resume work without polling. Stop suppresses
+  queued delivery/completion; old providers can only populate their old per-file pool.
+  Before reveal, a separate bounded prewarm snapshot contains only candidates currently reusable from that pool
+  or playback cache. `readyOnly` requests prohibit fallback to decoding if the source is evicted. Visible requests
+  take priority on the same worker. Exact-index/configuration readiness and display of a missing sample frame
+  trigger planning; all-intra playback does not replan every frame. Folded delivery caches without invalidation.
+  The prewarm gate also excludes active hover preview, export, interactions, Home and occlusion. Unavailable
+  candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
 - Byte input → `ReadCache`/`ByteSource` → `MediaSource`/`VideoDecoder` → `DecoderBackend` (`VTBackend` or
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and

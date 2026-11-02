@@ -3,6 +3,7 @@ import Foundation
 /// Fixed samples projected through a moving magnifier, or a fixed central magnifier over an absolute time grid.
 public struct TimelineFilmLayout: Sendable {
     public static let maximumCells = 65
+    public static let maximumOutsideDensity = 8.0
     public struct Cell: Sendable {
         public let id: Int64
         public let offset: Double
@@ -29,7 +30,7 @@ public struct TimelineFilmLayout: Sendable {
         let seconds = secondsPerThumbnail.isFinite ? min(30, max(0.1, secondsPerThumbnail)) : 1
         let focus = focusFraction.isFinite ? min(0.75, max(0.08, focusFraction)) : 0.3
         let magnification = magnification.isFinite ? min(3.8, max(1, magnification)) : 2.75
-        let density = outsideDensity.isFinite ? min(4, max(0.5, outsideDensity)) : 2.75
+        let density = outsideDensity.isFinite ? min(Self.maximumOutsideDensity, max(0.5, outsideDensity)) : 2.75
         self.mode = mode
         fullWidth = min(width, max(1, height * aspect + 2))
         let wanted = max(1, fullWidth / density)

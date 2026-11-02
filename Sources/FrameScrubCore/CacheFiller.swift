@@ -13,6 +13,8 @@ public final class CacheFiller {
     public let cache: FrameCache
     /// Called on a worker thread after a frame has been inserted into the cache.
     public var onInsert: ((Int) -> Void)?
+    /// Worker-thread notification when a previously unresolved focus is now known to have no decodable frame.
+    public var onFocusUnavailable: ((Int) -> Void)?
     /// Called on a worker thread with the first decoding error (later ones only update `lastError`).
     public var onError: ((Error) -> Void)?
     /// Called on the forward worker's thread with a `requestKeyframe` id and the frame it landed on
@@ -487,10 +489,14 @@ public final class CacheFiller {
     }
 
     private func markUndecodable<S: Sequence>(_ numbers: S, version: Int) where S.Element == Int {
-        condition.withLock {
-            guard version == indexVersion else { return }
+        let unavailable: Int? = condition.withLock {
+            guard version == indexVersion else { return nil }
+            let target = clampedFocusLocked()
+            let wasUnresolved = !cache.isResolved(target)
             for n in numbers { cache.markUndecodable(n) }
+            return wasUnresolved && cache.isUndecodable(target) ? target : nil
         }
+        if let unavailable { onFocusUnavailable?(unavailable) }
     }
 
     private func record(_ decoder: VideoDecoder) {
