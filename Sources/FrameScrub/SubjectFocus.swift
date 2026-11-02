@@ -1,6 +1,7 @@
 import CoreImage
 import CoreML
 import Foundation
+import FrameScrubCore
 import os
 import Vision
 
@@ -59,6 +60,7 @@ struct SubjectMask {
     /// RVM's alpha matte (`SubjectMatting`): soft already, refined along the picture's own edges instead of eroded and
     /// feathered.
     var matte = false
+    var queueMilliseconds: Double? = nil
 }
 
 /// Makes the masks off the main thread, one at a time: a frame that comes while one is being made waits in a single
@@ -76,6 +78,7 @@ final class SubjectMasker: @unchecked Sendable {
         var scrub = false               // stepped to while paused: RVM's finer model (`SubjectMatting`)
         var rvm = false                 // RVM's matte (when its models are there), else Vision's mask
         var mainPeople = false          // only the big people (`SubjectSelection`)
+        var submittedAt = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
     }
 
     var onMask: ((SubjectMask, _ visionMs: Double) -> Void)?
@@ -137,7 +140,9 @@ final class SubjectMasker: @unchecked Sendable {
         let generation = generation
         queue.async { [self] in
             let started = DispatchTime.now().uptimeNanoseconds
-            let mask = autoreleasepool { make(job) }
+            let queueMilliseconds = PlaybackDiagnostics.enabled ? (PlaybackDiagnostics.now() - job.submittedAt) * 1000 : nil
+            var mask = autoreleasepool { make(job) }
+            mask?.queueMilliseconds = queueMilliseconds
             let ms = Double(DispatchTime.now().uptimeNanoseconds - started) / 1e6
             DispatchQueue.main.async { [self] in
                 busy = false

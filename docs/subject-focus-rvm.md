@@ -68,7 +68,7 @@ It is a second tab of a slot (the right one), so two panels never fight over one
 slot's own view (a plugin, the playlist) and Subject Focus, ▾ after them. The tab has its own pin, on by default (it
 takes its room from the video and stays), and its own width (`SubjectFocus.panelPinned`, `.panelWidth`); floated, it
 hides as the slot does. The edge always brings the slot's own view: a slot hidden on the panel's tab goes back to it, and
-⌥H opens the slot on the panel's tab (or hides it when it shows it). The tab is for the run; the slot's line in
+⌥H opens the slot on the panel's tab (or hides it when it shows it), including over Home without an open video. The tab is for the run; the slot's line in
 framescrub.conf stays its own view's. In an empty slot the panel is its only view, without tabs.
 
 The mockup's "Applies to: this folder / everywhere" and Save as Default are left out (one set for everything, kept as

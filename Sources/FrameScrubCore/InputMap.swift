@@ -169,7 +169,7 @@ public enum Command: Equatable, Sendable {
     public var worksWithoutPlayer: Bool {
         switch self {
         case .cycleFullscreen, .setFullscreen, .cycleOntop, .quit, .cycleMouseProfile, .toggleUpscaler, .cycleUpscaler,
-             .pluginAction, .ignore:
+             .toggleSubjectFocusPanel, .pluginAction, .ignore:
             return true
         default:
             return false

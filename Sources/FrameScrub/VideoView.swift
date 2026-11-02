@@ -58,6 +58,20 @@ final class VideoView: NSView {
     private var colorFadeStart: CFTimeInterval = 0
     private static let colorFadeDuration = 0.5
     private var skipCounter = SkippedFrameCounter()
+    private var presentationLedger = PresentationLedger()
+    private var presentationTicket: PresentationLedger.Ticket?
+    private var lastPresentationAt: Double?
+    private var diagnosticPlaying = true
+    private var lastArrivalNumber: Int?
+    private var diagnosticEpoch = UUID()
+    private var diagnosticGroup: String {
+        let settings = SubjectFocusSettings.shared
+        let model = focusMask.map { $0.matte ? "rvm\(Int($0.image.extent.width))" : "vision\(Int($0.image.extent.width))" } ?? "no-mask"
+        let style = focusDrawn?.rawValue ?? "off"
+        let source = currentFrame.map { "\(CVPixelBufferGetWidth($0.pixelBuffer))x\(CVPixelBufferGetHeight($0.pixelBuffer))" } ?? "none"
+        let target = metalLayer.drawableSize
+        return "\(diagnosticPlaying ? "play" : "pause").\(style).clean-\(settings.cleanEdge).\(model).\(source).out-\(Int(target.width))x\(Int(target.height))"
+    }
     private var scaler: DisplayScaler!
     private var enhancedScaler: DisplayScaler!   // own MetalFX cache: the two layers differ in size
     /// The zoomed picture's own scalers, so zooming in and back to Fit never throws away the fit scaler's cache.
@@ -175,12 +189,29 @@ final class VideoView: NSView {
         focusMask = nil
         masker.reset()
         skipCounter.reset()
+        presentationLedger.reset(); presentationTicket = nil; lastPresentationAt = nil
+        lastArrivalNumber = nil; diagnosticEpoch = UUID()
         zoomPan.reset()
         needsRender = blank
     }
 
     /// `playing`: false while paused, so a frame stepped or scrubbed to gets a finer mask.
     func show(_ frame: DecodedFrame, playing: Bool = true) {
+        if PlaybackDiagnostics.enabled {
+            let replaced = presentationLedger.replacedBeforeSubmission
+            presentationTicket = presentationLedger.arrive(at: PlaybackDiagnostics.now(), playing: playing)
+            let group = diagnosticGroup
+            PlaybackDiagnostics.shared.record("arrivals", 1, group: group)
+            if presentationLedger.replacedBeforeSubmission > replaced {
+                PlaybackDiagnostics.shared.record("replaced_before_submit", 1, group: group)
+            }
+            if playing, framePlaying, let previous = lastArrivalNumber, frame.number > previous + 1 {
+                // A media-number gap can also be a seek or speed change: do not call it a render drop.
+                PlaybackDiagnostics.shared.record("source_gap_frames", Double(frame.number - previous - 1), group: group)
+            }
+            if playing != framePlaying { lastPresentationAt = nil }
+            lastArrivalNumber = frame.number
+        }
         skipCounter.frameArrived()
         currentFrame = frame
         enhanced = nil
@@ -189,6 +220,16 @@ final class VideoView: NSView {
         needsRender = true
         framePlaying = playing
         if subjectFocus != nil { requestMask(for: frame, accurate: false) }
+    }
+
+    /// Diagnostic interval boundaries must follow pause/resume even without another decoded frame.
+    func diagnosticPlaybackChanged(playing: Bool) {
+        guard PlaybackDiagnostics.enabled else { return }
+        if playing != diagnosticPlaying {
+            lastPresentationAt = nil
+            presentationLedger.advancePlaybackPeriod()
+        }
+        diagnosticPlaying = playing
     }
 
     // MARK: Subject Focus
@@ -268,6 +309,10 @@ final class VideoView: NSView {
         if let shown = focusMask, shown.accurate, shown.frame == mask.frame, !mask.accurate { return }
         if focusMask == nil, focusFadeStart == nil, focusFadeIn { focusFadeStart = CACurrentMediaTime() }
         focusMask = mask
+        if PlaybackDiagnostics.enabled {
+            PlaybackDiagnostics.shared.record("mask_work_ms", visionMs, group: diagnosticGroup)
+            if let ms = mask.queueMilliseconds { PlaybackDiagnostics.shared.record("mask_queue_ms", ms, group: diagnosticGroup) }
+        }
         needsRender = true
         // The frame on screen waited for this mask (`maskWait`): drawn now rather than at the next display-link tick, or
         // with 4K (Vision ~17 ms) plus up to a refresh of waiting the next frame often came first and this one was lost.
@@ -419,6 +464,8 @@ final class VideoView: NSView {
             : CGSize(width: size.width, height: (size.width / aspect).rounded())
         guard fittedSize.width >= 1, fittedSize.height >= 1 else { return }   // keeps needsRender set
         let now = CACurrentMediaTime()
+        let diagnosticStart = PlaybackDiagnostics.enabled ? now : 0
+        var effectGraphMilliseconds = 0.0
         var waited = false
         if subjectFocus != nil, let frame = currentFrame, let mask = focusMask, mask.frame < frame.number {
             if now - frameShownAt < Self.maskWait { return }   // its own mask is on the way; keeps needsRender set
@@ -455,6 +502,8 @@ final class VideoView: NSView {
             }
         }
         func focused(_ full: CIImage) -> CIImage {
+            let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
+            defer { if PlaybackDiagnostics.enabled { effectGraphMilliseconds += (PlaybackDiagnostics.now() - start) * 1000 } }
             guard let style = focusDrawn, let focusMask, amount > 0 else { return full }
             let mask = focusMask.image, matte = focusMask.matte
             let crossFade = focusFrom != nil && focusFadeStart != nil
@@ -514,6 +563,39 @@ final class VideoView: NSView {
                 DispatchQueue.main.async { self?.focusStats.gpuMs += ms; self?.focusStats.gpuFrames += 1 }
             }
             logFocusStats()
+        }
+        if PlaybackDiagnostics.enabled, let ticket = presentationTicket {
+            let group = diagnosticGroup, epoch = diagnosticEpoch
+            let report = PlaybackDiagnostics.shared
+            report.record("render_encode_wall_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: group)
+            // CIImage is lazy: this is graph construction, NOT time executing effects on the GPU.
+            report.record("effect_graph_build_ms", effectGraphMilliseconds, group: group)
+            if let frame = currentFrame, let mask = focusMask {
+                if mask.frame <= frame.number { report.record("mask_lag_frames", Double(frame.number - mask.frame), group: group) }
+                else { report.record("mask_from_future", 1, group: group) }
+            } else if subjectFocus != nil { report.record("no_mask", 1, group: group) }
+            if waited { report.record("mask_wait_expired", 1, group: group) }
+            presentationLedger.submit(ticket)
+            commandBuffer.addCompletedHandler { cb in
+                if cb.status == .completed {
+                    report.record("render_gpu_ms", (cb.gpuEndTime - cb.gpuStartTime) * 1000, group: group)
+                } else { report.record("gpu_failure", 1, group: group) }
+            }
+            drawable.addPresentedHandler { [weak self] drawable in
+                let presentedAt = drawable.presentedTime
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, epoch == self.diagnosticEpoch, presentedAt > 0,
+                          let latency = self.presentationLedger.present(ticket, at: presentedAt) else { return }
+                    report.record("arrival_to_present_ms", latency, group: group)
+                    report.record("unique_presented", 1, group: group)
+                    if ticket.playing && self.diagnosticPlaying && self.presentationLedger.isCurrentPlaybackPeriod(ticket) {
+                        if let previous = self.lastPresentationAt, presentedAt >= previous {
+                            report.record("presentation_interval_ms", (presentedAt - previous) * 1000, group: group)
+                        }
+                        self.lastPresentationAt = presentedAt
+                    }
+                }
+            }
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()

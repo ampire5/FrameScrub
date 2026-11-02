@@ -615,3 +615,12 @@ import Testing
         #expect(all.map(\.chord.description) == all.map(\.chord.description).sorted())
     }
 }
+
+extension InputMapTests {
+    @Test func subjectFocusSettingsPanelCanOpenOverHome() {
+        #expect(Command.toggleSubjectFocusPanel.worksWithoutPlayer)
+        // Opening settings does not allow playback controls through Home.
+        #expect(!Command.cyclePause.worksWithoutPlayer)
+        #expect(!Command.frameStep.worksWithoutPlayer)
+    }
+}

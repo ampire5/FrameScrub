@@ -522,7 +522,7 @@ Seeking stays quick on high-bitrate files from network volumes (SMB/NFS/AFP):
   reader divides the same bandwidth, so playback gets what the others leave. In this mode: only the playing reader reads
   ahead, and ~40 s of video instead of 3 s (the read cache is at least 512 MiB), which rides out the seconds-long stalls
   shares have; the seek-bar preview, the black-bar sampler and the backward decoder read only the blocks they need; the preview
-  waits 250 ms for the pointer to rest; black bars are looked for on 4 keyframes (not 10), 20 s after the file opened; paused,
+  starts the first thumbnail immediately, then limits uncached preview reads to one per 250 ms; black bars are looked for on 4 keyframes (not 10), 20 s after the file opened; paused,
   FrameScrub keeps 8 s of decoded frames above the playhead and 3 s below (not what the whole `cache-size` holds), so
   the file is not read for frames nobody asked for. `FRAMESCRUB_READ_TRACE=<file>` logs every read of the file by reader.
 - With a key held, the picture follows the seeks with the frames that are ready on the way; the backward

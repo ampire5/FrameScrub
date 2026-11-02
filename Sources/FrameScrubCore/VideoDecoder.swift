@@ -124,7 +124,10 @@ public final class VideoDecoder {
         skipBefore = frame
     }
 
+    public var diagnosticRole = "other"
+
     public func nextFrame() throws -> DecodedFrame? {
+        let diagnosticStart = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
         while true {
             // A pool per frame: a seek's pre-roll can decode a whole GOP in this loop, and anything left autoreleased
             // with a frame keeps its IOSurface (VTDecoderXPCService memory) until the caller's pool drains.
@@ -142,6 +145,10 @@ public final class VideoDecoder {
                 seekTarget = nil
             }
             lastFrameNumber = decoded.number
+            if PlaybackDiagnostics.enabled {
+                PlaybackDiagnostics.shared.record("next_frame_work_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000,
+                                                   group: "decoder.\(diagnosticRole).\(isHardware ? "hardware" : "software")")
+            }
             return decoded
         }
     }

@@ -544,6 +544,7 @@ public final class CacheFiller {
                                                         readAhead: slot.forward || policy.sideReadAhead),
                                                 index: currentIndex,
                                                 preferHardware: hardware)
+                slot.decoder?.diagnosticRole = slot.forward ? "forward" : "reverse"
                 slot.hardware = hardware
                 slot.failures = 0
             } catch {

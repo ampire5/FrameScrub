@@ -112,6 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         self.controller = controller
         observeHandOver()
         controller.showWindow(nil)
+        if PlaybackDiagnostics.enabled,
+           let seconds = ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_SECONDS"].flatMap(Double.init),
+           seconds.isFinite, seconds >= 5, seconds <= 3600 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { NSApp.terminate(nil) }
+        }
         NSApp.activate()
         StartupTrace.mark("window shown")
         // The mouse search runs off the launch path: after the window is up (mouse spec §3.2, §8).
@@ -227,7 +232,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func replyToTerminate(_ terminate: Bool) {
         guard terminateWhenIdle else { return }
         terminateWhenIdle = false
-        NSApp.reply(toApplicationShouldTerminate: terminate)
+        finishTermination(terminate)
+    }
+
+    private func finishTermination(_ terminate: Bool) {
+        guard terminate, PlaybackDiagnostics.enabled else {
+            NSApp.reply(toApplicationShouldTerminate: terminate)
+            return
+        }
+        PlaybackDiagnostics.shared.flush {
+            // Deliverable even inside AppKit's nested termination loop.
+            RunLoop.main.perform(inModes: [.common]) { NSApp.reply(toApplicationShouldTerminate: true) }
+        }
+    }
+
+    private func ordinaryTerminationReply() -> NSApplication.TerminateReply {
+        guard PlaybackDiagnostics.enabled else { return .terminateNow }
+        finishTermination(true)
+        return .terminateLater
     }
 
     private static func quittingMessage(left: Int) -> String {
@@ -235,7 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let clipQueue, clipQueue.isBusy else { return .terminateNow }
+        guard let clipQueue, clipQueue.isBusy else { return ordinaryTerminationReply() }
         let count = clipQueue.waitingCount + 1
         let alert = NSAlert()
         alert.messageText = count == 1 ? "1 clip is still being saved" : "\(count) clips are still being saved"
@@ -245,7 +267,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         alert.addButton(withTitle: "Cancel")           // Esc
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            guard clipQueue.isBusy else { return .terminateNow }   // finished while the alert was up
+            guard clipQueue.isBusy else { return ordinaryTerminationReply() }   // finished while the alert was up
             terminateWhenIdle = true
             let left = clipQueue.waitingCount + 1
             controller?.showMessage(Self.quittingMessage(left: left), duration: 3600)
@@ -256,7 +278,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             clipQueue.cancelAll()
             guard clipQueue.isBusy else {
                 terminateWhenIdle = false
-                return .terminateNow
+                return ordinaryTerminationReply()
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.replyToTerminate(true) }
             return .terminateLater

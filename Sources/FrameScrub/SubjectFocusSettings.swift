@@ -71,7 +71,7 @@ import Foundation
         presets = d.data(forKey: Self.prefix + "presets").flatMap { try? JSONDecoder().decode([Preset].self, from: $0) } ?? []
         activePreset = d.string(forKey: Self.prefix + "activePreset").flatMap(UUID.init(uuidString:))
         hideStandard = bool("hideStandard", false)
-        cleanEdge = bool("cleanEdge", true)
+        cleanEdge = env["FRAMESCRUB_FOCUS_CLEAN_EDGE"].map { $0 != "0" } ?? bool("cleanEdge", true)
         // Benches: `FRAMESCRUB_FOCUS_QUALITY=fast|balanced|accurate` starts with Vision at that quality,
         // `FRAMESCRUB_FOCUS_MAIN=1` with the main people only.
         let quality = env["FRAMESCRUB_FOCUS_QUALITY"].flatMap(VisionQuality.init(rawValue:))

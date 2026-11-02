@@ -935,8 +935,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // Esc on Home goes back to the open video, unless a field is being typed in (the filter, a rename): the browser
         // and the window keep Esc to themselves, so it is taken here first.
         homeKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.keyCode == 53, event.window === self.window,
-                  !(self.window?.firstResponder is NSText), self.returnFromHome() else { return event }
+            guard let self, event.window === self.window,
+                  !(self.window?.firstResponder is NSText) else { return event }
+            if event.keyCode == 53, self.returnFromHome() { return nil }
+            // Home's card view owns first responder, so its unhandled keys do not
+            // reach VideoView. Route this window-settings command explicitly;
+            // keep navigation, text entry and playback commands with Home.
+            guard self.showsHome,
+                  let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode,
+                      characters: KeyboardLayout.characters(for: event), modifiers: Modifiers(event.modifierFlags)),
+                  self.inputMap.command(for: chord) == .toggleSubjectFocusPanel else { return event }
+            if !event.isARepeat { self.runInput(.toggleSubjectFocusPanel, from: .keyboard) }
             return nil
         }
         home = view
@@ -2555,8 +2564,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                        policy: core.networkPolicy)
         provider.onImage = { [weak self] result in
             guard let self else { return }
+            let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
             previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
             updatePreviewView()
+            if PlaybackDiagnostics.enabled {
+                let report = PlaybackDiagnostics.shared
+                report.record("callback_ui_ms", (PlaybackDiagnostics.now() - start) * 1000, group: "preview.ui")
+                report.record("request_to_ui_ready_ms", (PlaybackDiagnostics.now() - result.requestedAt) * 1000, group: "preview.ui")
+            }
         }
         provider.onUnavailable = { [weak self] in
             self?.previewProvider?.stop()
@@ -2905,6 +2920,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let pin = previewPin, abs(fraction - pin.fraction) * (seekBar.bounds.width - 24) > Self.pinSlack { previewPin = nil }
     }
 
+    private var diagnosticSweepStarted = false
+    private func diagnosticSweep(step: Int) {
+        guard step < 100 else { hover(nil); return }
+        hover(0.1 + Double(step % 40) * 0.02)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.diagnosticSweep(step: step + 1) }
+    }
+
     private func hover(_ fraction: Double?) {
         previewFraction = fraction
         guard let fraction, let index = core.index else {
@@ -2944,6 +2966,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private static let thumbnailContext = CIContext(options: [.cacheIntermediates: false])
 
     private func updatePreviewView() {
+        let diagnosticStart = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
+        defer { if PlaybackDiagnostics.enabled {
+            PlaybackDiagnostics.shared.record("update_view_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: "preview.ui")
+        } }
         guard let frame = previewFrame, let index = core.index, let container = window?.contentView else { return }
         let lens = KeyframeLens(index: index, frame: frame)
         seekBar.previewFrame = frame
@@ -3633,6 +3659,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             }
         }
         videoView.show(frame, playing: !core.isPaused)
+        if !diagnosticSweepStarted, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_SWEEP"] == "1" {
+            diagnosticSweepStarted = true
+            if PlaybackDiagnostics.enabled, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_4K"] == "1",
+               let window {
+                let scale = window.backingScaleFactor
+                window.setContentSize(NSSize(width: 3840 / scale, height: 2160 / scale))
+                window.contentView?.layoutSubtreeIfNeeded()
+            }
+            core.play()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.diagnosticSweep(step: 0) }
+        }
         lastFrame = frame
         checkSceneCut(frame)
         pushPluginState(force: false)
@@ -3641,6 +3678,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        videoView.diagnosticPlaybackChanged(playing: !core.isPaused)
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused
