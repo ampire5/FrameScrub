@@ -10,7 +10,7 @@ public enum NetworkMode: String, Sendable {
 /// behaviour; `network` plays first and looks around later:
 /// - only the reader that plays reads ahead, and far enough (`readAheadSeconds`) to ride out a stall of the share;
 /// - the seek-bar preview, the black-bar sampler, the backward decoder and the other side readers read what they
-///   need and no more (`sideReadAhead`), and the preview waits until the pointer rests (`previewSettle`);
+///   need and no more (`sideReadAhead`), and cold preview reads are rate limited (`previewSettle`);
 /// - black bars are looked for on a few keyframes, a while after the file opened;
 /// - paused, the decoded window around the playhead stays small, so the file is not read for frames nobody asked for.
 public struct NetworkPolicy: Equatable, Sendable {
@@ -18,7 +18,7 @@ public struct NetworkPolicy: Equatable, Sendable {
     public var readAheadSeconds: Double
     /// Whether side readers (preview, black bars, scene looks, plugin frames, backward) load further blocks ahead too.
     public var sideReadAhead: Bool
-    /// Seconds the pointer rests on the seek bar before a preview is read for it.
+    /// Minimum interval between cold seek-bar preview reads; the first read and cache hits do not wait.
     public var previewSettle: Double
     /// Keyframes the black-bar sampler looks at, and how long after the file opened it starts.
     public var barSamples: Int
