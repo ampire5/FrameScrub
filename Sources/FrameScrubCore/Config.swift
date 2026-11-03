@@ -181,6 +181,12 @@ public struct Config: Equatable, Sendable {
     public var slotFlash = false
     /// `mouse-profile`: what the mouse's buttons do (`MouseProfile`).
     public var mouseProfile = MouseProfile.viewing
+    /// Opt-in Console Max/MSP input, local TCP 50500. Separate from mouse sensitivity and acceleration.
+    public var tourBox = false
+    public var tourBoxFramesPerPulse = 1.0
+    public var tourBoxAccelerates = true
+    public var tourBoxAccelerationStart = 12.0
+    public var tourBoxScrollPoints = 4.0
     /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
     public var pluginOpenAllowed = ""
     public var preview = true
@@ -269,6 +275,7 @@ public struct Config: Equatable, Sendable {
 
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
+        "tourbox", "tourbox-frames-per-pulse", "tourbox-accel", "tourbox-accel-start", "tourbox-scroll-points",
         "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strong-strength", "mx-side-buttons",
@@ -312,6 +319,11 @@ public struct Config: Equatable, Sendable {
         case "slot-reveal-distance": return String(slotRevealDistance)
         case "slot-flash": return yesNo(slotFlash)
         case "mouse-profile": return mouseProfile.rawValue
+        case "tourbox": return yesNo(tourBox)
+        case "tourbox-frames-per-pulse": return formatNumber(tourBoxFramesPerPulse)
+        case "tourbox-accel": return yesNo(tourBoxAccelerates)
+        case "tourbox-accel-start": return formatNumber(tourBoxAccelerationStart)
+        case "tourbox-scroll-points": return formatNumber(tourBoxScrollPoints)
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
         case "scene-lookahead": return String(sceneLookahead)
@@ -506,6 +518,12 @@ public struct Config: Equatable, Sendable {
         case "slot-reveal-distance": guard let v = int(2...60) else { return false }; slotRevealDistance = v
         case "slot-flash": guard let v = bool() else { return false }; slotFlash = v
         case "mouse-profile": guard let v = MouseProfile(rawValue: value.lowercased()) else { return false }; mouseProfile = v
+        case "tourbox": guard let v = bool() else { return false }; tourBox = v
+        case "tourbox-frames-per-pulse": guard let v = double(0.05...4) else { return false }; tourBoxFramesPerPulse = v
+        case "tourbox-accel": guard let v = bool() else { return false }; tourBoxAccelerates = v
+        case "tourbox-accel-start": guard let v = double(4...120) else { return false }; tourBoxAccelerationStart = v
+        case "tourbox-fast-multiplier": guard double(1...64) != nil else { return false } // legacy coarse scale; ignored
+        case "tourbox-scroll-points": guard let v = double(0.1...64) else { return false }; tourBoxScrollPoints = v
         case "preview": guard let v = bool() else { return false }; preview = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v
         case "export-mode": guard let v = ExportMode(rawValue: value.lowercased()) else { return false }; exportMode = v

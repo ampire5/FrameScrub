@@ -105,6 +105,28 @@ HomeScreenKit supplies browser, slots and filmstrip UI; SettingsKit supplies set
 supplies panel UI; StashKit supplies server/path/web integration. App Logitech input is bridged through MouseService
 (`LogiMouseBridge`); LogiHIDPP also supplies shared hardware types. See [kit workflow](kits.md).
 
+Opt-in `tourbox=yes` starts the app's `TourBoxBridge`: one Console Max/MSP client on loopback TCP 50500, one
+32-byte asynchronous read in flight, with delivery and player commands on the main thread. Every byte is an event;
+TCP read boundaries are not message boundaries. `FrameScrubCore/TourBoxRouter` owns held/consumed buttons,
+one-shot hold deadlines, and independent Knob sensitivity/progressive acceleration (enabled by default).
+Bare Knob uses a continuous bounded quadratic gain above the configurable pulse-rate threshold, with time-based
+rise smoothing and immediate deceleration. Knob press toggles the existing `tourbox-accel` preference through
+PreferencesStore with OSD feedback; mode changes reset motion without losing the held click/duplicate guard.
+Tall+Knob changes volume, Tall+Top toggles mute and Short+Top calls `PlayerCore.reversePlaybackDirection`,
+preserving speed/pause and restarting/refocusing the reverse/forward clock path when playing. There is no coarse
+multiplier. Modifier toggles act on each target down while the modifier stays held, consuming release taps.
+Reversal, idle and modifiers reset velocity; tied batch timestamps cannot manufacture speed. Top uses
+Core's existing temporary speed hold; keyboard and TourBox ownership are exclusive. Top+Tour switches profile and
+consumes both taps. C1/C2 navigate on release or adjust per-file colour strength in Viewing; in Editing they set/edit
+mark boundaries. `ColorMemory.addStrength(for:)` handles either auto colour or Vibrance with the same bounds,
+per-file persistence and independent enable flags. The controller samples one arrival time per batch and routes
+commands through existing player actions. Scroll emits timeline points: `SeekBarView.scrollFilm` shares the
+horizontal trackpad's local scale and fractional target time, with a one-shot idle completion. Other position input
+and TourBox cancellation reset that time to prevent stale jumps. Focus loss, Home, file/profile changes, disconnect
+and shutdown restore held speed, cancel deadlines and cancel unfinished edge edits.
+The bridge rejects extra clients and stops on disable/shutdown; it never polls or claims the USB device. The
+separate event preset is generated from a locally supplied vendor Lite template; the keyboard preset remains intact.
+
 ## Change entry points and verification
 
 | Work | Start here | Check |

@@ -90,6 +90,26 @@ import Testing
         #expect(r.memory.addStrength(-0.05, global: Config()).osd == "Auto colour strength 0.45 · file (off)")
     }
 
+    @Test func vibranceStrengthUsesFileMemoryAndKeepsTheToggleAndAutoColourSeparate() {
+        let r = rig()
+        r.memory.open(a, size: 10)
+        let global = config(["vibrance": "0.5", "vibrance-on": "no", "auto-color-strength": "0.6"])
+        let out = r.memory.addStrength(0.05, for: .vibrance, global: global)
+        #expect(r.files.color(for: a, size: 10) == ["vibrance": "0.55"])
+        #expect(!r.memory.effective(global: global).config.vibranceOn)
+        #expect(r.memory.effective(global: global).config.autoColorStrength == 0.6)
+        #expect(out.osd == "Vibrance strength 0.55 · file (off)")
+        _ = r.memory.addStrength(2, for: .vibrance, global: global)
+        #expect(r.memory.effective(global: global).config.vibrance == 1)
+        #expect(r.memory.addStrength(0.05, for: .vibrance, global: global).haptic == .limit)
+        r.memory.open(b, size: 20)
+        #expect(r.memory.effective(global: global).config.vibrance == 0.5)
+        r.memory.open(a, size: 10)
+        #expect(r.memory.effective(global: global).config.vibrance == 1)
+        r.memory.open(nil, size: nil)
+        #expect(r.memory.addStrength(0.05, for: .vibrance, global: global).haptic == .error)
+    }
+
     @Test func addStrengthAtTheBoundWritesNothing() {
         let r = rig()
         r.memory.open(a, size: 10)

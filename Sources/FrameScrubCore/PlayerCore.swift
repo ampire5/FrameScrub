@@ -939,6 +939,21 @@ public final class PlayerCore {
         if direction > 0 { audio?.play(fromSeconds: currentSeconds) } else { audio?.pause() }
     }
 
+    /// Reverse the current direction without the shuttle's speed reset or implicit play from pause.
+    public func reversePlaybackDirection() {
+        guard index != nil else { return }
+        scrubAudio?.userActed()
+        direction = -direction
+        shuttleSpeed = false
+        applySpeed(speed)
+        if !isPaused {
+            restartClock()
+            refocus(direction: direction)
+        }
+        feedback(.speed(speed * Double(direction)))
+        delegate?.playerStateDidChange(self)
+    }
+
     /// A shuttle key (spec §2).
     private func shuttle(_ key: ShuttleKey) {
         guard index != nil else { return }

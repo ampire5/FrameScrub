@@ -565,6 +565,44 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         if wantsFilm { addCursorRect(film, cursor: .openHand) }
         if playbackVisible { addCursorRect(NSRect(x: track.minX, y: 0, width: track.width, height: 14), cursor: .pointingHand) }
     }
+    /// Another input took over the playhead: its next film gesture must start at that new position.
+    func cancelFilmScroll() {
+        scrollRest?.cancel(); scrollRest = nil
+        scrolling = false; scrollHasSought = false; scrollTime = nil
+    }
+
+    /// A controller's relative movement in timeline points, using exactly the horizontal trackpad's local scale.
+    /// Keep subframe target time between pulses even when the displayed playhead has rounded to a frame.
+    func scrollFilm(by points: Double) {
+        guard duration > 0, points.isFinite, points != 0 else { return }
+        hideFilmWork?.cancel(); hideFilmWork = nil
+        if !showsFilmstrip { setFilmRevealed(true) }
+        scrolling = true; scrollRest?.cancel(); showControls()
+        if !scrollHasSought { scrollHasSought = true; onFilmScrubBegan?() }
+        filmPointer = nil; filmHover.isHidden = true
+        moveFilm(by: points)
+        scheduleFilmScrollRest()
+        onEnterExit?()
+    }
+
+    private func moveFilm(by points: Double) {
+        stopFilmTransition()
+        let target = min(duration, max(0, (scrollTime ?? currentSeconds) + points * scale.secondsPerPoint))
+        scrollTime = target
+        onFilmSeek?(target)
+    }
+
+    private func scheduleFilmScrollRest() {
+        let rest = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            scrolling = false; scrollHasSought = false; scrollTime = nil; scrollRest = nil
+            saveLensPreferences()
+            updateDesiredImages(); updateFilmPointer(window?.mouseLocationOutsideOfEventStream)
+        }
+        scrollRest = rest
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: rest)
+    }
+
     override func scrollWheel(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if wantsFilm, film.contains(point) || (!filmHover.isHidden && filmHover.frame.contains(point)), duration > 0 {
@@ -582,11 +620,8 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 else { lensDensity = min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, lensDensity * exp(-amount))) }
                 requestedTimes = []; updateFilmHover(); needsDisplay = true
             } else if event.hasPreciseScrollingDeltas && abs(dx) > abs(dy) {
-                stopFilmTransition()
                 if event.phase.contains(.began) { scrollTime = nil }
-                let target = min(duration, max(0, (scrollTime ?? currentSeconds) - dx * scale.secondsPerPoint))
-                scrollTime = target
-                onFilmSeek?(target)
+                moveFilm(by: -dx)
             } else {
                 let sample = ScrollSample(deltaX: dx, deltaY: event.hasPreciseScrollingDeltas ? dy : -dy,
                     precise: event.hasPreciseScrollingDeltas,
@@ -609,14 +644,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                     }
                 }
             }
-            let rest = DispatchWorkItem { [weak self] in
-                guard let self else { return }
-                scrolling = false; scrollHasSought = false; scrollTime = nil; scrollRest = nil
-                saveLensPreferences()
-                updateDesiredImages(); updateFilmPointer(window?.mouseLocationOutsideOfEventStream)
-            }
-            scrollRest = rest
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18, execute: rest)
+            scheduleFilmScrollRest()
             onEnterExit?()
         } else { onScroll?(event) }
     }

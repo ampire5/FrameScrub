@@ -20,6 +20,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let gestures: GestureRouter
     /// The bound mouse buttons, from AppKit and from the Logitech mouse (`mouseBridge`).
     private let buttons: MouseButtonRouter
+    private let tourBoxBridge = TourBoxBridge()
+    private var tourBoxRouter = TourBoxRouter()
+    private var tourBoxTap: DispatchWorkItem?
+    private var tourBoxEnabled = false
+    private var tourBoxEditsEdge = false
+    private var tourBoxHoldsSpeed = false
     /// Folder history uses the same duplicate/drag protection, with no player holds or wheel chords.
     private let homeButtons = MouseButtonRouter(map: InputMap(bindings: [
         KeyChord(key: "MBTN_BACK"): .playlistPrev,
@@ -273,6 +279,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         enhancer.delegate = self
         buildViews(in: window)
         setUpMouse()
+        setUpTourBox()
         statsPanel.fontSize = CGFloat(config.statsFontSize)
         let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
         source.setEventHandler { [weak self] in
@@ -789,6 +796,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// the window is the start screen. Home is made the first time and only hidden after that.
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
+        cancelTourBoxInput()
         homeButtons.cancelAll()
         core.setViewingVisible(false)
         let cpu = StartupTrace.threadCPU(), wall = Date(), first = home == nil
@@ -1122,6 +1130,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
+        tourBoxBridge.stop()
         abandonOpening()   // a stream answering later must not open in a closed window
         stashSession?.flushBeforeQuit()
         for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
@@ -1146,6 +1155,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Leaves the file (its position is kept for the next open); framescrub.conf's colour applies again.
     private func closeCore() {
+        cancelTourBoxInput()
         filmstripLoader?.stop()
         filmstripLoader = nil
         seekBar.resetFilmstrip()
@@ -1193,7 +1203,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // The scene search's decoder follows `hwdec` too: the next press makes a new one.
         if config.hwdec != core.config.hwdec { dropSceneSearch() }
         applyPluginConfig(config, previous: core.config)
+        if config.mouseProfile != core.config.mouseProfile || config.tourBoxFramesPerPulse != core.config.tourBoxFramesPerPulse
+            || config.tourBoxAccelerationStart != core.config.tourBoxAccelerationStart {
+            cancelTourBoxInput()
+        }
         core.apply(config)
+        updateTourBox()
         sceneSearch?.threshold = config.sceneThreshold
         sceneSearch?.lookahead = config.sceneLookahead
         sceneSearch?.checkTime = config.sceneCheckTime
@@ -1550,7 +1565,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onFilmSeek = { [weak self] seconds in
             guard let self, let index = core.index else { return }
             previewPin = nil
-            positionWillMove()
+            positionWillMove(keepingFilmScroll: true)
             haptics.from(.menu) { self.core.seek(toFrame: index.frameNumber(forSeconds: seconds)) }
             revealSeekBar()
         }
@@ -1835,7 +1850,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
               let command = inputMap.command(for: chord) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
-            guard holdKeyCode == nil, stillDown, !showsHome else { return }
+            guard holdKeyCode == nil, !tourBoxHoldsSpeed, stillDown, !showsHome else { return }
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -1901,7 +1916,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private func run(_ command: Command) {
         sceneFrameOSDToDrop = nil
-        if Self.movesPosition(command) { cancelSceneSearch() }
+        if Self.movesPosition(command) { seekBar.cancelFilmScroll(); cancelSceneSearch() }
         switch command {
         case .sceneStep:
             sceneJump(1)
@@ -2158,7 +2173,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     /// A seek outside `run(_:)` (go-to field, seek bar, trackpad scrub): ends the wait and lets its frame line show.
-    private func positionWillMove() {
+    private func positionWillMove(keepingFilmScroll: Bool = false) {
+        if !keepingFilmScroll { seekBar.cancelFilmScroll() }
         sceneFrameOSDToDrop = nil
         cancelSceneSearch()
     }
@@ -2324,6 +2340,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// without a held button (nothing would end the drag) it is a plain scrub.
     private func scrubEdge(_ edge: MarkEdge, by frames: Int, heldButton: MouseButton?, from source: MouseHaptics.Source,
                            fresh: Bool) {
+        if tourBoxEditsEdge { cancelTourBoxInput() }
         if let heldButton, !buttons.held.contains(heldButton) || heldButton == edgeDragSuppressed { return }
         positionWillMove()
         core.inputIsFresh = fresh
@@ -2340,6 +2357,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Esc, focus loss, another file: a live edge drag puts the marks back.
     private func cancelEdgeDrag() {
+        cancelTourBoxInput()
         core.cancelEdgeDrag()
         edgeDragOwner = nil
     }
@@ -2350,6 +2368,104 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeButtons.cancelAll()
         cancelEdgeDrag()
         edgeDragSuppressed = nil
+    }
+
+    // MARK: TourBox Console
+
+    private func setUpTourBox() {
+        tourBoxBridge.onBytes = { [weak self] bytes in self?.receiveTourBox(bytes) }
+        tourBoxBridge.onDisconnect = { [weak self] in self?.cancelTourBoxInput() }
+        tourBoxBridge.onError = { [weak self] message in self?.showMessage(message, duration: 5) }
+        updateTourBox()
+    }
+
+    private func updateTourBox() {
+        tourBoxRouter.framesPerPulse = core.config.tourBoxFramesPerPulse
+        tourBoxRouter.accelerates = core.config.tourBoxAccelerates
+        tourBoxRouter.accelerationStart = core.config.tourBoxAccelerationStart
+        tourBoxRouter.scrollPointsPerPulse = core.config.tourBoxScrollPoints
+        guard tourBoxEnabled != core.config.tourBox else { return }
+        tourBoxEnabled = core.config.tourBox
+        if tourBoxEnabled { tourBoxBridge.start() } else { tourBoxBridge.stop() }
+    }
+
+    private var acceptsTourBox: Bool {
+        NSApp.isActive && window?.isKeyWindow == true && window?.attachedSheet == nil && !showsHome && core.info != nil
+            && !isTerminating
+    }
+
+    private func receiveTourBox(_ bytes: [UInt8]) {
+        guard acceptsTourBox else { cancelTourBoxInput(); return }
+        let time = ProcessInfo.processInfo.systemUptime
+        // Commands can change the profile or file synchronously; read the current state again for every byte.
+        for byte in bytes {
+            guard acceptsTourBox else { cancelTourBoxInput(); break }
+            performTourBox(tourBoxRouter.receive([byte], at: time, profile: core.config.mouseProfile))
+        }
+        scheduleTourBoxTap()
+    }
+
+    private func scheduleTourBoxTap() {
+        tourBoxTap?.cancel(); tourBoxTap = nil
+        guard let deadline = tourBoxRouter.nextDeadline else { return }
+        let tap = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.tourBoxTap = nil
+            guard self.acceptsTourBox else { self.cancelTourBoxInput(); return }
+            self.performTourBox(self.tourBoxRouter.flush(at: ProcessInfo.processInfo.systemUptime))
+            self.scheduleTourBoxTap()
+        }
+        tourBoxTap = tap
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0, deadline - ProcessInfo.processInfo.systemUptime), execute: tap)
+    }
+
+    private func cancelTourBoxInput() {
+        seekBar.cancelFilmScroll()
+        tourBoxTap?.cancel(); tourBoxTap = nil
+        _ = tourBoxRouter.cancel()
+        if tourBoxHoldsSpeed { core.endHoldSpeed(); tourBoxHoldsSpeed = false; hud.hide() }
+        if tourBoxEditsEdge { core.cancelEdgeDrag(); tourBoxEditsEdge = false }
+    }
+
+    private func performTourBox(_ actions: [TourBoxAction]) {
+        for action in actions {
+            // TourBox does not vibrate an unrelated Logitech mouse.
+            haptics.from(.menu) {
+                switch action {
+                case let .command(command): runInput(command, from: .menu)
+                case let .scrub(frames):
+                    positionWillMove(); core.inputIsFresh = true; core.scrub(by: frames)
+                case let .edge(edge, frames):
+                    if !tourBoxEditsEdge {
+                        core.cancelEdgeDrag(); edgeDragOwner = nil; edgeDragSuppressed = nil
+                        tourBoxEditsEdge = true
+                    }
+                    positionWillMove(); core.inputIsFresh = true; core.scrubEdge(edge, by: frames)
+                case .endEdge:
+                    if tourBoxEditsEdge { core.endEdgeDrag(); tourBoxEditsEdge = false }
+                case .cancelEdge:
+                    if tourBoxEditsEdge { core.cancelEdgeDrag(); tourBoxEditsEdge = false }
+                case .beginSpeedHold:
+                    guard holdKeyCode == nil, !tourBoxHoldsSpeed else { return }
+                    tourBoxHoldsSpeed = true
+                    core.beginHoldSpeed()
+                    hud.show(.speed(core.speed * Double(core.direction)), hold: true)
+                case .endSpeedHold:
+                    if tourBoxHoldsSpeed { core.endHoldSpeed(); tourBoxHoldsSpeed = false; hud.hide() }
+                case let .colorStrength(set, delta):
+                    runColorOutcome(colorMemory.addStrength(delta, for: set, global: globalConfig))
+                case .toggleFilmstrip: toggleFilmstrip()
+                case .toggleAcceleration:
+                    let enabled = !core.config.tourBoxAccelerates
+                    do { try preferences.update(["tourbox-accel"]) { $0.tourBoxAccelerates = enabled } } catch {
+                        showMessage("Cannot save settings: \(error)", duration: 4)
+                    }
+                    showMessage(enabled ? "TourBox: accelerated scrub" : "TourBox: linear scrub")
+                case .reversePlayback: core.reversePlaybackDirection()
+                case let .filmScroll(points): seekBar.scrollFilm(by: points)
+                }
+            }
+        }
     }
 
     // MARK: Mouse buttons and the Logitech mouse

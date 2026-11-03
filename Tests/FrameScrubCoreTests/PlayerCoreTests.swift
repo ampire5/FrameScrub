@@ -831,6 +831,21 @@ final class HapticLog {
         #expect(delegate.feedback.isEmpty)
     }
 
+    @Test func reversingDirectionPreservesSpeedPauseAndPosition() async throws {
+        let (player, _, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        player.seek(toFrame: 300)
+        player.perform(.setSpeed(2.5))
+        player.reversePlaybackDirection()
+        #expect(player.isPaused && player.direction == -1 && player.speed == 2.5)
+        #expect(player.position == 300 && player.clock.rate == -2.5)
+        player.play()
+        player.reversePlaybackDirection()
+        #expect(!player.isPaused && player.direction == 1 && player.speed == 2.5)
+        #expect(player.position == 300 && player.clock.rate == 2.5)
+    }
+
     @Test func holdSpeedDoesNotCarry() async throws {
         let (player, _, _) = try makePlayer(configure: { $0.holdSpeed = 3 })
         defer { player.close() }
