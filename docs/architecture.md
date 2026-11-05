@@ -75,9 +75,17 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
 
 ## Concurrency and cancellation
 
-The UI and `PlayerCore` state changes belong to the main thread; decoding, probing, indexing, thumbnail generation
-and export have their own workers/queues. Consult each implementation rather than assuming all Core methods are
-safe on arbitrary threads. `NetworkPolicy` governs reads; `ReadCache` bounds byte residency.
+The UI, `AppDelegate`, app icon presentation, `PlayerCore` and its delegate are main-actor owned; isolated teardown closes the player on that actor.
+`FolderColors`, `FolderSorts` and `ColorMemory` enforce their existing main-thread contract with `@MainActor`.
+The folder write scheduler receives main-actor callbacks; the settings gesture table model is main-actor UI state.
+Shared process registries, refusal/log caches, thumbnail
+job selection and export accounting use `Mutex`; background export/progress callbacks are `@Sendable`.
+Decoded frames publish fully initialized, thereafter read-only pixel buffers; queued audio buffers likewise
+relinquish mutation before crossing to the engine queue. Their narrow SDK wrappers document that contract.
+CacheFiller runtime state stays under its condition lock; callback/test configuration is fixed before workers start.
+Decoding, probing, indexing, thumbnail generation and export have their own workers/queues. Consult each
+implementation rather than assuming all Core methods are safe on arbitrary threads. `NetworkPolicy` governs reads; `ReadCache` bounds byte residency.
+
 `LatestOnlyWorker` coalesces replacement work. `MetadataInspectionQueue` has one running probe and one pending
 selection, cancels superseded jobs, and suppresses their completion. Open/close must cancel obsolete media work.
 Do not add parallel probes or per-frame filesystem operations to the controller.
@@ -102,7 +110,14 @@ is user state, not disposable metadata. Follow identity and modification checks 
 `FrameScrubSettingsStore` adapts them to SettingsKit.
 
 HomeScreenKit supplies browser, slots and filmstrip UI; SettingsKit supplies settings presentation; InfoPanelKit
-supplies panel UI; StashKit supplies server/path/web integration. App Logitech input is bridged through MouseService
+supplies panel UI; StashKit supplies server/path/web integration. `StashSession` feeds activity batches to one
+main-actor `StashActivityQueue`: it serializes whole batches, coalesces unsent saves for one scene and only accepts
+writes when tracking is explicitly enabled. Failed writes return only to their playback visit; details refreshes
+advance a separate read generation and cannot discard that visit's retries. Async termination waits for that
+same queue, including earlier pending saves when the final sample adds nothing, bounded to one second off-main; the fallback quit hook enqueues without
+blocking the main thread. Successful writes refresh the current scene from the server, including writes queued
+before that scene was closed and reopened; stale detail reads cannot overwrite the refreshed snapshot.
+App Logitech input is bridged through MouseService
 (`LogiMouseBridge`); LogiHIDPP also supplies shared hardware types. See [kit workflow](kits.md).
 
 Opt-in `tourbox=yes` starts the app's `TourBoxBridge`: one Console Max/MSP client on loopback TCP 50500, one

@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import Synchronization
 
 public struct ResumeEntry: Codable, Equatable, Sendable {
     public var position: Double
@@ -33,12 +34,11 @@ public struct ResumeEntry: Codable, Equatable, Sendable {
 /// `limit` are dropped, oldest first. A missing or corrupt file behaves as an empty store.
 public final class ResumeStore: @unchecked Sendable {
     /// The registry lock only selects a shared in-process snapshot. Never do I/O under it.
-    private static let registryLock = NSLock()
     private final class WeakState {
         weak var value: State?
         init(_ value: State) { self.value = value }
     }
-    private static var states: [URL: WeakState] = [:]
+    private static let states = Mutex<[URL: WeakState]>([:])
 
     private final class State: @unchecked Sendable {
         let lock = NSLock()
@@ -259,14 +259,14 @@ public final class ResumeStore: @unchecked Sendable {
         self.url = url
         self.limit = max(0, limit)
         let key = url.standardizedFileURL
-        if let existing = Self.registryLock.withLock({ Self.states[key]?.value }) {
+        if let existing = Self.states.withLock({ $0[key]?.value }) {
             state = existing
         } else {
             let candidate = State(url: key, limit: self.limit, write: write)
-            state = Self.registryLock.withLock {
-                if let existing = Self.states[key]?.value { return existing }
-                Self.states = Self.states.filter { $0.value.value != nil }
-                Self.states[key] = WeakState(candidate)
+            state = Self.states.withLock { states in
+                if let existing = states[key]?.value { return existing }
+                states = states.filter { $0.value.value != nil }
+                states[key] = WeakState(candidate)
                 return candidate
             }
         }

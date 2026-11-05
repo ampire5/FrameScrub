@@ -1105,8 +1105,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func saveThumbnail(wait: Bool = false) {
         guard let url = core.url, let image = videoView.displayedImage, let identity = core.sourceIdentity else { return }
         let picture = videoView.geometry.applied(to: image)
-        let thumbnails = thumbnails
-        let work = { thumbnails.save(picture, for: url, context: Self.thumbnailContext, identity: identity) }
+        let thumbnails = thumbnails, context = Self.thumbnailContext
+        let work: @Sendable () -> Void = { thumbnails.save(picture, for: url, context: context, identity: identity) }
         if wait { thumbnailQueue.sync(execute: work) } else { thumbnailQueue.async(execute: work) }
     }
     private let thumbnailQueue = DispatchQueue(label: "framescrub.thumbnail-save", qos: .utility)
@@ -2690,7 +2690,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         titlebarInset = 0
         defer { placeTopOverlays() }
         guard on, let window, let bar = window.standardWindowButton(.closeButton)?.window, bar !== window else { return }
-        let update = { [weak self, weak bar] in
+        let update: @MainActor @Sendable () -> Void = { [weak self, weak bar] in
             guard let self, let bar, let window = self.window, let screen = window.screen else { return }
             let inset = max(0, min(200, screen.frame.maxY - bar.frame.minY))
             guard inset != self.titlebarInset else { return }
@@ -3824,18 +3824,23 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Bench: `FRAMESCRUB_FOCUS_SCRUB=<frames a step>,<steps a second>` pauses and scrubs like the wheel, 40 steps
     /// forward and 20 back, round, for a minute (Subject Focus's scrub masks, `FRAMESCRUB_FOCUS_LOG=1`).
+    private var scrubBenchStep = 0
     private func startScrubBench() {
         let parts = (ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SCRUB"] ?? "").split(separator: ",").compactMap { Int($0) }
         guard parts.count == 2, parts[1] > 0 else { return }
         let step = parts[0], interval = 1 / Double(parts[1])
-        var n = 0
+        scrubBenchStep = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self else { return }
             if !core.isPaused { core.pause() }
             Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
-                guard let self, n < Int(60 / interval) else { timer.invalidate(); return }
-                core.scrub(by: n % 60 < 40 ? step : -step, ticks: false)
-                n += 1
+                let keepGoing = MainActor.assumeIsolated {
+                    guard let self, self.scrubBenchStep < Int(60 / interval) else { return false }
+                    self.core.scrub(by: self.scrubBenchStep % 60 < 40 ? step : -step, ticks: false)
+                    self.scrubBenchStep += 1
+                    return true
+                }
+                if !keepGoing { timer.invalidate() }
             }
         }
     }

@@ -133,7 +133,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         setAccessibilityRole(.slider)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
-    deinit { hideControls?.cancel(); thumbnailDwell?.cancel(); hideFilmWork?.cancel(); scrollRest?.cancel(); filmTransition?.invalidate() }
+    isolated deinit { hideControls?.cancel(); thumbnailDwell?.cancel(); hideFilmWork?.cancel(); scrollRest?.cancel(); filmTransition?.invalidate() }
 
     override func layout() {
         super.layout()

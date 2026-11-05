@@ -7,6 +7,7 @@ import os
 /// the least recently touched folder dropped beyond `capacity`, kept in `folder-colors.json` across launches.
 /// Changing is synchronous; the file is written once `writeDelay` after the last change and by `flush()` (the app
 /// calls it on quit). Nothing is ever written into the video folders themselves. Main thread only.
+@MainActor
 public final class FolderColors {
     public static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/FrameScrub/folder-colors.json")
@@ -18,7 +19,7 @@ public final class FolderColors {
     private let url: URL?
     private let capacity: Int
     private let writeDelay: Double
-    private let schedule: (Double, @escaping () -> Void) -> Void
+    private let schedule: (Double, @escaping @MainActor () -> Void) -> Void
     private var entries: [String: Entry] = [:]
     private var tick = 0
     /// Changed since the last successful write; a failed write leaves it set for the next one.
@@ -32,7 +33,7 @@ public final class FolderColors {
     /// the store is set aside as `<name>.broken-<unix time>` and the store starts empty. nil keeps everything in
     /// memory and never touches the disk.
     public init(url: URL? = FolderColors.defaultURL, capacity: Int = 1000, writeDelay: Double = 2,
-                schedule: @escaping (Double, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
+                schedule: @escaping (Double, @escaping @MainActor () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
         self.url = url
         self.capacity = max(1, capacity)
         self.writeDelay = writeDelay
@@ -80,7 +81,7 @@ public final class FolderColors {
     }
 
     /// `folder` itself, then each parent up to the root; under `/Volumes/<name>` up to that volume only.
-    public static func ancestors(of folder: URL) -> [String] {
+    nonisolated public static func ancestors(of folder: URL) -> [String] {
         let components = folder.standardizedFileURL.pathComponents      // ["/", "Volumes", "share", …]
         let floor = components.count > 2 && components[1] == "Volumes" ? 3 : 1
         var chain: [String] = []

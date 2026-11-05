@@ -1,3 +1,4 @@
+import Synchronization
 import AppKit
 import Foundation
 import SettingsKit
@@ -145,13 +146,13 @@ import Testing
 
     @Test func aProfileSwitchMovesTheSources() throws {
         let s = try setup()
-        var posted = 0
+        let posted = Mutex(0)
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: s.source,
-                                                           queue: nil) { _ in posted += 1 }
+                                                           queue: nil) { _ in posted.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(token) }
         s.preferences.profile = .editing
         #expect(s.row("MBTN_BACK")?.source == "built-in")
-        #expect(posted == 1)
+        #expect(posted.withLock { $0 } == 1)
         #expect(s.source.profileNote == "Profile: Editing. Buttons the profile sets are written to input-editing.conf.")
     }
 

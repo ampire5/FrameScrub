@@ -113,5 +113,5 @@ let package = Package(
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),
     ],
-    swiftLanguageModes: [.v5]
+    swiftLanguageModes: [.v6]
 )

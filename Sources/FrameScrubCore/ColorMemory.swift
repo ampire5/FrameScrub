@@ -1,15 +1,17 @@
 import Foundation
 import os
+import Synchronization
 
 /// The decisions of the colour commands for the open file (colour memory spec §5): what to write where, the OSD text
 /// and the haptic. `c`, `v` and the strength step write the file's own values; the folder saves write the folder; a
 /// default save hands the app the lines for `framescrub.conf` and, once they are written, clears what became redundant
 /// below. Files go to `ResumeStore`, folders to `FolderColors`; the window controller runs the outcomes and shows them.
 /// Main thread only.
+@MainActor
 public final class ColorMemory {
     /// What a command decided: the text for the OSD, `framescrub.conf` lines the app still has to write (a default
     /// save), and the haptic to play (nil: none).
-    public struct Outcome: Equatable {
+    public struct Outcome: Equatable, Sendable {
         public var osd: String
         public var globalWrites: [String: String]
         public var haptic: HapticEvent?
@@ -22,8 +24,7 @@ public final class ColorMemory {
     }
 
     private static let logger = Logger(subsystem: "local.framescrub", category: "ColorMemory")
-    private static let loggedLock = NSLock()
-    private static var logged: Set<String> = []
+    private static let logged = Mutex<Set<String>>([])
 
     private let folders: FolderColors
     private let files: ResumeStore?
@@ -185,15 +186,11 @@ public final class ColorMemory {
 
     /// Whether `message` is new: each rejected value and unsaved file is logged once per process (spec §8).
     private static func logOnce(_ message: String) -> Bool {
-        loggedLock.lock()
-        defer { loggedLock.unlock() }
-        return logged.insert(message).inserted
+        logged.withLock { $0.insert(message).inserted }
     }
 
     /// The `key=value` texts logged as refused so far (for tests).
     static var loggedRejections: Set<String> {
-        loggedLock.lock()
-        defer { loggedLock.unlock() }
-        return logged
+        logged.withLock { $0 }
     }
 }

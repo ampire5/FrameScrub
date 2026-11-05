@@ -1,5 +1,6 @@
 import CFFmpeg
 import Foundation
+import Synchronization
 
 /// One stretch of a clip: the packets from the keyframe at or before `startPTS` to frame `endPTS` (video stream time
 /// base).
@@ -78,7 +79,11 @@ public struct ClipResult: Sendable {
 /// Copies the compressed packets of an A-B range into a new file (spec §3): no decoder, no re-encoding.
 public enum ClipWriter {
     /// Debug hook: the first muxer fails, so the `.mkv` fallback runs.
-    static var forceFallbackForTesting = false
+    private static let fallbackForTesting = Mutex(false)
+    static var forceFallbackForTesting: Bool {
+        get { fallbackForTesting.withLock { $0 } }
+        set { fallbackForTesting.withLock { $0 = newValue } }
+    }
 
     /// Writes `.<name>.part` next to the final name and renames it on success; the part is removed on any throw,
     /// including `CancellationError` when `isCancelled` turns true (checked per packet). The ranges follow one

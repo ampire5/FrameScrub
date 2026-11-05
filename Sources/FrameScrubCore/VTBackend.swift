@@ -2,6 +2,7 @@ import CFFmpeg
 import CoreMedia
 import CoreVideo
 import Foundation
+import Synchronization
 import VideoToolbox
 
 /// Our own asynchronous VideoToolbox decoder for H.264/HEVC with avcC/hvcC: FFmpeg's packets go into a
@@ -30,7 +31,9 @@ final class VTBackend: DecoderBackend {
 
     /// What the session's output handlers share with the backend: they must not touch the backend itself, which
     /// may be gone when a late callback arrives.
-    private final class State {
+    // Safety: every mutable field is accessed under lock; slots is independently thread-safe.
+    // Replace with Mutex storage when inbox's SDK image handles gain Sendable support.
+    private final class State: @unchecked Sendable {
         let lock = NSLock()
         let slots = DispatchSemaphore(value: VTBackend.maxInFlight)
         var inbox: [(pts: Int64, image: CVImageBuffer?, status: OSStatus)] = []
@@ -114,15 +117,14 @@ final class VTBackend: DecoderBackend {
     /// Hardware sessions VideoToolbox refused, by codec and bit depth, until when that answer is believed. Without a
     /// hardware decoder for a format (Intel Macs without HEVC 10-bit) every new decoder would spend about a
     /// second asking again before software takes over; a minute lets a decoder that was only busy (after sleep) back.
-    private static let refusalLock = NSLock()
-    private static var refusedUntil: [String: TimeInterval] = [:]
+    private static let refusedUntil = Mutex<[String: TimeInterval]>([:])
     static let refusalMemory: TimeInterval = 60
 
     private static func makeSession(_ format: CMVideoFormatDescription, tenBit: Bool) throws -> VTDecompressionSession {
         if let makeSessionOverride { return try makeSessionOverride(format) }
         let key = "\(CMFormatDescriptionGetMediaSubType(format)) \(tenBit ? 10 : 8)"
         let now = ProcessInfo.processInfo.systemUptime
-        if refusalLock.withLock({ (refusedUntil[key] ?? 0) > now }) {
+        if refusedUntil.withLock({ ($0[key] ?? 0) > now }) {
             throw FFmpegError(kVTCouldNotFindVideoDecoderErr, "VideoToolbox session (refused within the last minute)")
         }
         let specification = [kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true] as CFDictionary
@@ -136,7 +138,7 @@ final class VTBackend: DecoderBackend {
                                                   imageBufferAttributes: attributes, outputCallback: nil,
                                                   decompressionSessionOut: &session)
         guard status == noErr, let session else {
-            refusalLock.withLock { refusedUntil[key] = now + refusalMemory }
+            refusedUntil.withLock { $0[key] = now + refusalMemory }
             throw FFmpegError(status, "VideoToolbox session")
         }
         return session

@@ -340,9 +340,9 @@ public final class AudioOutput: @unchecked Sendable {
             while slots.wait(timeout: .now() + 0.25) == .timedOut {
                 if !isCurrent(g) { return }
             }
-            let buffer = chunk.buffer, start = chunk.startSeconds
+            let buffer = ScheduledAudioBuffer(value: chunk.buffer), start = chunk.startSeconds
             engineQueue.async { [self] in
-                if !schedule(buffer, startSeconds: start, generation: g, played: { slots.signal() }) {
+                if !schedule(buffer.value, startSeconds: start, generation: g, played: { slots.signal() }) {
                     slots.signal()   // not scheduled: its slot is free again
                 }
             }
@@ -387,12 +387,13 @@ extension AudioOutput: SnippetSink {
         buffer.frameLength = AVAudioFrameCount(samples.count)
         samples.left.withUnsafeBufferPointer { channels[0].update(from: $0.baseAddress!, count: samples.count) }
         samples.right.withUnsafeBufferPointer { channels[1].update(from: $0.baseAddress!, count: samples.count) }
+        let scheduledBuffer = ScheduledAudioBuffer(value: buffer)
         engineQueue.async { [self] in
             // A device change stops the engine; a piece for a stopped engine is not heard.
             guard !state.withLock({ $0.stopped }), engine.isRunning,
                   engineCall("snippet play", { if !snippetPlayer.isPlaying { snippetPlayer.play() } }),
                   engineCall("snippet scheduleBuffer", {
-                      snippetPlayer.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in ended() }
+                      snippetPlayer.scheduleBuffer(scheduledBuffer.value, completionCallbackType: .dataPlayedBack) { _ in ended() }
                   }) else {
                 ended()
                 return
@@ -404,4 +405,11 @@ extension AudioOutput: SnippetSink {
 extension AudioOutput: TapeSink {
     public func setTapeSnapshot(_ snapshot: TapeSnapshot) { tape.setTapeSnapshot(snapshot) }
     public func setTapeControl(_ control: TapeControl) { tape.setTapeControl(control) }
+}
+
+/// Samples are fully initialized before transfer; the feed/main caller relinquishes mutation when queued.
+/// The engine queue and AVAudioPlayerNode only read the retained buffer. Remove when AVFAudio supplies an
+/// immutable Sendable buffer handle; AVAudioPCMBuffer itself is intentionally not declared Sendable.
+private struct ScheduledAudioBuffer: @unchecked Sendable {
+    let value: AVAudioPCMBuffer
 }

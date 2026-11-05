@@ -84,7 +84,10 @@ final class RangeServer: @unchecked Sendable {
         let piece = response.prefix(trickle.bytes)
         let rest = Data(response.dropFirst(trickle.bytes))
         connection.send(content: piece, completion: .contentProcessed { [weak self] _ in
-            self?.queue.asyncAfter(deadline: .now() + trickle.delay) { self?.send(rest, on: connection, then: next) }
+            guard let self else { return }
+            self.queue.asyncAfter(deadline: .now() + trickle.delay) { [weak self] in
+                self?.send(rest, on: connection, then: next)
+            }
         })
     }
 

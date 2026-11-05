@@ -5,6 +5,7 @@ import HomeScreenModel
 /// player's list read and change the same one, so a video opened from Finder goes in the order Home shows its folder.
 /// Not inherited: a folder without one takes `playlist-sort`'s (`PlaylistSort.defaultSort`). The store is
 /// `FolderColors`' (debounced writes, the newest 1 000 folders, an unreadable file set aside). Main thread only.
+@MainActor
 public final class FolderSorts {
     public static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/FrameScrub/folder-sorts.json")
@@ -14,7 +15,7 @@ public final class FolderSorts {
 
     /// nil keeps everything in memory and never touches the disk.
     public init(url: URL? = FolderSorts.defaultURL, writeDelay: Double = 2,
-                schedule: @escaping (Double, @escaping () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
+                schedule: @escaping (Double, @escaping @MainActor () -> Void) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + $0, execute: $1) }) {
         store = FolderColors(url: url, writeDelay: writeDelay, schedule: schedule)
     }
 

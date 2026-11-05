@@ -9,17 +9,20 @@ public enum FillMode: Sendable { case playing, paused, reversing }
 /// - backward (paused and reversing): decodes chunks that end just below the cached run containing the
 ///   focus, starting from the chunk's keyframe, so stepping backwards never waits on a decode. While playing backward
 ///   (reverse playback spec §4) the chunks follow one another down the file and may skip frames (§5).
-public final class CacheFiller {
+// Safety: runtime state is guarded by condition and FrameCache's lock; each decoder stays on its own worker.
+// Callback configuration and fixedReverseLevel are set before start and remain unchanged until stop completes.
+// Replace the unchecked conformance when this configuration can be captured in an immutable worker plan.
+public final class CacheFiller: @unchecked Sendable {
     public let cache: FrameCache
     /// Called on a worker thread after a frame has been inserted into the cache.
-    public var onInsert: ((Int) -> Void)?
+    public var onInsert: (@Sendable (Int) -> Void)?
     /// Worker-thread notification when a previously unresolved focus is now known to have no decodable frame.
-    public var onFocusUnavailable: ((Int) -> Void)?
+    public var onFocusUnavailable: (@Sendable (Int) -> Void)?
     /// Called on a worker thread with the first decoding error (later ones only update `lastError`).
-    public var onError: ((Error) -> Void)?
+    public var onError: (@Sendable (Error) -> Void)?
     /// Called on the forward worker's thread with a `requestKeyframe` id and the frame it landed on
     /// (the request's `from` when it failed).
-    public var onLanded: ((_ id: Int, _ frame: Int) -> Void)?
+    public var onLanded: (@Sendable (_ id: Int, _ frame: Int) -> Void)?
 
     private let url: URL
     private let readCache: ReadCache?
@@ -70,7 +73,7 @@ public final class CacheFiller {
     private var chunkSeconds: Double?
     /// Tests: a level that never changes.
     var fixedReverseLevel: ReverseLevel?
-    private let now: () -> Double
+    private let now: @Sendable () -> Double
     /// The last jump: a focus move onto a frame not in the cache, other than a short step backward.
     private var jumpedAt = -Double.infinity
     private var jumpFocus: Int?
@@ -102,7 +105,7 @@ public final class CacheFiller {
     public init(url: URL, index: FrameIndex, cache: FrameCache, estimatedFrameBytes: Int,
                 playbackLookahead: Int, preferHardware: Bool = true, readCache: ReadCache? = nil,
                 policy: NetworkPolicy = .local, frameRate: Double = 30,
-                now: @escaping () -> Double = CACurrentMediaTime) {
+                now: @escaping @Sendable () -> Double = CACurrentMediaTime) {
         self.url = url
         self.now = now
         self.readCache = readCache
@@ -147,7 +150,8 @@ public final class CacheFiller {
 
     public func start() {
         condition.withLock { running = true }
-        for body in [forwardLoop, backwardLoop] {
+        let loops: [@Sendable () -> Void] = [{ self.forwardLoop() }, { self.backwardLoop() }]
+        for body in loops {
             finished.enter()
             let thread = Thread { [finished] in
                 body()

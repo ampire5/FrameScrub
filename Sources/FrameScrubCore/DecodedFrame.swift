@@ -3,7 +3,10 @@ import CoreVideo
 public enum DynamicRange: Sendable { case sdr, hlg, pq }
 
 /// One decoded picture: IOSurface-backed NV12/P010 with colour attachments already set.
-public struct DecodedFrame {
+// Safety: the decoder completes pixels and attachments before publishing a frame. Consumers retain the buffer
+// and only read it; callers constructing frames must follow the same freeze-after-publication contract.
+// Replace this narrow SDK escape hatch when CoreVideo exposes an immutable Sendable buffer handle.
+public struct DecodedFrame: @unchecked Sendable {
     public let number: Int
     public let pts: Int64
     public let pixelBuffer: CVPixelBuffer

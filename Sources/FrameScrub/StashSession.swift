@@ -34,6 +34,7 @@ enum StashFile {
     private let streaming: StashStreaming
     private let stashURL: String
     private let client: StashClient?
+    private let activityQueue: StashActivityQueue
     /// Stash's UI settings; nil until Stash has answered (nothing is sent before: it may have tracking off).
     private var settings: StashUISettings?
     private var fetchingSettings = false
@@ -46,7 +47,12 @@ enum StashFile {
         rules = StashPathRule.parse(config.stashPathMap)
         streaming = config.stashStream
         stashURL = config.stashURL
-        client = URL(string: config.stashURL).map { StashClient(baseURL: $0, apiKey: config.stashAPIKey) }
+        let configuredClient = URL(string: config.stashURL).map { StashClient(baseURL: $0, apiKey: config.stashAPIKey) }
+        client = configuredClient
+        activityQueue = StashActivityQueue { request, sceneID in
+            guard let configuredClient else { throw StashError.badResponse }
+            try await configuredClient.send(request, sceneID: sceneID)
+        }
         loadSettings()
         // The last server the PC's drive letters were found on, for a restart with none of its shares mounted yet.
         rememberedDriveServer = UserDefaults.standard.string(forKey: Self.driveServerKey)
@@ -180,13 +186,11 @@ enum StashFile {
         }
     }
 
-    /// Stash took `request`, sent while the details request `token` was current: the loaded details of the same
-    /// scene follow. Not once the scene was left (or for the write sent as it was left): details loaded when it is
-    /// opened again already have the write.
-    private func applied(_ request: StashActivityRequest, sceneID: String, token: Int?) {
-        guard let token, detailsRequests.accepts(sceneID: sceneID, token: token),
-              let details, details.sceneID == sceneID, case let .loaded(loaded) = details.state else { return }
-        report(sceneID, .loaded(loaded.applying(request, at: Date())))
+    /// The details read on a reopened scene may predate an older queued write. Query after a successful mutation;
+    /// applying its delta blindly could double-count a write already present in a newer server snapshot.
+    private func activityWasSaved(sceneID: String) {
+        guard detailsRequests.shouldRefresh(afterWriteFor: sceneID) else { return }
+        loadDetails(sceneID: sceneID)
     }
 
     private func report(_ sceneID: String, _ state: StashDetailsState) {
@@ -200,37 +204,20 @@ enum StashFile {
         try await client.destroyScene(sceneID)
     }
 
-    /// Quitting: the last save is sent and waited for, at most 1 s.
+    /// Fallback shutdown capture. Normal app termination uses `prepareTerminationFlush` and waits asynchronously;
+    /// this path must not block the main actor that owns the writer and its completion callbacks.
     func flushBeforeQuit() {
-        guard var scene, let client, let state = sample?() else { leave(); return }
-        timer?.invalidate()
-        timer = nil
-        self.scene = nil
-        let requests = scene.activity.flush(position: state.position)
-        guard !requests.isEmpty else { return }
-        let done = DispatchSemaphore(value: 0)
-        let id = scene.id
-        Task.detached {
-            for request in requests { try? await client.send(request, sceneID: id) }
-            done.signal()
-        }
-        _ = done.wait(timeout: .now() + 1)
+        _ = captureTerminationWrites()
     }
 
-    /// Capture synchronously before the core closes. The returned work touches no player state and
-    /// waits off-main for at most one second, so no live playback can change the sampled quit position.
+    /// Capture before the core closes, then drain the same ordered writer as ordinary playback. Waiting is bounded
+    /// off-main; an earlier save is included even when the last sample has no new watched seconds.
     func prepareTerminationFlush() -> (@Sendable () async -> Void)? {
-        guard var scene, let client, let state = sample?() else { leave(); return nil }
-        timer?.invalidate()
-        timer = nil
-        self.scene = nil
-        let requests = scene.activity.flush(position: state.position)
-        guard !requests.isEmpty else { return nil }
-        let id = scene.id
+        guard let work = captureTerminationWrites() else { return nil }
         return {
             let done = DispatchSemaphore(value: 0)
             Task.detached(priority: .utility) {
-                for request in requests { try? await client.send(request, sceneID: id) }
+                await work.value
                 done.signal()
             }
             await withCheckedContinuation { continuation in
@@ -240,6 +227,17 @@ enum StashFile {
                 }
             }
         }
+    }
+
+    private func captureTerminationWrites() -> Task<Void, Never>? {
+        timer?.invalidate()
+        timer = nil
+        if var leaving = scene, let state = sample?() {
+            send(leaving.activity.flush(position: state.position), sceneID: leaving.id)
+        }
+        scene = nil
+        detailsRequests.cancel()
+        return activityQueue.pendingWork
     }
 
     private func tick() {
@@ -255,21 +253,21 @@ enum StashFile {
 
     /// Network failures never reach the screen: the watched time is carried to the next save, a play asked again.
     private func send(_ requests: [StashActivityRequest], sceneID: String) {
-        guard let client, !requests.isEmpty else { return }
+        guard client != nil, !requests.isEmpty else { return }
         guard settings != nil else {   // Stash's settings first: held back, asked again
             for request in requests { scene?.activity.failed(request) }
             loadSettings()
             return
         }
-        let token = detailsRequests.currentToken
-        Task { [weak self] in
-            for request in requests {
-                do {
-                    try await client.send(request, sceneID: sceneID)
-                    self?.applied(request, sceneID: sceneID, token: token)
-                } catch {
-                    Self.logger.error("\(String(describing: request), privacy: .public) for scene \(sceneID, privacy: .public): \(String(describing: error), privacy: .public)")
-                    if let self, self.scene?.id == sceneID { self.scene?.activity.failed(request) }
+        let visit = detailsRequests.currentVisit
+        activityQueue.enqueue(requests, sceneID: sceneID, tracking: settings?.trackActivity) { [weak self] request, succeeded in
+            if succeeded {
+                self?.activityWasSaved(sceneID: sceneID)
+            } else {
+                Self.logger.error("Activity write failed for scene \(sceneID, privacy: .public)")
+                if let self, self.scene?.id == sceneID,
+                   self.detailsRequests.acceptsActivityFailure(sceneID: sceneID, visit: visit) {
+                    self.scene?.activity.failed(request)
                 }
             }
         }

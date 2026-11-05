@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import FrameScrubCore
 
-@Suite struct ColorMemoryTests {
+@MainActor @Suite struct ColorMemoryTests {
     private let a = URL(fileURLWithPath: "/shoots/one/a.mp4")
     private let b = URL(fileURLWithPath: "/shoots/one/b.mp4")
     private let folder = URL(fileURLWithPath: "/shoots/one", isDirectory: true)

@@ -278,7 +278,7 @@ private final class OutputTracker: @unchecked Sendable {
 
     private func released() { lock.withLock { alive -= 1 } }
 
-    private static let key = "FrameScrubOutputToken" as CFString
+    private static var key: CFString { "FrameScrubOutputToken" as CFString }
 
     private final class Token {
         let tracker: OutputTracker

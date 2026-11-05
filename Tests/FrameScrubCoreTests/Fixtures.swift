@@ -60,7 +60,7 @@ func readFrameNumber(_ pb: CVPixelBuffer) -> Int {
 }
 
 /// Polls `condition` every 5 ms until it holds or `timeout` seconds pass.
-func eventually(timeout: Double = 10, _ condition: () -> Bool) async -> Bool {
+func eventually(timeout: Double = 10, isolation: isolated (any Actor)? = #isolation, _ condition: () -> Bool) async -> Bool {
     let deadline = Date().addingTimeInterval(timeout)
     while Date() < deadline {
         if condition() { return true }

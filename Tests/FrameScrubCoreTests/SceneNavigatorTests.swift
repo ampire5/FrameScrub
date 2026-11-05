@@ -8,7 +8,7 @@ private func p(_ v: UInt8) -> KeyframeLook { .picture(sig(v)) }
 private func chain(_ items: [(Int, KeyframeLook)]) -> [(frame: Int, look: KeyframeLook)] {
     items.map { (frame: $0.0, look: $0.1) }
 }
-private let seconds: (Int) -> Double = { Double($0) / 25 }
+private let seconds: @Sendable (Int) -> Double = { Double($0) / 25 }
 
 private func forward(_ position: Int, _ items: [(Int, KeyframeLook)], scenes: Int = 1, atEdge: Bool = false,
                      verified: [Int: [Int]] = [:], threshold: Double = 25, mayVerify: Bool = true) -> SceneNavigator.Step {

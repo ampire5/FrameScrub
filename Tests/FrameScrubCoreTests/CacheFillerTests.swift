@@ -675,15 +675,15 @@ import Testing
 
     @Test func oldMeasurementsAreForgottenForANewSpeed() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
-        nonisolated(unsafe) var t = 0.0
+        let time = Mutex(0.0)
         let filler = CacheFiller(url: source.url, index: index, cache: FrameCache(budgetBytes: 400 << 20),
-                                 estimatedFrameBytes: source.estimatedFrameBytes, playbackLookahead: 30, now: { t })
+                                 estimatedFrameBytes: source.estimatedFrameBytes, playbackLookahead: 30, now: { time.withLock { $0 } })
         filler.setReverseDemand(speed: 2, framesPerSecond: 50)
         filler.setFocus(400, mode: .reversing, direction: -1)
         filler.measured(350...400, level: .all, covered: 50, seconds: 1)   // a slow moment: 50 < 110
         filler.setReverseDemand(speed: 2, framesPerSecond: 50)
         #expect(filler.reverseLevel == .references)
-        t = 30
+        time.withLock { $0 = 30 }
         filler.setReverseDemand(speed: 2, framesPerSecond: 50)   // long ago: tried again
         #expect(filler.reverseLevel == .all)
     }

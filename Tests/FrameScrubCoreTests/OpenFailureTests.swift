@@ -39,7 +39,7 @@ import CFFmpeg
         #expect(!failure.reason.isEmpty)
     }
 
-    @Test func aMissingFileFailsAsNotFound() {
+    @MainActor @Test func aMissingFileFailsAsNotFound() {
         let player = PlayerCore(config: Config(), enableAudio: false, fallbackRoot: makeTemporaryDirectory())
         defer { player.close() }
         do {
@@ -50,7 +50,7 @@ import CFFmpeg
         }
     }
 
-    @Test func aTextFileIsDamaged() throws {
+    @MainActor @Test func aTextFileIsDamaged() throws {
         let file = makeTemporaryDirectory().appendingPathComponent("fake.mp4")
         try Data(repeating: 0x41, count: 4096).write(to: file)
         let player = PlayerCore(config: Config(), enableAudio: false, fallbackRoot: makeTemporaryDirectory())

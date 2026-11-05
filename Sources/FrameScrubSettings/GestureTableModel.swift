@@ -4,6 +4,7 @@ import Foundation
 
 /// The rows of the gesture table (Mouse & Trackpad). Edits go through `InputPreferences`, which applies them to the
 /// running player first and writes input.conf afterwards.
+@MainActor
 public final class GestureTableModel: ObservableObject {
     @Published private(set) var rows: [GestureBinding]
     @Published var errorMessage: String?

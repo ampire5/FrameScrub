@@ -167,7 +167,7 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
         let piece = pieceID
         // The first of the sink's end and a fallback a little after the piece's length ends it: a lost callback
         // (an engine stopped by a device change) must not silence the rest of the file (review).
-        let end = { [weak self] in
+        let end: @MainActor @Sendable () -> Void = { [weak self] in
             guard let self, self.pieceID == piece, self.lock.withLock({ self.generation == current }) else { return }
             self.pieceID += 1
             self.feed(.snippetEnded)

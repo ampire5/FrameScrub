@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// Skip an export window whose frame is blurrier than its neighbours (sharp export spec §3.2).
 public struct SharpFilter: Equatable, Sendable {
@@ -117,7 +118,7 @@ public final class FrameExporter: @unchecked Sendable {
     }
 
     public func saveFrame(_ frame: DecodedFrame, seconds: Double,
-                          completion: @escaping (Result<SavedFrame, Error>) -> Void) {
+                          completion: @escaping @Sendable (Result<SavedFrame, Error>) -> Void) {
         saveQueue.async {
             completion(Result {
                 let (directory, fallback) = try self.outputDirectory()
@@ -127,7 +128,7 @@ public final class FrameExporter: @unchecked Sendable {
     }
 
     /// PNG bytes of `frame` for the clipboard. Rendering and upscaling run on the save queue.
-    public func copyFrame(_ frame: DecodedFrame, completion: @escaping (Result<CopiedFrame, Error>) -> Void) {
+    public func copyFrame(_ frame: DecodedFrame, completion: @escaping @Sendable (Result<CopiedFrame, Error>) -> Void) {
         saveQueue.async {
             completion(Result {
                 let png = try self.renderer.pngData(frame, rotationClockwise: self.rotationClockwise, scale: self.settings.saveScale,
@@ -139,8 +140,8 @@ public final class FrameExporter: @unchecked Sendable {
     }
 
     public func exportRange(_ range: ClosedRange<Int>, selection: ExportSelection = .all, index: FrameIndex,
-                            progress: @escaping (Int, Int) -> Void,
-                            completion: @escaping (Result<ExportResult, Error>) -> Void) -> CancellationFlag {
+                            progress: @escaping @Sendable (Int, Int) -> Void,
+                            completion: @escaping @Sendable (Result<ExportResult, Error>) -> Void) -> CancellationFlag {
         let flag = CancellationFlag()
         let thread = Thread {
             completion(Result { try self.runExport(range, selection: selection, index: index, flag: flag, progress: progress) })
@@ -180,7 +181,7 @@ public final class FrameExporter: @unchecked Sendable {
     /// Decodes the range once. Each window offers its first frame, or with `sharpest` every frame of it competes
     /// (sharp export spec §3.3); `skipBlurry` and `skipDuplicates` then drop windows. Progress counts windows done.
     private func runExport(_ range: ClosedRange<Int>, selection: ExportSelection, index: FrameIndex, flag: CancellationFlag,
-                           progress: @escaping (Int, Int) -> Void) throws -> ExportResult {
+                           progress: @escaping @Sendable (Int, Int) -> Void) throws -> ExportResult {
         let (directory, fallback) = try outputDirectory()
         let selected = selection.frames(in: range, index: index)
         guard let first = selected.first else { return ExportResult(written: 0) }
@@ -193,21 +194,23 @@ public final class FrameExporter: @unchecked Sendable {
         let workers = OperationQueue()
         workers.maxConcurrentOperationCount = max(1, settings.threads)
         let slots = DispatchSemaphore(value: max(1, settings.threads) * 2)   // bounds frames held in memory
-        let lock = NSLock()
-        var written = 0
-        var blurry = 0
-        var duplicates = 0
-        var failure: Error?
+        struct Accounting: Sendable {
+            var written = 0
+            var blurry = 0
+            var duplicates = 0
+            var failure: Error?
+        }
+        let accounting = Mutex(Accounting())
 
-        enum Outcome { case written, blurry, duplicate }
-        func done(_ outcome: Outcome) {
-            let count = lock.withLock { () -> Int in
+        enum Outcome: Sendable { case written, blurry, duplicate }
+        @Sendable func done(_ outcome: Outcome) {
+            let count = accounting.withLock { state -> Int in
                 switch outcome {
-                case .written: written += 1
-                case .blurry: blurry += 1
-                case .duplicate: duplicates += 1
+                case .written: state.written += 1
+                case .blurry: state.blurry += 1
+                case .duplicate: state.duplicates += 1
                 }
-                return written + blurry + duplicates
+                return state.written + state.blurry + state.duplicates
             }
             progress(count, selected.count)
         }
@@ -222,7 +225,7 @@ public final class FrameExporter: @unchecked Sendable {
                     _ = try self.write(frame, seconds: seconds, into: directory, fallback: fallback, scale: self.settings.exportScale)
                     done(.written)
                 } catch {
-                    lock.withLock { if failure == nil { failure = error } }
+                    accounting.withLock { if $0.failure == nil { $0.failure = error } }
                     flag.cancel()
                 }
             }
@@ -275,7 +278,8 @@ public final class FrameExporter: @unchecked Sendable {
         }) {}
         if decodeError == nil, !flag.isCancelled, let decisions = picker?.finish() { _ = apply(decisions) }
         workers.waitUntilAllOperationsAreFinished()
-        if let failure = failure ?? decodeError { throw failure }
-        return ExportResult(written: written, blurry: blurry, duplicates: duplicates)
+        let result = accounting.withLock { $0 }
+        if let failure = result.failure ?? decodeError { throw failure }
+        return ExportResult(written: result.written, blurry: result.blurry, duplicates: result.duplicates)
     }
 }

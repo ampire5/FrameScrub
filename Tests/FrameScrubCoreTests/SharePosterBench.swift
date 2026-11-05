@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 import Testing
 @testable import FrameScrubCore
 
@@ -28,31 +29,29 @@ struct SharePosterBench {
         let skip = Int(ProcessInfo.processInfo.environment["FRAMESCRUB_POSTER_SKIP"] ?? "0") ?? 0
         let workers = Int(ProcessInfo.processInfo.environment["FRAMESCRUB_POSTER_WORKERS"] ?? "1") ?? 1
         let files = names.dropFirst(skip).prefix(12).map { dir.appendingPathComponent($0) }
-        var peak = Self.threads()
+        let peak = Mutex(Self.threads())
         let sampling = DispatchSource.makeTimerSource(queue: .global())
-        let lock = NSLock()
         sampling.schedule(deadline: .now(), repeating: .milliseconds(20))
-        sampling.setEventHandler { let n = Self.threads(); lock.withLock { peak = max(peak, n) } }
+        sampling.setEventHandler { let n = Self.threads(); peak.withLock { $0 = max($0, n) } }
         sampling.resume()
         let start = Date(), cpu0 = Self.cpu()
-        let next = NSLock()
-        var index = 0
-        var lines: [String] = []
+        let next = Mutex(0)
+        let lines = Mutex<[String]>([])
         DispatchQueue.concurrentPerform(iterations: workers) { _ in
             while true {
-                let i: Int? = next.withLock { defer { index += 1 }; return index < files.count ? index : nil }
+                let i: Int? = next.withLock { index in defer { index += 1 }; return index < files.count ? index : nil }
                 guard let i else { return }
                 let t0 = Date()
                 let made = autoreleasepool { KeyframeThumbnail.make(url: files[i], at: nil) }
                 let line = String(format: "%5.2f s  %@  %@", Date().timeIntervalSince(t0), made?.facts.codec ?? "-",
                                   files[i].lastPathComponent.prefix(40) as CVarArg)
-                next.withLock { lines.append(line) }
+                lines.withLock { $0.append(line) }
             }
         }
         sampling.cancel()
         let wall = Date().timeIntervalSince(start), cpu = Self.cpu() - cpu0
-        print("[sharebench] " + lines.joined(separator: "\n[sharebench] "))
+        print("[sharebench] " + lines.withLock { $0 }.joined(separator: "\n[sharebench] "))
         print(String(format: "[sharebench] workers %d: %d posters in %.1f s (%.2f s each), CPU %.1f s (%.0f %% of one core), peak threads %d",
-                     workers, files.count, wall, wall / Double(files.count), cpu, cpu / wall * 100, lock.withLock { peak }))
+                     workers, files.count, wall, wall / Double(files.count), cpu, cpu / wall * 100, peak.withLock { $0 }))
     }
 }

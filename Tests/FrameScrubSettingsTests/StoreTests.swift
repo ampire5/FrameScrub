@@ -1,3 +1,4 @@
+import Synchronization
 import Foundation
 import SettingsKit
 import Testing
@@ -64,30 +65,32 @@ import Testing
     @Test func onlyChangedKeysAreAnnounced() throws {
         let preferences = PreferencesStore(config: Config(), url: try conf())
         let store = FrameScrubSettingsStore(preferences: preferences, defaults: defaults())
-        var announced: [[String]] = []
+        let announced = Mutex<[[String]]>([])
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
-            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+            let keys = $0.userInfo?["keys"] as? [String] ?? []
+            announced.withLock { $0.append(keys) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         try preferences.update(["volume"]) { $0.volume = 30 }        // a menu or the player's 9 / 0
         try preferences.update(["volume"]) { $0.volume = 30 }        // no change: nothing
         try store.setValue("exact", forKey: "seek-mode")              // the window's own write
-        #expect(announced == [["volume"], ["seek-mode"]])
+        #expect(announced.withLock { $0 } == [["volume"], ["seek-mode"]])
     }
 
     @Test func reloadAnnouncesTheFileEdit() throws {
         let url = try conf("volume=50\n")
         let preferences = PreferencesStore(config: Config.parse("volume=50\n").0, url: url)
         let store = FrameScrubSettingsStore(preferences: preferences, defaults: defaults())
-        var announced: [[String]] = []
+        let announced = Mutex<[[String]]>([])
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
-            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+            let keys = $0.userInfo?["keys"] as? [String] ?? []
+            announced.withLock { $0.append(keys) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         try "volume=30\nbogus=1\nseek-mode=sideways\n".write(to: url, atomically: true, encoding: .utf8)
         let warnings = preferences.reload()
         #expect(!warnings.isEmpty)
-        #expect(announced == [["volume"]])
+        #expect(announced.withLock { $0 } == [["volume"]])
         #expect(store.value(forKey: "volume") == "30")
     }
 
@@ -112,14 +115,15 @@ import Testing
         #expect(defaults.object(forKey: FrameScrubSettingsStore.wheelFreeSpinDefaultsKey) as? Bool == false)
         #expect(store.value(forKey: key) == "no")
         #expect(!FileManager.default.fileExists(atPath: url.path))
-        var announced: [[String]] = []
+        let announced = Mutex<[[String]]>([])
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
-            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+            let keys = $0.userInfo?["keys"] as? [String] ?? []
+            announced.withLock { $0.append(keys) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         defaults.set(true, forKey: FrameScrubSettingsStore.wheelFreeSpinDefaultsKey)   // SmartShift in the player
         store.wheelFreeSpinDidChange()
-        #expect(announced == [[key]])
+        #expect(announced.withLock { $0 } == [[key]])
         #expect(store.value(forKey: key) == "yes")
     }
 
@@ -127,14 +131,15 @@ import Testing
         let url = try conf("volume=30\nseek-mode=exact\n")
         let preferences = PreferencesStore(config: Config.parse("volume=30\nseek-mode=exact\n").0, url: url)
         let store = FrameScrubSettingsStore(preferences: preferences, defaults: defaults())
-        var announced: [[String]] = []
+        let announced = Mutex<[[String]]>([])
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
-            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+            let keys = $0.userInfo?["keys"] as? [String] ?? []
+            announced.withLock { $0.append(keys) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         try store.removeValues(forKeys: ["volume", "seek-mode"])
-        #expect(announced.count == 1)
-        #expect(Set(announced.first ?? []) == ["volume", "seek-mode"])
+        #expect(announced.withLock { $0.count } == 1)
+        #expect(Set(announced.withLock { $0.first } ?? []) == ["volume", "seek-mode"])
         #expect(store.value(forKey: "volume") == "100")
         #expect(try String(contentsOf: url, encoding: .utf8) == "volume=100\nseek-mode=keyframe\n")
     }
@@ -171,28 +176,29 @@ import Testing
         let shoot = URL(fileURLWithPath: "/shoots/one", isDirectory: true)
         let (store, cleared) = try colourStore(ColorLayerSnapshot(file: nil, chain: [
             ColorLayerSnapshot.Folder(url: shoot, values: ["vibrance": "0.3"])]))
-        var announced: [[String]] = []
+        let announced = Mutex<[[String]]>([])
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store, queue: nil) {
-            announced.append($0.userInfo?["keys"] as? [String] ?? [])
+            let keys = $0.userInfo?["keys"] as? [String] ?? []
+            announced.withLock { $0.append(keys) }
         }
         defer { NotificationCenter.default.removeObserver(token) }
         store.clearFolderOverride(forKey: "vibrance")
         #expect(cleared().count == 1)
         #expect(cleared().first?.0 == "vibrance")
         #expect(cleared().first?.1 == .folder(shoot))
-        #expect(announced == [["vibrance"]])
+        #expect(announced.withLock { $0 } == [["vibrance"]])
     }
 
     @Test func noVideoNoNote() throws {
         let (store, cleared) = try colourStore(nil)
-        var posted = 0
+        let posted = Mutex(0)
         let token = NotificationCenter.default.addObserver(forName: .settingsStoreDidChange, object: store,
-                                                           queue: nil) { _ in posted += 1 }
+                                                           queue: nil) { _ in posted.withLock { $0 += 1 } }
         defer { NotificationCenter.default.removeObserver(token) }
         #expect(store.override(forKey: "vibrance") == nil)
         store.clearFolderOverride(forKey: "vibrance")
         #expect(cleared().isEmpty)
-        #expect(posted == 0)
+        #expect(posted.withLock { $0 } == 0)
     }
 
     @Test func noFiltersIsAnEmptyList() throws {

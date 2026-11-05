@@ -18,6 +18,7 @@ public enum IndexStatus: Equatable, Sendable {
     }
 }
 
+@MainActor
 public protocol PlayerCoreDelegate: AnyObject {
     func player(_ player: PlayerCore, display frame: DecodedFrame)
     func playerStateDidChange(_ player: PlayerCore)
@@ -35,6 +36,7 @@ public extension PlayerCoreDelegate {
 
 /// The player state machine. Main thread only. Owns the cache and its filler, audio, the
 /// playback clock and export; the UI forwards commands and draws what the delegate is given.
+@MainActor
 public final class PlayerCore {
     public weak var delegate: PlayerCoreDelegate?
     /// Writes the A-B clips (`c`); set by the app.
@@ -150,7 +152,7 @@ public final class PlayerCore {
     private let fallbackRoot: URL
     private let resumeStore: ResumeStore?
     /// The bytes of a URL about to open; the default reads a file, or Stash's stream with its API key.
-    private let byteSource: (URL, Config) throws -> ByteSource
+    private let byteSource: @Sendable (URL, Config) throws -> ByteSource
     private let now: () -> Double
     private var filler: CacheFiller?
     private var exporter: FrameExporter?
@@ -160,7 +162,7 @@ public final class PlayerCore {
     /// Playing, but the clock waits for the file's first picture (`restartClock`).
     private var clockWaitsForPicture = false
     private let audioSetupQueue = DispatchQueue(label: "framescrub.audio-setup", qos: .userInitiated)
-    private static let audioLog = Logger(subsystem: "local.framescrub", category: "Audio")
+    nonisolated private static let audioLog = Logger(subsystem: "local.framescrub", category: "Audio")
     /// A piece of sound on every frame change in pause (scrub audio spec).
     private var scrubAudio: ScrubAudio?
     /// Tests: where scrub audio pieces go instead of the playback audio's engine.
@@ -207,7 +209,7 @@ public final class PlayerCore {
 
     public init(config: Config, enableAudio: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
                 now: @escaping () -> Double = CACurrentMediaTime, resumeStore: ResumeStore? = nil,
-                byteSource: @escaping (URL, Config) throws -> ByteSource = {
+                byteSource: @escaping @Sendable (URL, Config) throws -> ByteSource = {
                     try ByteSources.open($0, headers: StashOpenPolicy.headers(for: $0, config: $1))
                 }) {
         self.config = config
@@ -224,7 +226,7 @@ public final class PlayerCore {
         watchMemoryPressure()
     }
 
-    deinit {
+    isolated deinit {
         memoryPressure?.cancel()
         close()
     }
@@ -249,7 +251,7 @@ public final class PlayerCore {
     /// runs. `cancellation` stops it while it reads.
     public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
         let config = config, factor = pressureFactor, resumeStore = resumeStore
-        nonisolated(unsafe) let byteSource = byteSource
+        let byteSource = byteSource
         return {
             resumeStore?.prepare()
             let identity = MediaFileIdentity.read(url)
@@ -1908,7 +1910,7 @@ public final class PlayerCore {
         Self.readCacheBudget(config: config, policy: networkPolicy, factor: factor)
     }
 
-    private static func readCacheBudget(config: Config, policy: NetworkPolicy, factor: Double) -> Int {
+    nonisolated private static func readCacheBudget(config: Config, policy: NetworkPolicy, factor: Double) -> Int {
         Int(Double(max(config.readCacheMiB, config.readCacheMiB > 0 ? policy.minReadCacheMiB : 0) << 20) * factor)
     }
 

@@ -2,16 +2,16 @@ import Foundation
 import Testing
 @testable import FrameScrubCore
 
-@Suite struct FolderColorsTests {
+@MainActor @Suite struct FolderColorsTests {
     private func dir(_ path: String) -> URL { URL(fileURLWithPath: path, isDirectory: true) }
 
     private func fileURL() -> URL { makeTemporaryDirectory().appendingPathComponent("folder-colors.json") }
 
     /// Holds what the store asked to run later, so a test decides when the debounce fires.
-    private final class Scheduler {
+    @MainActor private final class Scheduler {
         var delays: [Double] = []
-        var pending: [() -> Void] = []
-        func schedule(_ delay: Double, _ work: @escaping () -> Void) { delays.append(delay); pending.append(work) }
+        var pending: [@MainActor () -> Void] = []
+        func schedule(_ delay: Double, _ work: @escaping @MainActor () -> Void) { delays.append(delay); pending.append(work) }
         func fire() { let work = pending; pending = []; work.forEach { $0() } }
     }
 

@@ -6,6 +6,7 @@ import SettingsKit
 /// compiled by make-app.sh from Resources/Icons/Alternates) or a file path; `horse` with no file of that name is the
 /// bundle's icon. Only the running app's Dock icon changes; Finder keeps the bundle's. A missing picture (`swift run`
 /// has no bundle) keeps the current icon and says so once.
+@MainActor
 final class AppIconSwitcher {
     /// The value last applied; nil until the first `apply` (the bundle's icon is showing).
     private var applied: String?
@@ -30,7 +31,7 @@ final class AppIconSwitcher {
     /// `horse` and bundled alternates (Built-in), loose user pictures (Yours), one section per folder pack, and
     /// the current external path (Other), each with its file; the picker makes
     /// their thumbnails off the main thread.
-    static func choices(current: String) -> [IconChoice] {
+    nonisolated static func choices(current: String) -> [IconChoice] {
         let builtIn = [AppIcon.bundle] + AppIcon.alternates.filter { bundled($0) != nil }
         var choices = builtIn.map { word in
             let url = AppIcon.url(for: word, bundled: bundled)
@@ -47,7 +48,7 @@ final class AppIconSwitcher {
         return choices
     }
 
-    private static func bundled(_ name: String) -> URL? {
+    nonisolated private static func bundled(_ name: String) -> URL? {
         Bundle.main.url(forResource: name, withExtension: "icns", subdirectory: "AppIcons")
     }
 

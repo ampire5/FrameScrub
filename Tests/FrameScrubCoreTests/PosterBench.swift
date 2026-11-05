@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import FrameScrubCore
 
@@ -10,22 +11,22 @@ struct PosterBench {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("posterbench-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        var files: [URL] = []
+        var copies: [URL] = []
         for i in 0..<24 {
             let source = Fixtures.url(i % 2 == 0 ? Fixtures.h264 : Fixtures.hevc10)
             let copy = dir.appendingPathComponent("v\(i).\(source.pathExtension)")
             try FileManager.default.copyItem(at: source, to: copy)
-            files.append(copy)
+            copies.append(copy)
         }
+        let files = copies
         _ = KeyframeThumbnail.make(url: files[0], at: nil)   // warm-up: decoders and libraries loaded
         var lines: [String] = []
         for workers in [1, 2, 3, 4, 6] {
             let start = Date()
-            let next = NSLock()
-            var index = 0
+            let next = Mutex(0)
             DispatchQueue.concurrentPerform(iterations: workers) { _ in
                 while true {
-                    let i: Int? = next.withLock { defer { index += 1 }; return index < files.count ? index : nil }
+                    let i: Int? = next.withLock { index in defer { index += 1 }; return index < files.count ? index : nil }
                     guard let i else { return }
                     autoreleasepool { _ = KeyframeThumbnail.make(url: files[i], at: nil) }
                 }

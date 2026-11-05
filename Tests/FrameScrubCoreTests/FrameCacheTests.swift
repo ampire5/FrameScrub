@@ -3,14 +3,14 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct FrameCacheTests {
-    private static let buffer: CVPixelBuffer = {
+    private static let template: DecodedFrame = {
         var pb: CVPixelBuffer?
         CVPixelBufferCreate(nil, 16, 16, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, nil, &pb)
-        return pb!
+        return DecodedFrame(number: 0, pts: 0, pixelBuffer: pb!, dynamicRange: .sdr)
     }()
 
     private func frame(_ n: Int, bytes: Int = 100) -> DecodedFrame {
-        DecodedFrame(number: n, pts: Int64(n), pixelBuffer: Self.buffer, dynamicRange: .sdr, byteSize: bytes)
+        DecodedFrame(number: n, pts: Int64(n), pixelBuffer: Self.template.pixelBuffer, dynamicRange: .sdr, byteSize: bytes)
     }
 
     @Test func storesAndReplacesFrames() {

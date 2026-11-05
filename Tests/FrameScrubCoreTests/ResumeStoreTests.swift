@@ -312,7 +312,7 @@ import Testing
         let video = stateURL.deletingLastPathComponent().appendingPathComponent("clip.mp4")
         let viewed = Date(timeIntervalSince1970: 1000)
         s.recordView(for: video, size: 1, at: viewed)
-        let started = await Task.detached { entered.wait(timeout: .now() + 5) == .success }.value
+        let started = await Task.detached { waitForWriter(entered) }.value
         defer { release.signal() }
         #expect(started)
         let start = Date()
@@ -443,7 +443,7 @@ import Testing
         let root = url.deletingLastPathComponent()
         s.recordView(for: root.appendingPathComponent("blocker.mp4"), size: 1,
                      at: Date(timeIntervalSince1970: 1000))
-        let started = await Task.detached { entered.wait(timeout: .now() + 5) == .success }.value
+        let started = await Task.detached { waitForWriter(entered) }.value
         defer { release.signal() }
         #expect(started)
         let video = root.appendingPathComponent("clip.mp4")
@@ -459,4 +459,9 @@ import Testing
         #expect(entry.updated == Date(timeIntervalSince1970: 2000))
     }
 
+}
+
+/// Blocking rendezvous stays in a synchronous helper invoked by the test's detached worker, away from MainActor.
+private func waitForWriter(_ semaphore: DispatchSemaphore) -> Bool {
+    semaphore.wait(timeout: .now() + 5) == .success
 }

@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreImage
 import Foundation
+import Synchronization
 import HomeScreenModel
 
 /// A picture for a recent file that has no saved one: the keyframe at or before where it was left, read with a
@@ -94,11 +95,10 @@ public final class RecentThumbnailer: @unchecked Sendable {
         queue.async { [self] in
             let local = jobs.first.flatMap { try? $0.url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal } ?? false
             let workers = max(1, min(local ? localWorkers : 1, jobs.count))
-            let next = NSLock()
-            var index = 0
+            let next = Mutex(0)
             DispatchQueue.concurrentPerform(iterations: workers) { _ in
                 while !flag.isCancelled {
-                    let i: Int? = next.withLock {
+                    let i: Int? = next.withLock { index in
                         defer { index += 1 }
                         return index < jobs.count ? index : nil
                     }

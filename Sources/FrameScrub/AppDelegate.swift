@@ -16,6 +16,7 @@ final class CommandBox: NSObject {
     }
 }
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     private var controller: PlayerWindowController?
     private(set) var preferences: PreferencesStore!
@@ -119,7 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
                 // AppKit's nested termination loop must not hold a main-dispatch block:
                 // asynchronous user-state persistence resumes through that same executor.
-                RunLoop.main.perform(inModes: [.common]) { NSApp.terminate(nil) }
+                RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { NSApp.terminate(nil) } }
             }
         }
         NSApp.activate()
@@ -347,20 +348,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         handOverObserver = DistributedNotificationCenter.default().addObserver(
             forName: Self.openFileNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let self, !self.isSecondary, let controller = self.controller,
-                  HandOver.isForUs(note.userInfo, ownBundle: Bundle.main.bundlePath) else { return }
-            // Any process can post this name, so only an absolute path to an existing regular file is opened.
-            if let path = note.userInfo?["path"] as? String, path.hasPrefix("/") {
-                let url = URL(fileURLWithPath: path)
-                if (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
-                    controller.open(url)
+            let forUs = HandOver.isForUs(note.userInfo, ownBundle: Bundle.main.bundlePath)
+            let path = note.userInfo?["path"] as? String
+            let linkText = note.userInfo?["link"] as? String
+            MainActor.assumeIsolated {
+                guard let self, !self.isSecondary, let controller = self.controller,
+                      forUs else { return }
+                // Any process can post this name, so only an absolute path to an existing regular file is opened.
+                if let path, path.hasPrefix("/") {
+                    let url = URL(fileURLWithPath: path)
+                    if (try? url.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                        controller.open(url)
+                    }
+                } else if let link = linkText.flatMap(URL.init(string:)),
+                          let target = OpenLink.target(from: link), target.sceneID != nil {
+                    controller.open(target)   // a Stash scene by id: nothing on this Mac is named
                 }
-            } else if let link = (note.userInfo?["link"] as? String).flatMap(URL.init(string:)),
-                      let target = OpenLink.target(from: link), target.sceneID != nil {
-                controller.open(target)   // a Stash scene by id: nothing on this Mac is named
+                controller.bringToFront()
+                NSApp.activate()
             }
-            controller.bringToFront()
-            NSApp.activate()
         }
     }
 
