@@ -46,6 +46,11 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
 - `VideoView` applies optional Subject Focus before display scaling. `SubjectMasker` owns one mask worker and one
   replaceable pending job; recurrent model state stays on that worker. Models remain user supplied outside the repo.
+  `SubjectMatting` keeps native half-float conversion on Apple Silicon; Intel uses Core's `HalfPrecisionAlpha` to convert raw IEEE binary16
+  through vImage before the same clamp/round. Non-unit strides are packed, scratch is bounded by the model plane,
+  and vImage tiling is disabled so no second worker is introduced. At 768×432, scratch peaks at about 1.90 MiB.
+  A release x86_64 helper under Rosetta on M4 Max (30 warm runs, wall time) took 0.40 ms for dense storage and
+  0.66 ms with a column stride of two; this is not a physical Intel Mac latency measurement.
   `SubjectFocusPanelView` is a transient singleton native tab registered by the app's `SlotsController` adapter;
   the shared Slots host owns its capsule, width, pinning, backdrop and visibility. No second slot implementation is used.
 - Opt-in `PlaybackDiagnostics` (Core) bounds recent samples and configuration groups, writes local JSON on a utility

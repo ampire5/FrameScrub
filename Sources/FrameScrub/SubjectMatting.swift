@@ -1,6 +1,7 @@
 import CoreImage
 import CoreML
 import Foundation
+import FrameScrubCore
 import os
 
 /// RobustVideoMatting (spike, optional): an alpha matte of the people that remembers the frames before (a recurrent
@@ -170,6 +171,15 @@ final class SubjectMatting {
         if !still { state = own }
         guard let a = pha, a.shape.count == 4 else { return nil }
         let h = a.shape[2].intValue, w = a.shape[3].intValue, ys = a.strides[2].intValue, xs = a.strides[3].intValue
+        #if arch(x86_64)
+        // The stored values are IEEE binary16 on Intel too, but Swift.Float16 has no numeric conversion there.
+        guard a.dataType == .float16 else { return nil }
+        return a.withUnsafeBytes { storage in
+            guard let out = HalfPrecisionAlpha.bytes(from: storage, width: w, height: h,
+                                                     rowStride: ys, columnStride: xs) else { return nil }
+            return (out, w, h)
+        }
+        #else
         var out = Data(count: w * h)
         out.withUnsafeMutableBytes { (o: UnsafeMutableRawBufferPointer) in
             let ob = o.bindMemory(to: UInt8.self)
@@ -178,5 +188,6 @@ final class SubjectMatting {
             }
         }
         return (out, w, h)
+        #endif
     }
 }
