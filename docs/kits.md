@@ -9,7 +9,8 @@ A local `.swiftpm/configuration/mirrors.json` (not in git) may point the kits' U
 FrameScrub: SwiftPM then resolves the same tags from the clones, so a tag must exist there (fetch the kit) before
 `swift package update` finds it; Package.resolved still records the GitHub URLs.
 
-`scripts/kits-check.py` checks all of it: run it before a branch is merged and before a build is handed over.
+`scripts/kits-check.py` checks this workflow, accepting numeric and `v`-prefixed release tags and verifying the exact
+pinned commit. Run it before a branch is merged and before a build is handed over.
 
 ## While a branch is open
 
@@ -31,3 +32,5 @@ FrameScrub: SwiftPM then resolves the same tags from the clones, so a tag must e
 
 A kit is never released from a branch, and FrameScrub never pins a kit's branch or an untagged revision: `main` of FrameScrub
 must build from the tags alone.
+
+Test the checker with `python3 scripts/test-kits-check.py` (temporary local Git fixtures; no network needed).
