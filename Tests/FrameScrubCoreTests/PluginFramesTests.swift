@@ -14,10 +14,10 @@ import Testing
     }
 
     @Test func itemsAndOpenCarryAFolder() {
-        let list = posted(#"{"cmd":"setPlaylist","items":[{"url":"http://h/s/1","frames":"/Volumes/V/PornBox/Frames/A"},{"url":"http://h/s/2"}]}"#)
+        let list = posted(#"{"cmd":"setPlaylist","items":[{"url":"http://h/s/1","frames":"/Volumes/V/ExampleMedia/Frames/A"},{"url":"http://h/s/2"}]}"#)
         #expect(reason(list) == nil)
         #expect(PluginMessage.frameFolders(list)
-                == [URL(string: "http://h/s/1")!: URL(filePath: "/Volumes/V/PornBox/Frames/A", directoryHint: .isDirectory)])
+                == [URL(string: "http://h/s/1")!: URL(filePath: "/Volumes/V/ExampleMedia/Frames/A", directoryHint: .isDirectory)])
         let open = posted(#"{"cmd":"open","url":"http://h/s/3","frames":"/tmp/f"}"#)
         #expect(PluginMessage.frameFolders(open) == [URL(string: "http://h/s/3")!: URL(filePath: "/tmp/f", directoryHint: .isDirectory)])
     }
