@@ -47,7 +47,7 @@ struct OutputSizeField: View {
 
     var body: some View {
         HStack {
-            Picker("", selection: Binding(get: { kind }, set: choose)) {
+            Picker("", selection: Binding(get: { kind }, set: { choose($0) })) {
                 ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
             }
             .labelsHidden()
