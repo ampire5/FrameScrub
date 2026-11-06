@@ -7,6 +7,7 @@ public struct ScrollSample: Sendable {
     public var precise: Bool       // trackpad / Magic Mouse; false = mouse wheel
     public var momentum: Bool
     public var began: Bool
+    public var phased: Bool
     public var time: Double
     public var modifiers: Modifiers
     /// The right mouse button is held: the scroll's chord gets `MBTN_RIGHT+` (by default a fast scrub).
@@ -15,12 +16,13 @@ public struct ScrollSample: Sendable {
     public var heldButtons: Modifiers
 
     public init(deltaX: Double, deltaY: Double, precise: Bool, momentum: Bool, began: Bool, time: Double,
-                modifiers: Modifiers, rightButton: Bool = false, heldButtons: Modifiers = []) {
+                modifiers: Modifiers, rightButton: Bool = false, heldButtons: Modifiers = [], phased: Bool = false) {
         self.deltaX = deltaX
         self.deltaY = deltaY
         self.precise = precise
         self.momentum = momentum
         self.began = began
+        self.phased = phased
         self.time = time
         self.modifiers = modifiers
         self.rightButton = rightButton
@@ -64,6 +66,11 @@ public final class GestureRouter {
         var modifiers: Modifiers
     }
 
+    private var scrollAxis = GestureAxisLock()
+    private var scrollModifiers: Modifiers?
+    private var lastScrollTime: Double?
+    private var lastWasMomentum = false
+    private var scrollPrecise: Bool?
     private var axis: Axis?
     private var travel = 0.0
     private var pinchTravel = 0.0
@@ -76,7 +83,46 @@ public final class GestureRouter {
         scrubber = ScrubController(settings: scrubSettings)
     }
 
-    public func route(_ s: ScrollSample) -> [GestureAction] {
+    /// A fresh button press or deactivation ends the old scroll even on a device without phases.
+    public func resetScroll() {
+        scrollAxis.reset()
+        scrollModifiers = nil
+        scrollPrecise = nil
+        lastScrollTime = nil
+        lastWasMomentum = false
+        axis = nil
+        travel = 0
+        notchEvents = 0
+        notchChord = nil
+        scrubber.reset()
+    }
+
+    public func route(_ sample: ScrollSample) -> [GestureAction] {
+        var s = sample
+        let modifiers = (s.rightButton ? s.modifiers.union(.rightButton) : s.modifiers).union(s.heldButtons)
+        // Keyboard and button changes begin a new input chord, never inheriting an old coast's axis.
+        let newGesture = !s.momentum && (s.began || lastWasMomentum ||
+            (!s.phased && lastScrollTime.map { s.time - $0 >= GestureAxisLock.restGap } == true))
+        lastScrollTime = s.time
+        lastWasMomentum = s.momentum
+        if newGesture || modifiers != scrollModifiers || scrollPrecise != s.precise {
+            scrollAxis.reset()
+            scrollModifiers = modifiers
+            scrubber.reset()
+            notchEvents = 0
+            notchChord = nil
+            scrollPrecise = s.precise
+            travel = 0
+            axis = nil
+        }
+        if s.precise || s.rightButton || !s.heldButtons.isEmpty {
+            let delta = scrollAxis.filter(x: s.deltaX, y: s.deltaY, precise: s.precise, momentum: s.momentum,
+                                          began: s.began, phased: s.phased, at: s.time)
+            s.deltaX = delta.x
+            s.deltaY = delta.y
+        } else {
+            scrollAxis.reset()
+        }
         if s.began {
             scrubber.reset()
             travel = 0
@@ -86,7 +132,6 @@ public final class GestureRouter {
         let delta = horizontal ? s.deltaX : s.deltaY
         guard delta != 0 else { return [] }
         let device = s.precise ? "TRACKPAD" : "WHEEL"
-        let modifiers = (s.rightButton ? s.modifiers.union(.rightButton) : s.modifiers).union(s.heldButtons)
         let eventChord = chord(device, horizontal: horizontal, positive: delta > 0, modifiers: modifiers)
         guard let command = inputMap.command(for: eventChord) else { return [] }
 

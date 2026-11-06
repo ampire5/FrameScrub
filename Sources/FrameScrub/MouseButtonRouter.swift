@@ -16,6 +16,7 @@ import FrameScrubCore
 @MainActor final class MouseButtonRouter {
     /// The chords that fired, in order.
     var onFire: ([KeyChord]) -> Void = { _ in }
+    var onPress: () -> Void = {}
     /// A button with chords held to the long-press threshold: releasing now is its long press.
     var onArmed: (MouseButton) -> Void = { _ in }
     /// A button's release went through the filter (the recogniser got it): the owner of an edge drag ends it.
@@ -85,6 +86,7 @@ import FrameScrubCore
     /// An AppKit button down: dropped when the mouse brings that side button itself (`mx-side-buttons=watch`).
     func appKitDown(_ b: MouseButton, keys: Modifiers, rightHeld: Bool, at t: Double) {
         guard filter.down(b, heard: heard(), at: t) else { return }
+        onPress()
         dispatch(gestures.press(b, keys: keys, rightHeld: rightHeld, at: t))
     }
 
@@ -101,6 +103,7 @@ import FrameScrubCore
     func mousePress(_ b: MouseButton, keys: Modifiers, rightHeld: Bool, at t: Double, watched: Bool,
                     overOwnWindow: Bool) -> Bool {
         guard filter.mousePress(b, at: t, watched: watched, overOwnWindow: overOwnWindow) else { return false }
+        onPress()
         dispatch(gestures.press(b, keys: keys, rightHeld: rightHeld, at: t))
         return true
     }
@@ -117,6 +120,13 @@ import FrameScrubCore
         let modifier = gestures.wheel(hasDelta: hasDelta, momentum: momentum, at: t)
         rearm()
         return modifier
+    }
+
+    func wheel(deltaX: Double, deltaY: Double, precise: Bool, momentum: Bool, began: Bool,
+               at t: Double) -> (modifiers: Modifiers, pending: Bool, deltaX: Double, deltaY: Double) {
+        let result = gestures.wheel(deltaX: deltaX, deltaY: deltaY, precise: precise, momentum: momentum, began: began, at: t)
+        rearm()
+        return result
     }
 
     /// Pointer movement in points while buttons are held (a press that drifted is a drag): from `watchMoves`.

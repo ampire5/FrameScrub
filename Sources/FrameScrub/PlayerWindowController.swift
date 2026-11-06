@@ -1650,6 +1650,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if $0.keyCode == self?.holdKeyCode { self?.endHoldSpeed() }
         }
         videoView.onScroll = { [weak self] in self?.handleScroll($0) }
+        videoView.onScrollGestureReset = { [weak self] in self?.gestures.resetScroll() }
         videoView.onUndo = { [weak self] in
             guard let self else { return }
             haptics.from(menuSource) { self.core.undoMarks() }
@@ -2283,18 +2284,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                      precise: event.hasPreciseScrollingDeltas, momentum: event.momentumPhase != [],
                      began: event.phase == .began, time: event.timestamp,
                      modifiers: Modifiers(event.modifierFlags),
-                     rightButton: NSEvent.pressedMouseButtons & 0b10 != 0)
-    }
-
-    /// The held-button modifier of a scroll (`MBTN_BACK+WHEEL_UP`); the wheel also cancels the held buttons' taps.
-    private func heldButtons(for sample: ScrollSample) -> Modifiers {
-        buttons.wheel(hasDelta: sample.deltaX != 0 || sample.deltaY != 0, momentum: sample.momentum, at: sample.time)
+                     rightButton: NSEvent.pressedMouseButtons & 0b10 != 0, phased: !event.phase.isEmpty)
     }
 
     /// `source`: who the scroll's haptics answer to; nil, the wheel's (`.mouse`) or the trackpad's.
     private func handleScroll(_ event: NSEvent, source: MouseHaptics.Source? = nil) {
         var sample = scrollSample(event)
-        sample.heldButtons = heldButtons(for: sample)
+        let wheel = buttons.wheel(deltaX: sample.precise ? sample.deltaX : Double(event.deltaX),
+                                  deltaY: sample.precise ? sample.deltaY : Double(event.deltaY),
+                                  precise: sample.precise, momentum: sample.momentum, began: sample.began, at: sample.time)
+        guard !wheel.pending else { return }
+        sample.heldButtons = wheel.modifiers
+        if sample.precise { sample.deltaX = wheel.deltaX; sample.deltaY = wheel.deltaY }
         let owner = MouseButton.allCases.first { $0.modifier.map(sample.heldButtons.contains) ?? false }
         let fresh = EndBump.isFreshNotch(at: sample.time, previous: lastWheelTime)
         lastWheelTime = sample.time
@@ -2367,6 +2368,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Everything the mouse buttons have in flight: presses (and the button timer), the edge drag.
     private func cancelMouseInput() {
         buttons.cancelAll()
+        gestures.resetScroll()
         homeButtons.cancelAll()
         cancelEdgeDrag()
         edgeDragSuppressed = nil
@@ -2485,6 +2487,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         haptics.config = { [weak self] in self?.core.config ?? Config() }
         core.onHaptic = { [weak self] in self?.haptics.play($0) }   // filtered by the input running (`haptics.from`)
         core.onSeekHaptic = { [weak self] in self?.haptics.play($0, mouseOnly: true) }   // a seek's step: the mouse only
+        buttons.onPress = { [weak self] in self?.gestures.resetScroll() }
         buttons.onFire = { [weak self] chords in chords.forEach { self?.runBinding($0) } }
         buttons.onArmed = { [weak self] _ in
             guard let self, window?.isKeyWindow == true else { return }
@@ -3233,7 +3236,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         lensScroll.invertX = core.config.scrub.invert
         let sample = scrollSample(event)
-        _ = heldButtons(for: sample)   // a held button's tap is cancelled here too
+        let wheel = buttons.wheel(deltaX: sample.precise ? sample.deltaX : Double(event.deltaX),
+                                  deltaY: sample.precise ? sample.deltaY : Double(event.deltaY), precise: sample.precise,
+                                  momentum: sample.momentum, began: sample.began, at: sample.time)
+        guard !wheel.pending else { return }
         let steps = lensScroll.steps(for: sample)
         guard steps != 0, let target = KeyframeLens.step(index, from: from, by: steps) else { return }
         previewPin = (target, fraction)

@@ -204,3 +204,39 @@ import Testing
         #expect(down == [.command(.addVolume(-2))])
     }
 }
+
+@Suite struct GestureAxisRoutingTests {
+    private func sample(_ x: Double, _ y: Double, began: Bool = false, momentum: Bool = false, t: Double) -> ScrollSample {
+        ScrollSample(deltaX: x, deltaY: y, precise: true, momentum: momentum, began: began, time: t, modifiers: [])
+    }
+    @Test func verticalGestureCannotBecomeScrubbing() {
+        let r = GestureRouter(inputMap: InputMap(), scrubSettings: ScrubSettings())
+        #expect(r.route(sample(0, 40, began: true, t: 1)) == [.command(.addVolume(2))])
+        #expect(r.route(sample(-80, 0, t: 1.01)).isEmpty)
+        #expect(r.route(sample(0, -40, t: 1.02)) == [.command(.addVolume(-2))])
+    }
+    @Test func horizontalGestureCannotBecomeVolumeThroughMomentum() {
+        let r = GestureRouter(inputMap: InputMap(), scrubSettings: ScrubSettings())
+        #expect(!r.route(sample(-40, 0, began: true, t: 1)).isEmpty)
+        #expect(r.route(sample(0, 80, t: 1.01)).isEmpty)
+        #expect(r.route(sample(0, 80, momentum: true, t: 1.02)).isEmpty)
+        #expect(r.route(sample(0, 40, began: true, t: 1.03)) == [.command(.addVolume(2))])
+    }
+}
+
+extension GestureAxisRoutingTests {
+    @Test func restDoesNotCarryPartialVolumeIntoNextGesture() {
+        let r = GestureRouter(inputMap: InputMap(), scrubSettings: ScrubSettings())
+        #expect(r.route(sample(0, 20, t: 1)).isEmpty)
+        #expect(r.route(sample(0, 20, t: 2)).isEmpty)
+    }
+}
+
+extension GestureAxisRoutingTests {
+    @Test func freshButtonPressReleasesAxisWithoutWaitingForWheelGap() {
+        let r = GestureRouter(inputMap: InputMap(), scrubSettings: ScrubSettings())
+        _ = r.route(sample(-40, 0, t: 1))
+        r.resetScroll()
+        #expect(r.route(sample(0, 40, t: 1.01)) == [.command(.addVolume(2))])
+    }
+}

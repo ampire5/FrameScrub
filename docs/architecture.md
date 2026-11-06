@@ -162,3 +162,12 @@ separate event preset is generated from a locally supplied vendor Lite template;
 Run `swift test --jobs 4` with the native dependencies described in [README](../README.md). Use the real-window
 benches for navigation/control latency, and compare first visit with return separately. [User reference](reference.md)
 describes controls/settings, not internal ownership. No architectural change should silently alter kit pins.
+
+## Gesture ownership
+
+`GestureAxisLock` in Core fixes the first intentional scroll axis through momentum; a new non-momentum
+begin resets it immediately. Phase-less scrolling re-arms after a 0.25 s gap. Loupe's `ViewerView` filters deltas
+before button/folder/pan routing; FrameScrub's `GestureRouter` filters before command routing. Pointer right-drag
+zoom and right-button scrolling keep their first owner until release. Button recognition ignores zero deltas;
+middle-button scrolling must cross a wheel step (12 precise points or one notched unit) before cancelling a click.
+State is local to the existing input owners; no polling, new queues or dependencies are introduced.
