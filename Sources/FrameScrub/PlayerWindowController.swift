@@ -796,6 +796,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// the window is the start screen. Home is made the first time and only hidden after that.
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
+        slots.isEnabled = false
         cancelTourBoxInput()
         homeButtons.cancelAll()
         core.setViewingVisible(false)
@@ -872,6 +873,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeButtons.cancelAll()
         let cpu = StartupTrace.threadCPU(), wall = Date()
         homeHost.isHidden = true
+        slots.isEnabled = true
         home.isParked = true
         homeSource?.stopImages()
         if let window {

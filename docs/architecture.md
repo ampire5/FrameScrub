@@ -61,6 +61,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  Showing Home disables the shared slot host; returning to the player restores its presentation. Hidden slots
+  neither reveal at the browser's edges nor intercept its scroller, and their saved configuration stays intact.
   Folder/Recent listing streams stay open for coalesced metadata updates; new durations update that subscription
   without resetting the browser. Replacing/cancelling the subscription cancels its read; a generation token keeps
   an old termination callback from clearing the new subscriber. Leaving Home cancels pending metadata publication.

@@ -26,6 +26,23 @@ import Testing
         #expect(entries.allSatisfy { $0.canRename && $0.canTrash && $0.date != nil })
     }
 
+    @Test func folderDateSortUsesTheFolderRatherThanItsContents() throws {
+        let root = try folder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fm = FileManager.default
+        for (name, stamp) in [("A-new", 3000.0), ("Z-old", 1000.0), ("M-middle", 2000.0)] {
+            let directory = root.appendingPathComponent(name)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            let video = directory.appendingPathComponent("video.mp4")
+            try Data([0]).write(to: video)
+            try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 4000 - stamp)], ofItemAtPath: video.path)
+            try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: stamp)], ofItemAtPath: directory.path)
+        }
+        let entries = try HomeFolders.entries(in: root).filter { $0.kind == .folder && $0.name != "Sub" }
+        #expect(BrowserSort(key: .date, ascending: false).order(entries).map(\.name) == ["A-new", "M-middle", "Z-old"])
+        #expect(BrowserSort(key: .date, ascending: true).order(entries).map(\.name) == ["Z-old", "M-middle", "A-new"])
+    }
+
     @Test func linksCountAsWhatTheyPointTo() throws {
         let root = try folder()
         defer { try? FileManager.default.removeItem(at: root) }

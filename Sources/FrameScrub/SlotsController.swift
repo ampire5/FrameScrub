@@ -13,6 +13,7 @@ import Slots
     var onFocusVideo: (() -> Void)?
     var onPageDropped: ((PluginPanel) -> Void)?
     var topInset: CGFloat { get { host.topInset } set { host.topInset = newValue } }
+    var isEnabled: Bool { get { host.isEnabled } set { host.isEnabled = newValue } }
     let playlistView: PlaylistPanelView
     var makeSubjectFocusPanel: (() -> SubjectFocusPanelView)?
     private var subjectFocusPanel: SubjectFocusPanelView?
