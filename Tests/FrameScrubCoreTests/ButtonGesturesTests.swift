@@ -380,13 +380,13 @@ import Testing
         #expect(g.release(.back, at: 0.2) == [back])
     }
 
-    @Test func aPhaseEventWithoutDeltaCancelsOnlyTheChordButton() {
+    @Test func aPhaseEventWithoutDeltaPreservesBothButtons() {
         var g = Self.gestures("MBTN_BACK screenshot\nMBTN_FORWARD screenshot\nMBTN_FORWARD+WHEEL_UP screenshot\n"
                               + "MBTN_BACK_LONG screenshot")
         _ = g.press(.back, keys: [], rightHeld: false, at: 0)
         _ = g.press(.forward, keys: [], rightHeld: false, at: 0.05)
         #expect(g.wheel(hasDelta: false, momentum: false, at: 0.1) == .forwardButton)   // the scroll begins
-        #expect(g.release(.forward, at: 0.2) == [])
+        #expect(g.release(.forward, at: 0.2) == [forward])
         #expect(g.release(.back, at: 0.2) == [back])
     }
 
@@ -635,5 +635,52 @@ import Testing
         #expect(g.release(.forward, at: 1.5) == [])
         #expect(g.nextDeadline == nil)
         #expect(g.press(.forward, keys: [], rightHeld: false, at: 1.6) == [])
+    }
+}
+
+@Suite struct MiddleClickScrollProtectionTests {
+    @Test func phaseOnlyWheelDoesNotCancelMiddleClick() {
+        var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
+        _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+        _ = g.wheel(hasDelta: false, momentum: false, at: 1.01)
+        #expect(g.release(.mid, at: 1.1) == [KeyChord(key: "MBTN_MID")])
+    }
+}
+
+extension MiddleClickScrollProtectionTests {
+    @Test func tinyWheelAndUnrelatedMomentumLeaveMiddleClickAlive() {
+        for precise in [true, false] {
+            var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
+            _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+            #expect(g.wheel(deltaY: 0.2, precise: precise, momentum: false, began: false, at: 1.01).pending)
+            #expect(g.wheel(deltaY: 100, precise: true, momentum: true, began: false, at: 1.02).pending)
+            #expect(g.release(.mid, at: 1.1) == [KeyChord(key: "MBTN_MID")])
+        }
+    }
+    @Test func explicitWheelCancelsClickAndNewGestureDropsReleasedModifier() {
+        var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
+        _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+        let step = g.wheel(deltaY: 1, precise: false, momentum: false, began: false, at: 1.01)
+        #expect(!step.pending && step.modifiers == .midButton)
+        #expect(g.release(.mid, at: 1.02).isEmpty)
+        #expect(g.wheel(deltaY: 10, precise: true, momentum: true, began: false, at: 1.03).modifiers == .midButton)
+        #expect(g.wheel(deltaY: 10, precise: true, momentum: false, began: true, at: 1.04).modifiers.isEmpty)
+    }
+}
+
+extension MiddleClickScrollProtectionTests {
+    @Test func horizontalWheelIsIntentionalAndCancelsMiddleClick() {
+        var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
+        _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+        #expect(!g.wheel(deltaX: 1, deltaY: 0, precise: false, momentum: false, began: false, at: 1.01).pending)
+        #expect(g.release(.mid, at: 1.02).isEmpty)
+    }
+    @Test func phaselessGestureAfterMomentumDropsReleasedModifier() {
+        var g = ButtonGestures(map: InputMap(), longPress: 0.4, doubleInterval: 0.3)
+        _ = g.press(.mid, keys: [], rightHeld: false, at: 1)
+        _ = g.wheel(deltaY: 1, precise: false, momentum: false, began: false, at: 1.01)
+        _ = g.release(.mid, at: 1.02)
+        _ = g.wheel(deltaY: 10, precise: true, momentum: true, began: false, at: 1.03)
+        #expect(g.wheel(deltaY: 10, precise: true, momentum: false, began: false, at: 1.04).modifiers.isEmpty)
     }
 }

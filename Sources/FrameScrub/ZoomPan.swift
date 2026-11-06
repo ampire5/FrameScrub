@@ -44,6 +44,7 @@ final class ZoomPan {
     private var rmbZoom: RMBZoom?
     private var rmbStops: ZoomStopGesture?
     private var rmbPress: CGPoint?
+    private var rmbAxis = GestureAxisLock()
     private(set) var rmbDragging = false
 
     private var lastTick: CFTimeInterval?
@@ -190,6 +191,7 @@ final class ZoomPan {
         rmbZoom = RMBZoom(anchor: point, transform: transform,
                           pointsPerDoubling: RMBZoom.pointsPerDoubling(speed: Self.rmbZoomSpeed), offCentre: true)
         rmbStops = ZoomStopGesture(transform: transform, stops: Self.stops, rubber: true)
+        rmbAxis.reset()
         rmbPress = point
         rmbDragging = false
     }
@@ -205,7 +207,8 @@ final class ZoomPan {
             return rmbDragging
         }
         if !rmbDragging {
-            guard hypot(point.x - press.x, point.y - press.y) / backing >= RMBZoom.clickSlopPoints else { return false }
+            let delta = rmbAxis.project(x: (point.x - press.x) / backing, y: (point.y - press.y) / backing)
+            guard rmbAxis.axis == .vertical, abs(delta.y) >= RMBZoom.clickSlopPoints else { return false }
             rmbDragging = true
         }
         let r = stops.constrain(zoom.scale(dyPoints: (point.y - press.y) / backing))

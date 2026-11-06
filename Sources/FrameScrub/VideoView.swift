@@ -12,6 +12,7 @@ final class VideoView: NSView {
     var onKeyDown: ((NSEvent) -> Void)?
     var onKeyUp: ((NSEvent) -> Void)?
     var onScroll: ((NSEvent) -> Void)?
+    var onScrollGestureReset: (() -> Void)?
     var onMagnify: ((NSEvent) -> Void)?
     var onMouseButton: ((String) -> Void)?
     /// A single left click on the picture (the slots over the video hide).
@@ -654,6 +655,8 @@ final class VideoView: NSView {
     override func keyDown(with event: NSEvent) { onKeyDown?(event) }
     override func keyUp(with event: NSEvent) { onKeyUp?(event) }
     override func scrollWheel(with event: NSEvent) {
+        // A pointer drag owns its right press through release; a wheel cannot replace it midway.
+        if NSEvent.pressedMouseButtons & 0b10 != 0, zoomPan.rmbDragging { return }
         // Only real scrolling cancels the right click: not zero-delta phase events or momentum.
         if NSEvent.pressedMouseButtons & 0b10 != 0, event.momentumPhase.isEmpty,
            event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 {
@@ -699,6 +702,7 @@ final class VideoView: NSView {
 
     /// A right drag up or down zooms about the press point (`ZoomPan`); a click stays `MBTN_RIGHT`.
     override func rightMouseDown(with event: NSEvent) {
+        onScrollGestureReset?()
         rightUsedAsModifier = false
         if zoomAllowed() { zoomPan.rightDown(at: drawablePoint(event)) }
     }
@@ -741,6 +745,7 @@ final class VideoView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        onScrollGestureReset?()
         // A zoomed picture larger than the view is grabbed: the drag pans it instead of moving the window.
         panPress = zoomAllowed() && zoomPan.canPan
         if panPress { zoomPan.leftDown(at: drawablePoint(event), time: event.timestamp) }

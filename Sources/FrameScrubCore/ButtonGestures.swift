@@ -40,6 +40,9 @@ public struct ButtonGestures: Sendable {
         var armed = false
         /// A right chord or a double: it already fired and takes no part in anything else.
         var dead = false
+        var wheelIntentX = 0.0
+        var wheelIntent = 0.0
+        var wheelUsed = false
         var moveX = 0.0
         var moveY = 0.0
     }
@@ -60,6 +63,7 @@ public struct ButtonGestures: Sendable {
     /// The modifier wheel events keep getting after the release of the button that took a scroll (see `wheel`).
     private var absorbing: Modifiers = []
     private var lastAbsorbed = 0.0
+    private var lastWheelWasMomentum = false
 
     /// `longPress` and `doubleInterval` in seconds.
     public init(map: InputMap, longPress: Double, doubleInterval: Double) {
@@ -186,11 +190,13 @@ public struct ButtonGestures: Sendable {
     }
 
     /// A wheel event: the held-button modifier to add to its chord ([] = none). It goes to the last-pressed held button
-    /// with chords. A non-momentum event with a delta cancels the tap and long press of every held button (a
-    /// non-momentum one without, of the button it goes to); a momentum event cancels nothing: a press made while an
+    /// with chords. A non-momentum event with a delta cancels the tap and long press of every held button;
+    /// phase-only and momentum events cancel nothing: a press made while an
     /// earlier scroll still coasts must fire. After the release of the button the scroll went to, the tail of that
     /// scroll keeps its modifier until a gap of `absorbGap` seconds between events.
     public mutating func wheel(hasDelta: Bool, momentum: Bool, at t: Double) -> Modifiers {
+        if !momentum, lastWheelWasMomentum { absorbing = [] }
+        lastWheelWasMomentum = momentum
         if !momentum, hasDelta {
             for b in Array(presses.keys) { presses[b]!.cancelled = true }
         }
@@ -201,10 +207,37 @@ public struct ButtonGestures: Sendable {
             lastAbsorbed = t
             return absorbing
         }
-        if !momentum { presses[b]!.cancelled = true }
+        if !momentum, hasDelta { presses[b]!.cancelled = true }
         absorbing = modifier
         lastAbsorbed = t
         return modifier
+    }
+
+    /// A middle-button wheel must cross a real step before cancelling the click or changing volume.
+    /// Pending events are swallowed by the caller, so they cannot leak into plain scrolling either.
+    public mutating func wheel(deltaX: Double = 0, deltaY: Double, precise: Bool, momentum: Bool, began: Bool,
+                               at t: Double) -> (modifiers: Modifiers, pending: Bool, deltaX: Double, deltaY: Double) {
+        if began, !momentum { absorbing = [] }
+        var acceptedX = deltaX
+        var acceptedDelta = deltaY
+        let target = presses.filter { !$0.value.dead && kind($0.key).chords }.max { $0.value.seq < $1.value.seq }?.key
+        if target == .mid {
+            if !momentum, !presses[.mid]!.wheelUsed {
+                presses[.mid]!.wheelIntentX += deltaX
+                presses[.mid]!.wheelIntent += deltaY
+                guard max(abs(presses[.mid]!.wheelIntentX), abs(presses[.mid]!.wheelIntent)) >= (precise ? 12 : 1) else {
+                    return (.midButton, true, 0, 0)
+                }
+                acceptedX = presses[.mid]!.wheelIntentX
+                acceptedDelta = presses[.mid]!.wheelIntent
+                presses[.mid]!.wheelIntentX = 0
+                presses[.mid]!.wheelIntent = 0
+                presses[.mid]!.wheelUsed = true
+            }
+            // An unrelated coast caught by a click neither acts nor cancels that click.
+            if momentum, !presses[.mid]!.wheelUsed { return (.midButton, true, 0, 0) }
+        }
+        return (wheel(hasDelta: acceptedX != 0 || acceptedDelta != 0, momentum: momentum, at: t), false, acceptedX, acceptedDelta)
     }
 
     /// Pointer movement in points: travel of `driftPoints` on either axis since its own press cancels a held button's
@@ -222,5 +255,6 @@ public struct ButtonGestures: Sendable {
         presses = [:]
         waits = [:]
         absorbing = []
+        lastWheelWasMomentum = false
     }
 }
