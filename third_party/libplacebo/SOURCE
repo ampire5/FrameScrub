@@ -1,0 +1,6 @@
+https://github.com/haasn/libplacebo
+Commit: 9fabf6d5057c40089afb020017c6347002b07308
+Adapted: src/shaders/sampling.c, pl_shader_deband
+Metal adaptation: Sources/FrameScrubCore/ReferenceDebandKernel.swift
+Modified 2026-11-07: deterministic spatial PRNG, Metal texture reads, lab strength blend; optional grain remains a separate lab stage.
+The deterministic lab PRNG reuses one angle and distance factor across iterations, with radius multiplied by the iteration number. This is reference-style logic, not bit-exact upstream random sampling.

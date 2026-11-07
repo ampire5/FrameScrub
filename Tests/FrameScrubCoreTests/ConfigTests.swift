@@ -515,11 +515,11 @@ import Testing
         let c = Config()
         #expect(c.scrub.fastMultiplier == 10)
         #expect(c.seekMode == .keyframe)
-        #expect(c.resumePlayback && c.playlistAutoadvance && c.preview && c.srStill)
+        #expect(c.resumePlayback && c.playlistAutoadvance && c.preview)
         #expect(c.previewWidth == 240)
         #expect(c.exportMode == .all && c.exportEvery == 10 && c.exportFPS == 1 && c.exportScale == 1)
         #expect(c.scaleMode == .auto && c.sharpen == 0.3)
-        #expect(c.saveScale == 1 && c.saveUpscaler == .ml)
+        #expect(c.saveScale == 1 && c.saveUpscaler == .lanczos)
     }
 
     @Test func singleInstanceDefaultsOffAndParses() {
@@ -554,7 +554,7 @@ import Testing
         #expect(warnings.isEmpty)
         #expect(c.scrub.fastMultiplier == 20)
         #expect(c.seekMode == .exact)
-        #expect(!c.resumePlayback && !c.playlistAutoadvance && !c.preview && !c.srStill)
+        #expect(!c.resumePlayback && !c.playlistAutoadvance && !c.preview)
         #expect(c.previewWidth == 320)
         #expect(c.exportMode == .fps && c.exportEvery == 5 && c.exportFPS == 2.5 && c.exportScale == 2)
         #expect(c.scaleMode == .lanczos && c.sharpen == 0.5)

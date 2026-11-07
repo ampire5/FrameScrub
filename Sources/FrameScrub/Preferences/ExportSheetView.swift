@@ -129,11 +129,6 @@ struct ExportSheetView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(choices.skipBlurry || choices.skipDuplicates
                      ? "Will save up to \(files) files (\(rangeText))" : "Will save \(files) files (\(rangeText))")
-                if let seconds = ExportEstimate.mlSeconds(frames: files, source: source, output: choices.size, screen: screen,
-                                                          upscaler: upscaler, hdr: hdr) {
-                    Text("Neural-network upscaling: \(ExportEstimate.text(seconds: seconds))")
-                        .foregroundStyle(.secondary)
-                }
             }
             HStack {
                 Spacer()

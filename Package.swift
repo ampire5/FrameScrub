@@ -45,7 +45,8 @@ let package = Package(
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "SlotModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
-            ]
+            ],
+            resources: [.copy("Resources/GrainTemplates")]
         ),
         // The settings window's store, pages and binding tables (SettingsKit), apart from the app for tests and the bench.
         .target(

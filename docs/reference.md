@@ -72,7 +72,7 @@ What each action does in detail is in the classic table below.
 | ↩ / ⌘↑ | Show the video in its folder | double click |
 | ⌘T | Float on top | |
 | `⌥a` / `⌥v` / `⌥⇧v` | Aspect / vibrance / auto colour (this file; saving for the folder or as default: Playback > Colour) | |
-| `u` / `U` | Still-frame upscaling on / off / upscaler for saved frames | |
+| `u` / `U` | Apple LL super resolution on / off / cycle factor | |
 | `9` `0` `m` | Volume down, up, mute | |
 | `⌥m` | Scrub audio on / off: in pause a step plays a short piece of sound, scrubbing plays it like tape — pitch follows the speed, backward is reversed (`scrub-audio`) | |
 | `⇧⌥m` | Scrub pitch: tape (follows the speed) / natural (the sound's own pitch from 0.5× up, reversed backward) (`scrub-audio-pitch`) | |
@@ -507,7 +507,7 @@ Tour, C1 and C2 act on a press** and are never held for a combination.
 | Short | — | Speed 1× |
 | Top | — | Full screen |
 | Tall + Short | Reveal saved frames | |
-| Top + Tall | Still-frame upscaling on / off | |
+| Top + Tall | Apple LL super resolution on / off | |
 | Top + Short | Stats | |
 
 ## Settings
@@ -601,8 +601,31 @@ clip-confirm=yes                # no: C saves by clip-mode without the sheet
 scale=auto                      # auto | metalfx | lanczos | bilinear — how the picture is scaled to the screen
 preview=yes                     # yes | no — thumbnail above the seek bar while you point at it
 preview-width=240               # 80…640 points, longest side of that thumbnail
+ll-sr=off                      # off | auto | 1.5 | 2 | 4; Apple LL SR when supported
+ll-interpolation=1             # 1 (off) | 2 | 4 times source frame rate; forward 1x playback
+temporal-noise=no              # Apple temporal noise reduction at native resolution, including supported 4K/HDR
+temporal-noise-strength=0.5    # 0…1; higher can smooth fine texture
+temporal-noise-mode=paused    # paused | always; paused refines after stopping, always is experimental
 sharpen=0.3                     # 0…1, extra sharpness after upscaling on screen
-sr-still=yes                    # redraw a paused frame sharper with Apple's neural network (macOS 26)
+artifact-enabled=yes            # yes | no; A/B master switch, modes default off
+artifact-antiring=off           # off | luma | edge | directional; edge cleanup
+artifact-deband=off             # off | single | double | adaptive | reference | window; spatial deband
+artifact-chroma=off             # off | bilateral | wide | median; chroma cleanup
+artifact-strength=1             # 0…1, master experimental effect blend
+artifact-antiring-strength=1    # 0…1, anti-ringing blend
+artifact-deband-strength=0.5    # 0…1, debanding strength
+artifact-chroma-strength=0.5    # 0…1, chroma blend
+artifact-compare=processed      # processed | bypass | split | changes; original left in split
+artifact-deband-threshold=9      # 0.1…32 RGB8 codes; adaptive/window/reference
+artifact-deband-radius=24        # 1…64 input pixels; adaptive/window/reference
+artifact-deband-iterations=1    # 1…4; reference mode only
+artifact-texture-protection=1    # 0…1; adaptive texture guard, 0 disables
+artifact-grain=off              # off | white | fine | soft | av1 | particles; after scaling/sharpening
+artifact-grain-amount=0.65      # 0…12, approximate RGB8 RMS before masking; 6 is a visible experimental setting
+artifact-grain-size=1           # 0.5…4 output pixels
+artifact-grain-base=0.25        # 0…1, baseline in initially smooth areas
+artifact-grain-adaptation=1     # 0…1, existing structure protection; 0 is uniform comparison
+artifact-dither=0               # 0…1, optional fixed sub-code-value output noise
 vibrance=0.5                    # 0…1, strength of the on-screen vibrance (v)
 vibrance-on=no                  # yes: vibrance is on (v toggles it)
 auto-color=no                   # yes: auto colour is on (c toggles it); each scene is analysed after its cut and corrected if it needs it
@@ -614,7 +637,6 @@ auto-color-threshold=6          # 0…50: correct a scene only if the auto colou
 auto-color-full=12              # 0…50: Δ at which a scene gets the whole auto-color-strength, ramping up from the threshold; 0 = whole strength at once
 save-color=no                   # yes: s, ⌘C and the A-B export get the on-screen colour correction (vibrance and auto) too
 save-scale=1                    # 1 | 2 | 4 | fit | width:N | height:N — size of frames saved with s and ⌘C
-save-upscaler=ml                # ml | lanczos — how saved frames are enlarged
 export-scale=1                  # same values — size of frames saved by the A-B export
 ontop=no                        # yes: the player window floats above other apps' windows
 stats-font-size=12              # 8…40 points, text size of the stats panel (i)
@@ -732,12 +754,24 @@ and copied frames (`save-color=yes`) get the file's colour.
 - On a large monitor the frame is enlarged with MetalFX (Lanczos when MetalFX is unavailable, bilinear with
   `scale=bilinear`) and reduced with Lanczos (bilinear with `scale=bilinear`). `i` shows "Scaling: …" (the scaler in use) and "Skipped frames: N".
 - HDR video is tone-mapped to the display: on a screen without HDR headroom it is shown as SDR.
-- `sr-still=yes`: after a frame has been paused for 0.3 s and is shown at more than 1.2x, the picture is redrawn
-  with Apple's neural upscaler ("SR" in the OSD). SDR frames only; sources larger than 1920 px on the larger side
-  are not redrawn. The first time, FrameScrub asks to download the model: Download / Not now / Never
-  ("Never" writes `sr-still=no`).
-- Colour correction (`v`, `c`) is applied on screen only, after HDR tone mapping and before scaling (so the
-  neural-network still gets it too); on a 4K frame it costs about 0.3 ms of GPU time per frame, and `c` analyses
+- Apple low-latency Super Resolution (`ll-sr=auto|1.5|2|4`, off by default) processes native SDR frames,
+  including paused frames. Automatic selects a supported factor for the window size; any remaining enlargement
+  uses the screen scaler. Unsupported sizes/factors keep the original, with the reason shown in Picture stats.
+  There is no source downsampling to meet the model's size limit. HDR bypasses these effects.
+- Apple low-latency interpolation (`ll-interpolation=2|4`, default 1/off) creates intermediate pictures only
+  during forward playback at normal speed, using the next consecutive cached frame and the existing playback
+  clock. It does not change source frame numbers, scrubbing, audio, or saved frames. Missing or late results
+  show the original. Display settings and View > Apple Low Latency control both effects.
+- `temporal-noise=yes` enables Apple's Temporal Noise Filter at native resolution, including supported 4K and
+  10-bit HDR. The default `temporal-noise-mode=paused` processes after the frame stays still for 120 ms;
+  `always` also attempts playback processing, which currently misses 4K presentation deadlines. Strength is `temporal-noise-strength=0…1` (default 0.5). It uses up to one previous and two next cached
+  original frames; at least one reference is required. On pause or after scrubbing it refines once when a neighbor
+  becomes available; it never starts another decoder or holds the clock. Missing/late/unsupported results keep the
+  original. Noise reduction is not a dedicated deblocking algorithm and may smooth textures. Frame interpolation is
+  explicitly bypassed while this experiment is enabled. Settings > Display or View > Apple Low Latency controls it.
+- `u` toggles Apple LL SR off/automatic; `U` cycles off/automatic/1.5/2/4. Additional scaling sharpening is
+  bypassed for Apple-processed output to avoid sharpening twice.
+- Colour correction (`v`, `c`) is applied on screen only, after HDR tone mapping and before scaling ; on a 4K frame it costs about 0.3 ms of GPU time per frame, and `c` analyses
   the frame once in ~0.1 s. Saved and copied frames keep the original colour unless `save-color=yes` (Display tab >
   Colour). The automatic adjustments do not include face balance or red-eye, which would carry one frame's skin
   tone onto every other. Of what `c` finds, `auto-color-filters` keeps the tone curve (`curve`, contrast),
@@ -768,15 +802,8 @@ and copied frames (`save-color=yes`) get the file's colour.
   (`name_x2.jpg`), `fit` (into the pixel size of the screen the window is on) or `width:N` / `height:N`
   (one side in pixels, `16…16384`). The aspect ratio is kept and the long side never exceeds 16384 px. Files that
   are not factors get the size in the name (`name_3840x2160.jpg`). Frames larger than the target are reduced with
-  Lanczos; enlarged ones use `save-upscaler`: `ml` works on macOS 26 only, for SDR output (JPEG, or an SDR
-  source) from a source up to 1920 px on the larger side and for growth of at least 1.5×, and needs the Apple
-  model (downloaded once, e.g. via the SR prompt): it enlarges ×4 and Lanczos brings that to the exact size.
-  Otherwise Lanczos is used and the OSD appends " · Upscaled with Lanczos (reason)". HEIC/PNG/TIFF keep HDR; HDR
-  files are enlarged with Lanczos.
-- Under system memory pressure the frame cache budget is cut (and restored afterwards) and the cached
-  super-resolution stills are released.
-- The neural network keeps one ~2.8 GB session open while frames are being enlarged and closes it after 5 s
-  without work, so an A-B export with `save-upscaler=ml` uses that much once, not once per thread.
+  Lanczos; enlarged ones also use Lanczos. HEIC/PNG/TIFF keep HDR. Apple display effects do not alter exports.
+- Under system memory pressure the frame cache budget is cut and restored afterwards.
 
 Frames go to a folder named after the video, next to it. If that folder cannot be written,
 they go to `~/Pictures/FrameScrub/<video name>/`.
@@ -804,3 +831,60 @@ JPEGs under `Application Support/FrameScrub/thumbnails` and its `posters` subdir
 `durations.json` there, can be removed. Keep `positions.json` and its `.lock` coordination file: they are user state, not obsolete cache. The JSON contains user positions, marks, loops and colour
 settings. Its optional `lastViewedAt` records actual displayed player frames, independently of colour edits or the resume-playback switch. The first visible displayed frame is queued for a utility write; later observed frame times are saved on leaving. Returning from Home or revealing an occluded player records another actual visit even when paused. Hidden or minimized rendering does not count. Closing a video hidden behind Home does not invent a new viewing time. File rows expose this separately as Last Viewed; absence stays unknown. Old user
 records stay readable and do not invent viewing times from their update dates.
+
+### Experimental Filter Lab (SDR)
+
+View → Experimental Filters contains independent anti-ringing (luma/edges, after MetalFX),
+four-sample/two-pass deband, and chroma bilateral3×3/bilateral5×5/median3×3. All modes
+default off. Strength controls and optional fixed output dither are in Settings → Display.
+The Enable Filters / A–B menu item bypasses all new filters while retaining their choices;
+split comparison keeps the
+original scaled image on the left and the processed image on the right. Presets provide
+Edges Only, Smooth Gradients, Chroma Cleanup and Combined Mild. HDR bypasses the lab.
+These are spatial experiments, not guaranteed codec restoration or temporal noise removal.
+See [implementation and measurements](bench/player-filter-lab.md).
+
+Adaptive Gradients uses a local texture guard plus symmetric samples, with independent
+threshold, radius and strength. Directional Cleanup filters small variations along a
+locally selected direction and rejects strong color edges. Both are research-inspired
+experiments, not reproductions of AdaDeband or normative AV1 CDEF. Modes remain spatial
+and SDR-only; fine monotone texture can still be smoothed.
+
+Cleanup order: deband and chroma filters run before the selected display upscaler, at its
+input resolution. MetalFX anti-ringing and optional output dither run after scaling.
+Threshold/radius therefore refer to scaler-input pixels for debanding. Split and Changed
+Pixels compare final scaled images and can cost more than normal playback because they
+also generate an unfiltered upscale. Red in Changed Pixels shows actual changes, not a
+validated artifact detection mask. Reference Deband preset uses upstream threshold/radius/
+iterations (0.765 RGB8 codes, 16 pixels, one iteration), strength 1, with grain disabled.
+
+### Compact filter controls
+
+N toggles experimental filters; Option-N opens the Filters tab in the shared side slot.
+Both are remappable (`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
+left-hand B / Shift-B clip commands are unchanged. Auto activation remains deferred.
+The panel and Settings edit the same saved values. Sliders commit on release.
+
+Start with Adaptive Window, strength 0.5, threshold 9, radius 24, texture protection 1.
+It shrinks its neighbourhood near colour changes and protects local alternating detail.
+Adaptive Samples uses four distant samples with the same local texture guard and may
+leave more banding. Four Samples omits that guard; Two Passes repeats smoothing and can
+remove more weak detail. libplacebo Logic is a separate thresholded-sampling alternative,
+without the explicit texture guard, and is not bit-exact mpv. Its starting threshold is
+0.765, radius 16, strength 1, one iteration. Threshold numbers are not interchangeable
+measures of effect strength across algorithms. The panel's starting-settings button
+changes only debanding parameters; switching algorithms alone preserves your values.
+No mode is universally best. Earlier controlled/real-clip comparisons favour mild Window
+as the starting point, not as a proven best filter for every scene.
+
+`preview=no` disables the floating hover picture only. Filmstrip thumbnails remain
+available and are loaded under their existing visibility/foreground-work gates.
+
+The Filters slot panel now exposes all artifact controls in expanded groups: Comparison,
+Deband, Colour Noise, Edges/Halos, Grain. Numeric fields accept exact values; invalid,
+non-finite and out-of-range input restores the saved value. Units and algorithm-specific
+parameters are labelled. No separate advanced-settings screen is required for these controls.
+Mild/Strong Cleanup buttons preserve grain and dither, enable processing, and select processed
+comparison. Strong uses Window strength .95, threshold12, radius32, texture protection1,
+luma-guided chroma5x5 strength1, coherent-edge MetalFX cleanup1. Mild uses Window .5/9/24,
+chroma3x3 .35. These are stronger settings of existing shaders, not a new restoration model.

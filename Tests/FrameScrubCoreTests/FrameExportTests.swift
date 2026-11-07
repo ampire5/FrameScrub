@@ -351,12 +351,12 @@ private final class FlagBox: @unchecked Sendable { var flag: CancellationFlag? }
         #expect(readFrameNumber(imageAt: first, scale: 2) == 10)
     }
 
-    @Test func mlSaveFallsBackToLanczosAndReportsWhy() async throws {
+    @Test func largeSaveUsesLanczosWithoutFallback() async throws {
         let (source, index, frame) = try decodeFrame(Fixtures.hevc10, 10)    // 3840 px: always too large
         let root = makeTemporaryDirectory()
-        let saved = try await save(exporter(for: source.url, root: root) { $0.saveScale = 2; $0.saveUpscaler = .ml },
+        let saved = try await save(exporter(for: source.url, root: root) { $0.saveScale = 2; $0.saveUpscaler = .lanczos },
                                    frame, seconds: index.seconds(forFrame: 10))
-        #expect(saved.fallbackReason == "source larger than 1920 px")
+        #expect(saved.fallbackReason == nil)
         #expect(imageProperties(saved.url)[kCGImagePropertyPixelWidth] as? Int == 7680)
         #expect(saved.url.lastPathComponent.hasSuffix("_x2.jpg"))
     }

@@ -83,7 +83,7 @@ public final class FrameImageRenderer: @unchecked Sendable {
                         geometry: DisplayGeometry = .identity) throws -> (data: Data, fallbackReason: String?) {
         let sRGB = CGColorSpace(name: CGColorSpace.sRGB)!
         let upright = color.apply(to: geometry.applied(to: Self.image(for: frame, rotationClockwise: rotationClockwise, toneMapToSDR: true)))
-        let result = resized(upright, scale: scale, screen: screen, upscaler: upscaler, hdrOutput: false)   // SDR: ML allowed
+        let result = resized(upright, scale: scale, screen: screen, upscaler: upscaler, hdrOutput: false)
         guard let data = context.pngRepresentation(of: result.image, format: .RGBA8, colorSpace: sRGB, options: [:]) else {
             throw FrameImageRendererError.encodingFailed
         }
@@ -106,7 +106,7 @@ public final class FrameImageRenderer: @unchecked Sendable {
         var image = color.apply(to: geometry.applied(to: Self.image(for: frame, rotationClockwise: rotationClockwise,
                                                                     toneMapToSDR: format == .jpeg)))
         var fallbackReason: String?
-        // After rotation, before writing (spec §11.3). ML only for SDR files: the network is display-referred.
+        // After rotation, resize with Lanczos before writing.
         let resized = resized(image, scale: scale, screen: screen, upscaler: upscaler, hdrOutput: hdr && format != .jpeg)
         image = resized.image
         fallbackReason = resized.fallbackReason

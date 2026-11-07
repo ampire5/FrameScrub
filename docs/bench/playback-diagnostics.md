@@ -43,6 +43,7 @@ for 50 FPS content. A long paused/hidden interval is not a slow filter.
 - `FRAMESCRUB_DIAGNOSTIC_SWEEP=1` starts playback and makes 100 hover requests, 50 ms apart, after the first frame.
   It exercises the real request/UI path but does not simulate window-server pointer events. It stops after the sweep.
 - `FRAMESCRUB_DIAGNOSTIC_4K=1` requests a 3840×2160 backing drawable at the sweep start; verify actual output dimensions in the report.
+- `FRAMESCRUB_DIAGNOSTIC_FOREGROUND=1` brings the test window forward once so an unattended terminal launch measures actual presentation rather than an occluded decoder. Use only during a dedicated GUI bench.
 - `FRAMESCRUB_DIAGNOSTIC_SECONDS=15` quits after the bounded duration (5–3600 seconds), only with a report enabled.
 
 The experimental branch uses its normal live mask resolution. This change does not switch models adaptively.
@@ -52,3 +53,8 @@ The experimental branch uses its normal live mask resolution. This change does n
 On a network volume `previewSettle` retains its API name but now specifies a **minimum interval between cold reads**.
 The first image and cache hits do not wait. A newer queued request after the interval takes the elapsed slot instead
 of restarting a debounce. This keeps one worker and limits random reads while allowing images during pointer motion.
+
+For bounded scrub-and-stop experiments, `FRAMESCRUB_FOCUS=none` with
+`FRAMESCRUB_FOCUS_SCRUB=4,60` runs the existing wheel-like scrub bench without a subject effect.
+`FRAMESCRUB_FOCUS_SCRUB_SECONDS=5` stops it after five seconds (validated 1–60, default 60),
+allowing the final paused-frame effect to settle before the diagnostic launch exits.

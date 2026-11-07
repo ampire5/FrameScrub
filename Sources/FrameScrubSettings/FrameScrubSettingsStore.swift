@@ -10,7 +10,7 @@ import SettingsKit
 public final class FrameScrubSettingsStore: SettingsStore {
     /// `Config.keys` the window does not show: Home's open tab is state, the slots are set by View › Slots.
     // TourBox is an opt-in event-input trial configured in framescrub.conf pending real-device calibration.
-    public nonisolated static let excludedKeys: Set<String> = ["home-tab", "slot-left", "slot-right", "slot-bottom",
+    public nonisolated static let excludedKeys: Set<String> = ["home-tab", "slot-left", "slot-right", "slot-bottom", "artifact-strength",
                                                              "tourbox", "tourbox-frames-per-pulse", "tourbox-accel",
                                                              "tourbox-accel-start", "tourbox-scroll-points"]
     /// The player's wheel mode (free spin or ratchet), a key of the window only: it lives in `UserDefaults`.

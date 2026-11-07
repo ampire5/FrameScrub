@@ -22,9 +22,6 @@ extension SettingsPanel {
                       description: "%{video-name}, %{frame:06} (the frame number, six digits), %{time:hh-mm-ss.mmm}. "
                         + "Default %{video-name}_f%{frame:06}_%{time:hh-mm-ss.mmm}."),
                 outputSize("save-scale", "Saved and copied frames", symbol: "arrow.up.left.and.arrow.down.right"),
-                .choice("save-upscaler", "Enlarge with", [
-                    (word: "ml", title: "Apple neural network (when possible)"), (word: "lanczos", title: "Lanczos"),
-                ], symbol: "wand.and.stars", description: "Default Apple neural network."),
                 .toggle("save-color", "Apply the colour to saved and copied frames", symbol: "paintpalette",
                         description: "Vibrance and auto colour as on screen. Default off."),
             ]),

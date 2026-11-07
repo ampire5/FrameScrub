@@ -26,7 +26,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
 - Open/seek/input → controller → `PlayerCore` → index/cache/decoder work → delegate frame → `VideoView`.
   `PictureQueue` and `PreviewProvider` concern presentation/previews, not a second playback source of truth.
 - `PlayerWindowController.configurePreview` creates one `PreviewImagePool` per open-file preview configuration,
-  shared by hover `PreviewProvider` and `FilmstripPreviewLoader`'s provider. It bounds small SDR images by entries
+  shared by hover `PreviewProvider` and `FilmstripPreviewLoader`'s provider. `preview=no` disables only
+  the hover provider; filmstrip visibility independently gates its utility loader. It bounds small SDR images by entries
   and pixel bytes, with actual PTS/rotation/resolution identity. Providers reuse matching `FrameCache` keyframes
   before opening their own decoder; Core Image construction/rendering stays on each provider's worker.
   Shared-pool hits can bypass a busy provider worker; delivery generations prevent an older cold result from
@@ -44,6 +45,80 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   trigger planning; all-intra playback does not replan every frame. Folded delivery caches without invalidation.
   The prewarm gate also excludes active hover preview, export, interactions, Home and occlusion. Unavailable
   candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
+- `LowLatencyDisplay` (App) owns display-only Apple LL SR, temporal-only LL interpolation and Temporal Noise Filter.
+  For TNF the controller retains at most one previous and two next cached originals with index timestamps; LL FI needs
+  one consecutive next frame. `PlayerCore.onDisplayReferencesChange` wakes only the current TNF neighborhood when
+  a cache insertion fills a missing reference, allowing paused refinement without polling or new decoding; Core's decode/cache/index/audio
+  ownership is unchanged. `LowLatencyVideoProcessor` (Core) owns serially accessed VideoToolbox sessions and
+  configuration-derived buffer pools/format transfer. `LatestVideoWork` bounds requests to one active plus one
+  replaceable pending value; generation and revision invalidate old results without releasing active GPU buffers.
+  Session startup/processing run off-main; original-first fallback never holds the player clock. Intermediates
+  are selected on the existing display tick using the playback clock; pause, reverse and non-1x speed bypass FI.
+  Settings, seek discontinuities, file changes, hiding and shutdown invalidate display results. A one-shot idle
+  callback closes processor sessions after five seconds; output buffers remain retained and immutable. No new
+  decoder, unbounded frame queue, repeating timer or export effect is introduced. LL processing precedes upright
+  crop, Subject Focus, colour and the existing MetalFX/Lanczos screen fitting. Original and LL outputs have separate
+  scaler caches. Unsupported dimensions/factors explicitly bypass effects without pre-downscaling sources. HDR bypasses
+  LL SR/FI; TNF uses API-required lossless 8/10-bit buffers with propagated metadata and the normal display tone-map/
+  headroom plan. `TemporalNoiseFilter` (Core) validates adjacent references, trims to configuration counts and marks
+  discontinuities for jumps/repeated frames. TNF precedes SR and explicitly bypasses FI in this experiment. Failure
+  caching prevents model reload loops; output buffers remain immutable and owned through completion. TNF defaults
+  to paused/settled frames: LatestVideoWork defers its single replaceable pending request for 120 ms, cancelling
+  prior scheduled starts without retaining obsolete buffers. Playback TNF is an explicit experimental mode, since
+  measured 4K processing (~31 ms) missed presentation deadlines in the original-first pipeline.
+  `FRAMESCRUB_CONFIG_DIR` optionally selects an absolute config directory for isolated launches. Opt-in GPU patch
+  hashes and LL work/result/intermediate metrics support pipeline diagnosis. Custom deblocking and image SR have
+  been removed; saved/copied images resize with Lanczos. Legacy removed config keys are accepted for migration.
+- Experimental SDR Filter Lab belongs to `DisplayScaler`. Deband and chroma cleanup run at
+  the scaler's input resolution, BEFORE screen fitting; MetalFX anti-ringing and output dither
+  run AFTER scaling and before existing sharpening. Optional perceptual grain follows sharpening. This input may already contain Apple LL
+  processing when enabled. `VideoView` prepares shared immutable GPU pipelines off-main once.
+  Separate pre/post `ArtifactFilterRenderer`s each own at most two reusable private textures,
+  at source/output size respectively. MetalFX's original input texture is reused for source
+  cleanup; the filtered texture goes directly into MetalFX without another CI copy. Post AR
+  references that actual filtered input. Other scalers render source cleanup once and consume
+  its CIImage. No CPU readback, per-frame worker queue, temporal history or new timer is added.
+  Split/changes compare FINAL scaled images. When source cleanup is enabled, an extra original
+  baseline texture and upscale are created only for comparison, then released on returning to
+  processed view. Comparison uses an unaliased post scratch texture. Settings/readiness request
+  paused redraw; moving zoom retains its existing cheap path and refines after settling.
+  `ArtifactFilterPanelView` exposes full grouped controls as a lazy transient tab in the shared Slots host.
+  It uses the same PreferencesStore as Settings/menu, refreshes through existing config application,
+  and commits sliders on release / numeric fields on editing end. Shared slot typing detection
+  keeps it visible during numeric editing. Cleanup profiles preserve grain and introduce no new passes. N toggles filters; Option-N opens the panel via remappable input commands.
+  No auto-activation policy is installed.
+  HDR bypasses encoded-SDR filters. Config/Display settings and `ArtifactFilterMenu` share
+  the existing store; decoder/cache/export ownership is unchanged. `filters-pipeline` measures
+  real DisplayScaler at 6144×3456; `filters` retains the old direct post-scale microbench.
+  `filter-fixtures`, `filter-images`, and `filter-order` are offline GPU evaluation commands;
+  their I/O/readbacks never enter player presentation. libplacebo shader adaptation notices
+  travel with packaged apps; reference mode uses separate source with retained LGPL notice.
+  `PerceptualGrainPipelines`, prepared in the same off-main pipeline task, owns immutable
+  independent monochrome template banks and shader states, including prepared AV1-style and
+  particle banks (16×64² R16F each) loaded once off-main
+  from Core's SwiftPM resource bundle. Old styles retain 4×128² banks. The shader queries bank
+  dimensions/layers, and both fused/general encoders use one explicit style-to-bank mapping.
+  `GrainTemplateBank` searches app/framework/CLI bundle locations and throws on missing files;
+  standalone packaging copies `FrameScrub_FrameScrubCore.bundle` into Contents/Resources.
+  No source files or patterns are fetched, synthesized or read from disk on a video frame.
+  Each scaler's `PerceptualGrainRenderer`
+  owns a quarter-source-size R16F mask and, on the general path, one reusable output RGBA16F texture; mask sampling
+  examines every source-pixel phase and protects luma/chroma structure. It compares original
+  and pre-cleaned input activity, with a weaker baseline in already smooth regions. This is
+  a texture heuristic, not artifact detection. Random-offset blocks use variance-preserving
+  overlap. VideoView supplies decoded frame numbers as deterministic seeds; pause redraw and
+  reverse seek reproduce the pattern without a timer or image history. Grain is added after
+  post cleanup and sharpening, before final split/changes. Nonzero sharpening needs a separate
+  staging texture; sharpened comparison has one additional reusable staging texture. HDR/off
+  bypass and release grain buffers. The original comparison side remains grain-free.
+  The common MetalFX+luma/edge AR+grain path with sharpen0/dither0 is fused: shared
+  `antiringValue`/`grainValue` functions are compiled once in the artifact Metal library.
+  The fused encoder writes an existing post-renderer scratch target and releases its separate
+  grain output/staging, retaining only the mask. Comparison excludes that processed target.
+  Sharpening, dither, directional cleanup, grain-only and non-MetalFX retain the general path.
+  `grainUsesFusedPass` is a diagnostic for actual path selection, not an activation policy.
+  Normal source-frame scrubbing uses this same display pipeline. Moving zoom/pan remains
+  the existing cheap-transform path until it settles; hover/filmstrip thumbnails are separate.
 - `VideoView` applies optional Subject Focus before display scaling. `SubjectMasker` owns one mask worker and one
   replaceable pending job; recurrent model state stays on that worker. Models remain user supplied outside the repo.
   `SubjectMatting` keeps native half-float conversion on Apple Silicon; Intel uses Core's `HalfPrecisionAlpha` to convert raw IEEE binary16

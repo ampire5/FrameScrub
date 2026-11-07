@@ -15,7 +15,7 @@ func stripComment(_ line: String) -> String {
 public enum SeekMode: String, Sendable { case keyframe, exact }
 public enum ExportMode: String, Sendable { case all, every, fps }
 public enum ScaleMode: String, Sendable { case auto, metalfx, lanczos, bilinear }
-public enum Upscaler: String, Sendable { case ml, lanczos }
+public enum Upscaler: String, Sendable { case lanczos }
 
 /// What `c` makes of the cut marks (`clip-mode`, cut marks spec §4).
 public enum ClipMode: String, CaseIterable, Sendable {
@@ -217,9 +217,10 @@ public struct Config: Equatable, Sendable {
     public var clipConfirm = true
     public var scaleMode = ScaleMode.auto
     public var sharpen = 0.3
-    public var srStill = true
+    public var lowLatency = LowLatencyVideoSettings()
+    public var artifactFilters = ArtifactFilterSettings()
     public var saveScale: OutputSize = 1
-    public var saveUpscaler = Upscaler.ml
+    public var saveUpscaler = Upscaler.lanczos
     /// Strength of the on-screen vibrance (`v` turns it on and off), 0…1.
     public var vibrance = 0.5
     public var vibranceOn = false
@@ -267,7 +268,11 @@ public struct Config: Equatable, Sendable {
     public init() {}
 
     public static var directory: URL {
-        FileManager.default.homeDirectoryForCurrentUser
+        // A test build can isolate its preferences without changing the user's regular player configuration.
+        if let path = ProcessInfo.processInfo.environment["FRAMESCRUB_CONFIG_DIR"], path.hasPrefix("/") {
+            return URL(fileURLWithPath: path, isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/framescrub", isDirectory: true)
     }
 
@@ -282,7 +287,9 @@ public struct Config: Equatable, Sendable {
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
         "export-mode", "export-every", "export-fps", "export-scale", "export-sharp", "export-skip-blurry", "export-sharp-threshold", "export-sharp-neighbours",
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
-        "preview", "preview-width", "scale", "sharpen", "sr-still", "save-scale", "save-upscaler",
+        "preview", "preview-width", "scale", "sharpen",
+        "artifact-grain", "artifact-grain-amount", "artifact-grain-size", "artifact-grain-base", "artifact-grain-adaptation", "artifact-enabled", "artifact-antiring", "artifact-deband", "artifact-chroma", "artifact-strength", "artifact-antiring-strength", "artifact-deband-strength", "artifact-deband-threshold", "artifact-deband-radius", "artifact-deband-iterations", "artifact-texture-protection", "artifact-chroma-strength", "artifact-compare", "artifact-dither",
+        "ll-sr", "ll-interpolation", "temporal-noise", "temporal-noise-strength", "temporal-noise-mode", "save-scale",
         "vibrance", "vibrance-on", "auto-color", "auto-color-strength", "auto-color-filters", "auto-color-vibrance-gain", "auto-color-interval", "auto-color-threshold", "auto-color-full", "save-color", "ontop", "stats-font-size",
         "hold-speed", "speed-step", "keep-speed", "scrub-audio", "scrub-audio-length", "scrub-audio-pitch", "ab-loop", "segment-advance", "key-layout",
         "app-icon",
@@ -369,9 +376,32 @@ public struct Config: Equatable, Sendable {
         case "preview": return yesNo(preview)
         case "preview-width": return formatNumber(previewWidth)
         case "scale": return scaleMode.rawValue
+        case "artifact-grain": return artifactFilters.grain.rawValue
+        case "artifact-grain-amount": return formatNumber(artifactFilters.grainAmount)
+        case "artifact-grain-size": return formatNumber(artifactFilters.grainSize)
+        case "artifact-grain-base": return formatNumber(artifactFilters.grainBase)
+        case "artifact-grain-adaptation": return formatNumber(artifactFilters.grainAdaptation)
+        case "artifact-enabled": return artifactFilters.enabled ? "yes" : "no"
+        case "artifact-antiring": return artifactFilters.antiring.rawValue
+        case "artifact-deband": return artifactFilters.deband.rawValue
+        case "artifact-chroma": return artifactFilters.chroma.rawValue
+        case "artifact-compare": return artifactFilters.comparison.rawValue
+        case "artifact-strength": return formatNumber(artifactFilters.strength)
+        case "artifact-antiring-strength": return formatNumber(artifactFilters.antiringStrength)
+        case "artifact-deband-strength": return formatNumber(artifactFilters.debandStrength)
+        case "artifact-deband-threshold": return formatNumber(artifactFilters.debandThreshold)
+        case "artifact-deband-radius": return formatNumber(artifactFilters.debandRadius)
+        case "artifact-deband-iterations": return String(artifactFilters.debandIterations)
+        case "artifact-texture-protection": return formatNumber(artifactFilters.textureProtection)
+        case "artifact-chroma-strength": return formatNumber(artifactFilters.chromaStrength)
+        case "artifact-dither": return formatNumber(artifactFilters.dither)
         case "sharpen": return formatNumber(sharpen)
-        case "sr-still": return yesNo(srStill)
         case "save-scale": return saveScale.text
+        case "temporal-noise-mode": return lowLatency.noiseMode.rawValue
+        case "temporal-noise": return yesNo(lowLatency.noiseEnabled)
+        case "temporal-noise-strength": return formatNumber(lowLatency.noiseStrength)
+        case "ll-sr": return lowLatency.scale.rawValue
+        case "ll-interpolation": return String(lowLatency.intermediateFrames == 0 ? 1 : lowLatency.intermediateFrames + 1)
         case "save-upscaler": return saveUpscaler.rawValue
         case "vibrance": return formatNumber(vibrance)
         case "vibrance-on": return yesNo(vibranceOn)
@@ -541,10 +571,34 @@ public struct Config: Equatable, Sendable {
         case "clip-mode": guard let v = ClipMode(rawValue: value.lowercased()) else { return false }; clipMode = v
         case "clip-confirm": guard let v = bool() else { return false }; clipConfirm = v
         case "scale": guard let v = ScaleMode(rawValue: value.lowercased()) else { return false }; scaleMode = v
+        case "artifact-grain": guard let v = ArtifactFilterSettings.Grain(rawValue: value.lowercased()) else { return false }; artifactFilters.grain = v
+        case "artifact-grain-amount": guard let v = double(0...12) else { return false }; artifactFilters.grainAmount = v
+        case "artifact-grain-size": guard let v = double(0.5...4) else { return false }; artifactFilters.grainSize = v
+        case "artifact-grain-base": guard let v = double(0...1) else { return false }; artifactFilters.grainBase = v
+        case "artifact-grain-adaptation": guard let v = double(0...1) else { return false }; artifactFilters.grainAdaptation = v
+        case "artifact-enabled": guard let v = bool() else { return false }; artifactFilters.enabled = v
+        case "artifact-antiring": guard let v = ArtifactFilterSettings.Antiring(rawValue: value.lowercased()) else { return false }; artifactFilters.antiring = v
+        case "artifact-deband": guard let v = ArtifactFilterSettings.Deband(rawValue: value.lowercased()) else { return false }; artifactFilters.deband = v
+        case "artifact-chroma": guard let v = ArtifactFilterSettings.Chroma(rawValue: value.lowercased()) else { return false }; artifactFilters.chroma = v
+        case "artifact-compare": guard let v = ArtifactFilterSettings.Comparison(rawValue: value.lowercased()) else { return false }; artifactFilters.comparison = v
+        case "artifact-strength": guard let v = double(0...1) else { return false }; artifactFilters.strength = v
+        case "artifact-antiring-strength": guard let v = double(0...1) else { return false }; artifactFilters.antiringStrength = v
+        case "artifact-deband-strength": guard let v = double(0...1) else { return false }; artifactFilters.debandStrength = v
+        case "artifact-deband-threshold": guard let v = double(0.1...32) else { return false }; artifactFilters.debandThreshold = v
+        case "artifact-deband-radius": guard let v = double(1...64) else { return false }; artifactFilters.debandRadius = v
+        case "artifact-deband-iterations": guard let v = int(1...4) else { return false }; artifactFilters.debandIterations = v
+        case "artifact-texture-protection": guard let v = double(0...1) else { return false }; artifactFilters.textureProtection = v
+        case "artifact-chroma-strength": guard let v = double(0...1) else { return false }; artifactFilters.chromaStrength = v
+        case "artifact-dither": guard let v = double(0...1) else { return false }; artifactFilters.dither = v
         case "sharpen": guard let v = double(0...1) else { return false }; sharpen = v
-        case "sr-still": guard let v = bool() else { return false }; srStill = v
+        case "temporal-noise-mode": guard let mode = TemporalNoiseMode(rawValue: value.lowercased()) else { return false }; lowLatency.noiseMode = mode
+        case "temporal-noise": guard let v = bool() else { return false }; lowLatency.noiseEnabled = v
+        case "temporal-noise-strength": guard let v = double(0...1) else { return false }; lowLatency.noiseStrength = v
+        case "ll-sr": guard let choice = LLScaleChoice(rawValue: value.lowercased()) else { return false }; lowLatency.scale = choice
+        case "ll-interpolation": guard let n = Int(value), [1, 2, 4].contains(n) else { return false }; lowLatency.intermediateFrames = n - 1
+        case "sr-still", "deblock", "deblock-strength", "deblock-threshold", "deblock-protection", "deblock-block", "deblock-sharpen", "deblock-compare": return true // retired options
         case "save-scale": guard let v = OutputSize(text: value) else { return false }; saveScale = v
-        case "save-upscaler": guard let v = Upscaler(rawValue: value.lowercased()) else { return false }; saveUpscaler = v
+        case "save-upscaler": guard ["ml", "lanczos"].contains(value.lowercased()) else { return false }; saveUpscaler = .lanczos
         case "vibrance": guard let v = double(0...1) else { return false }; vibrance = v
         case "vibrance-on": guard let v = bool() else { return false }; vibranceOn = v
         case "auto-color": guard let v = bool() else { return false }; autoColor = v

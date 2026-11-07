@@ -27,7 +27,7 @@ For editors, reviewers, animators, photographers pulling stills from video — a
 - **Backward is as fast as forward.** A cache of decoded frames around the playhead fills in both directions in the background, so stepping back never waits for a keyframe — even in long-GOP 4K HEVC HDR.
 - **It plays backward, too.** Real reverse playback at 1, 2, 4 and 8×, frames only, no sound. When the decoder can't keep up, frames are skipped and the speed holds. The A-B loop and Play Marks Only run backward as well.
 - **Sound you can scrub, like tape.** Drag through a paused video and hear it the way a reel sounds under your hand: the pitch follows your speed, and scrubbing backward plays the sound in reverse. A single frame step plays a short blip of sound, so you can find a cue, a clap or the first word by ear. Prefer clean audio? `⇧⌥M` keeps the sound's own pitch.
-- **Big, bright screens.** HDR (HLG and PQ) through EDR on XDR displays, MetalFX upscaling of 1080p and 4K to 5K and 6K screens, and Apple's neural super-resolution for a paused frame.
+- **Big, bright screens.** HDR (HLG and PQ) through EDR on XDR displays, MetalFX upscaling of 1080p and 4K to 5K and 6K screens, with optional Apple low-latency SR/interpolation for supported SDR sources.
 - **Its own VideoToolbox pipeline.** Several frames in flight instead of one at a time: ~640 fps for 4K H.264 and ~730 fps for 4K HEVC at ~0.4 ms of CPU per frame.
 - **Frames out at full quality.** Save the frame you're on as JPEG, 10-bit HEIC, 16-bit PNG or TIFF in the source colour space (BT.709, HLG, PQ), or export every frame of a range — optionally only the sharpest ones, skipping blurred frames and near-duplicates.
 - **Cut without re-encoding.** Mark ins and outs, save them as clips — separately, joined, or everything *except* the marks — snapped to keyframes, losslessly.
@@ -91,13 +91,13 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 <p align="center"><img src="docs/images/lens.webp" width="70%" alt="Seek-bar preview with the keyframe lens: keyframes as ticks, K −1.50 s / +0.25 s"></p>
 
 **Picture**
-- MetalFX upscaling and HDR tone mapping; Apple's neural super-resolution redraws a paused frame sharper.
+- MetalFX upscaling and HDR tone mapping; optional Apple low-latency super resolution and frame interpolation for supported SDR sources.
 - Per-scene auto colour and vibrance, remembered per file and per folder.
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
 
 **Saving**
 - `s` saves the frame; `⇧S` exports an A-B range — every frame, every N-th, N per second, or only the sharpest of every N. The export can skip blurred stretches and frames too like the last one it saved.
-- Saved frames can be enlarged ×2, ×4 or to a set size, up to 16384 px; Apple's neural upscaler does it for SDR frames from sources up to 1920 px, Lanczos otherwise.
+- Saved frames can be enlarged ×2, ×4 or to a set size, up to 16384 px; resizing uses Lanczos.
 - `⇧⌘C` saves the marks as clips without re-encoding.
 
 **Hardware**
@@ -277,7 +277,7 @@ Native Swift and AppKit, with SwiftUI for settings and panels.
 | **Demuxing** | FFmpeg's libavformat, with an index built from the MP4 header or scanned in the background for MKV, WebM and TS, so any frame can be found exactly. |
 | **Decoding** | Its own VideoToolbox pipeline: `VTDecompressionSession` with several frames in flight for H.264 and HEVC (8- and 10-bit); FFmpeg's libavcodec for everything else, AV1 included (VideoToolbox hardware decoding on M3 and later, libdav1d otherwise). |
 | **Frame cache** | Decoded frames live in IOSurface-backed pixel buffers in a cache around the playhead, which a forward and a backward worker keep filled, so stepping either way is a lookup, not a decode. |
-| **Display** | A `CAMetalLayer` with EDR for HDR (HLG and PQ, tone-mapped where the screen can't show it), Core Image for colour, MetalFX upscaling, and VideoToolbox's frame processor for neural super-resolution of paused frames. |
+| **Display** | A `CAMetalLayer` with EDR for HDR (HLG and PQ, tone-mapped where the screen can't show it), Core Image for colour, MetalFX upscaling, and VideoToolbox's optional low-latency super resolution and frame interpolation for supported SDR input. |
 | **Audio** | `AVAudioEngine` with a time-pitch unit for playback at any speed and for tape-style scrub audio (FFmpeg's libswresample converts the samples). |
 | **I/O** | One shared read cache per file for every decoder (playback, backward, thumbnails, audio, export), which keeps seeks over SMB fast. |
 | **Input** | mpv-style `input.conf`, trackpad and wheel gestures, Logitech mice over IOKit HID with [LogiHIDPP](https://github.com/ampire5/LogiHIDPP). |
@@ -423,3 +423,5 @@ Screenshots show *CHARGE* and *Spring* by Blender Studio (CC BY 4.0) and launch 
 ## License
 
 GPL-3.0-or-later (see [LICENSE](LICENSE)). FrameScrub uses [FFmpeg](https://ffmpeg.org) (LGPL/GPL), the MIT-licensed packages [HomeScreenKit](https://github.com/ampire5/HomeScreenKit), [InfoPanelKit](https://github.com/ampire5/InfoPanelKit) and [StashKit](https://github.com/ampire5/StashKit), and [LogiHIDPP](https://github.com/ampire5/LogiHIDPP) (GPL-3.0).
+
+The experimental reference debanding shader adapts [libplacebo](https://github.com/haasn/libplacebo) (LGPL-2.1-or-later). Its revision and adaptation notes are in [third_party/libplacebo/SOURCE](third_party/libplacebo/SOURCE); the original license is included there and in packaged app resources.

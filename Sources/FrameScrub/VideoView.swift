@@ -30,10 +30,6 @@ final class VideoView: NSView {
     var onNextPicture: (() -> Void)?
     var onDisplayRatioChange: (() -> Void)?
     private(set) var displayRatio = 1.0
-    private var enhanced: CIImage?
-    private var enhancedFrame: Int?
-    private var fadeStart: CFTimeInterval = 0
-    private static let fadeDuration = 0.15
 
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
@@ -41,10 +37,40 @@ final class VideoView: NSView {
     private let metalLayer = CAMetalLayer()
     private let outputColorSpace = CGColorSpace(name: CGColorSpace.extendedLinearDisplayP3)!
     private var image: CIImage?
+    let lowLatency = LowLatencyDisplay()
+    var effectClock: (() -> Double)?
+    private var llImage: CIImage? { lowLatency.image }
+    private var llStatus: String { lowLatency.status }
     /// Changing either redraws the frame on screen, so a paused picture follows the settings at once.
     var scaleMode = ScaleMode.auto { didSet { if scaleMode != oldValue { needsRender = true } } }
     var sharpen = 0.3 { didSet { if sharpen != oldValue { needsRender = true } } }
-    /// Crop and pixel aspect of the upright picture (aspect spec); the neural-network still gets the same crop.
+    var artifactSettings = ArtifactFilterSettings() {
+        didSet {
+            guard artifactSettings != oldValue else { return }
+            needsRender = true
+            prepareArtifactFilters()
+        }
+    }
+    private var artifactPipelines: ArtifactFilterPipelines?
+    private var artifactPreparation: Task<Void, Never>?
+    private var artifactPipelineError: String?
+    private func prepareArtifactFilters() {
+        guard artifactSettings.active, artifactPipelines == nil, artifactPreparation == nil, artifactPipelineError == nil else { return }
+        let gpu = device
+        artifactPreparation = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) { () -> Result<ArtifactFilterPipelines, Error> in
+                Result { try ArtifactFilterPipelines(device: gpu) }
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.artifactPreparation = nil
+            switch result {
+            case .success(let pipelines): self.artifactPipelines = pipelines
+            case .failure(let error): self.artifactPipelineError = error.localizedDescription
+            }
+            self.needsRender = true
+        }
+    }
+    /// Crop and pixel aspect of the upright picture.
     var geometry = DisplayGeometry.identity {
         didSet {
             guard geometry != oldValue else { return }
@@ -52,7 +78,7 @@ final class VideoView: NSView {
             syncPictureSize()
         }
     }
-    /// Applied to the upright picture before scaling, so the neural-network still gets it too.
+    /// Applied to the upright picture before screen scaling.
     private(set) var colorCorrection = ColorCorrection.identity
     private var previousColor: ColorCorrection?   // faded out over `colorFadeDuration`
     private var colorFadeStart: CFTimeInterval = 0
@@ -64,19 +90,20 @@ final class VideoView: NSView {
     private var diagnosticPlaying = true
     private var lastArrivalNumber: Int?
     private var diagnosticEpoch = UUID()
+    private var lastOutputProbeHash: UInt32?
     private var diagnosticGroup: String {
         let settings = SubjectFocusSettings.shared
         let model = focusMask.map { $0.matte ? "rvm\(Int($0.image.extent.width))" : "vision\(Int($0.image.extent.width))" } ?? "no-mask"
         let style = focusDrawn?.rawValue ?? "off"
         let source = currentFrame.map { "\(CVPixelBufferGetWidth($0.pixelBuffer))x\(CVPixelBufferGetHeight($0.pixelBuffer))" } ?? "none"
         let target = metalLayer.drawableSize
-        return "\(diagnosticPlaying ? "play" : "pause").\(style).clean-\(settings.cleanEdge).\(model).\(source).out-\(Int(target.width))x\(Int(target.height))"
+        return "filters-\(artifactSettings.summary).ll-\(llStatus).\(diagnosticPlaying ? "play" : "pause").\(style).clean-\(settings.cleanEdge).\(model).\(source).out-\(Int(target.width))x\(Int(target.height))"
     }
+    private var llScaler: DisplayScaler!
+    private var llZoomScaler: DisplayScaler!
     private var scaler: DisplayScaler!
-    private var enhancedScaler: DisplayScaler!   // own MetalFX cache: the two layers differ in size
     /// The zoomed picture's own scalers, so zooming in and back to Fit never throws away the fit scaler's cache.
     private var zoomScaler: DisplayScaler!
-    private var enhancedZoomScaler: DisplayScaler!
     /// Zoom and pan inside the picture (Loupe's gestures).
     let zoomPan = ZoomPan()
     /// Whether the zoom gestures may act now: a video is open and nothing (Home) covers it.
@@ -122,10 +149,11 @@ final class VideoView: NSView {
         commandQueue = device.makeCommandQueue()!
         context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         super.init(frame: .zero)
+        lowLatency.onChange = { [weak self] in self?.needsRender = true }
+        llScaler = DisplayScaler(device: device, context: context)
+        llZoomScaler = DisplayScaler(device: device, context: context)
         scaler = DisplayScaler(device: device, context: context)
-        enhancedScaler = DisplayScaler(device: device, context: context)
         zoomScaler = DisplayScaler(device: device, context: context)
-        enhancedZoomScaler = DisplayScaler(device: device, context: context)
         zoomPan.onChange = { [weak self] in self?.needsRender = true }
         metalLayer.device = device
         metalLayer.pixelFormat = .rgba16Float
@@ -154,6 +182,8 @@ final class VideoView: NSView {
 
     /// Stops the display link (it retains its target) so the view can be released.
     func stop() {
+        artifactPreparation?.cancel(); artifactPreparation = nil
+        lowLatency.clear()
         frameLink?.invalidate()
         frameLink = nil
         NotificationCenter.default.removeObserver(self)
@@ -162,7 +192,11 @@ final class VideoView: NSView {
     }
 
     /// The scaler in use, for the stats: "MetalFX", "Lanczos".
-    var scalerText: String { scaler.statusText.replacingOccurrences(of: "Scaling: ", with: "") }
+    var scalerText: String {
+        let active = zoomPan.isAtFit ? (llImage == nil ? scaler : llScaler)! : (llImage == nil ? zoomScaler : llZoomScaler)!
+        let scale = active.statusText.replacingOccurrences(of: "Scaling: ", with: "")
+        return scale + "; " + llStatus + "; " + (artifactPipelineError.map { "Filters unavailable: " + $0 } ?? active.artifactStatus)
+    }
     /// Frames that were replaced before they were drawn.
     var skippedFrames: Int { skipCounter.skipped }
 
@@ -181,10 +215,9 @@ final class VideoView: NSView {
     /// Drops the displayed frame (used when a new file is opened). The old picture stays on screen until the next
     /// one is drawn, unless `blank` paints the view black now (nothing will follow: an error, no file left).
     func clear(blank: Bool = false) {
+        lowLatency.clear()
         image = nil
         currentFrame = nil
-        enhanced = nil
-        enhancedFrame = nil
         imageIsHDR = false
         focusMask = nil
         masker.reset()
@@ -214,8 +247,6 @@ final class VideoView: NSView {
         }
         skipCounter.frameArrived()
         currentFrame = frame
-        enhanced = nil
-        enhancedFrame = nil
         rebuildImage()
         needsRender = true
         framePlaying = playing
@@ -341,16 +372,6 @@ final class VideoView: NSView {
         focusStats = (0, 0, 0, 0, 0, 0, 0, 0, 0)
     }
 
-    /// Cross-fades to the neural-network version of the frame that is on screen (150 ms).
-    func showEnhanced(_ image: CIImage, forFrame number: Int, pts: Int64) {
-        guard currentFrame?.number == number, currentFrame?.pts == pts else { return }
-        if enhancedFrame == number, enhanced === image { return }   // already shown: do not restart the fade
-        enhanced = image
-        enhancedFrame = number
-        fadeStart = CACurrentMediaTime()
-        needsRender = true
-    }
-
     private func rebuildImage() {
         guard let frame = currentFrame else { return }
         let plan = ToneMapPlan.resolve(range: frame.dynamicRange, displayHeadroom: headroom)
@@ -369,6 +390,7 @@ final class VideoView: NSView {
         let value = Double(window?.screen?.maximumExtendedDynamicRangeColorComponentValue ?? 1)
         guard value != headroom else { return }
         headroom = value
+        lowLatency.displayHeadroom = value
         rebuildImage()
         needsRender = true
     }
@@ -446,6 +468,7 @@ final class VideoView: NSView {
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
         onTick?()
+        if let effectClock { lowLatency.tick(at: effectClock()) }
         zoomPan.tick(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         headroomCheck += 1
         if headroomCheck % 30 == 0 { refreshHeadroom() }   // about twice a second at 60 Hz
@@ -523,30 +546,13 @@ final class VideoView: NSView {
                 return placeZoomed(focused(full), using: zoomScaler, refine: refine, colored: colored, commandBuffer: commandBuffer)
             }
             let source = geometry.cropped(focused(full))
-            let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: sharpen, hdr: imageIsHDR,
+            let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: imageIsHDR, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: currentFrame?.number ?? 0),
                                        commandBuffer: commandBuffer)
             return fitted.transformed(by: CGAffineTransform(
                 translationX: ((size.width - fitted.extent.width) / 2).rounded(),
                 y: ((size.height - fitted.extent.height) / 2).rounded()))
         }
-        var placed: CIImage
-        if let enhanced {
-            let t = min(1, (CACurrentMediaTime() - fadeStart) / Self.fadeDuration)
-            let target = place(enhanced, using: enhancedScaler, zoomScaler: enhancedZoomScaler)
-            if t >= 1 {
-                placed = target
-            } else {
-                placed = place(image, using: scaler, zoomScaler: zoomScaler)
-                let dissolve = CIFilter.dissolveTransition()
-                dissolve.inputImage = placed
-                dissolve.targetImage = target
-                dissolve.time = Float(t)
-                placed = dissolve.outputImage ?? target
-                needsRender = true    // keep drawing until the fade is done
-            }
-        } else {
-            placed = place(image, using: scaler, zoomScaler: zoomScaler)
-        }
+        let placed = place(llImage ?? image, using: llImage == nil ? scaler : llScaler, zoomScaler: llImage == nil ? zoomScaler : llZoomScaler)
         let composed = placed.composited(over: CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size)))
         let destination = CIRenderDestination(width: Int(size.width), height: Int(size.height),
                                               pixelFormat: metalLayer.pixelFormat, commandBuffer: commandBuffer) {
@@ -597,6 +603,41 @@ final class VideoView: NSView {
                 }
             }
         }
+        // Diagnostics only: sample five tiny GPU output patches, keeping no image or user media data.
+        // Unlike presentation callbacks this detects whether the presented texture's pixels actually change.
+        if PlaybackDiagnostics.enabled, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_OUTPUT_PROBE"] == "1",
+           let storage = device.makeBuffer(length: 5 * 2048, options: .storageModeShared),
+           let blit = commandBuffer.makeBlitCommandEncoder() {
+            let texture = drawable.texture
+            let locations: [(Double, Double)] = [(0.5,0.5), (0.35,0.35), (0.65,0.35), (0.35,0.65), (0.65,0.65)]
+            for (index, location) in locations.enumerated() {
+                let x = min(max(0, Int(Double(texture.width) * location.0)), max(0, texture.width - 8))
+                let y = min(max(0, Int(Double(texture.height) * location.1)), max(0, texture.height - 8))
+                blit.copy(from: texture, sourceSlice: 0, sourceLevel: 0,
+                          sourceOrigin: MTLOrigin(x: x, y: y, z: 0), sourceSize: MTLSize(width: min(8, texture.width), height: min(8, texture.height), depth: 1),
+                          to: storage, destinationOffset: index * 2048, destinationBytesPerRow: 256, destinationBytesPerImage: 2048)
+            }
+            blit.endEncoding()
+            let group = diagnosticGroup, epoch = diagnosticEpoch
+            commandBuffer.addCompletedHandler { [weak self] cb in
+                guard cb.status == .completed else {
+                    NSLog("output probe GPU failure: %@", String(describing: cb.error))
+                    return
+                }
+                let bytes = storage.contents().assumingMemoryBound(to: UInt8.self)
+                var hash: UInt32 = 2166136261
+                for patch in 0..<5 { for row in 0..<8 { for byte in 0..<64 {
+                    hash = (hash ^ UInt32(bytes[patch * 2048 + row * 256 + byte])) &* 16777619
+                } } }
+                let result = hash
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, epoch == self.diagnosticEpoch else { return }
+                    PlaybackDiagnostics.shared.record("output_patch_hash", Double(result), group: group)
+                    PlaybackDiagnostics.shared.record("output_patch_changed", result == self.lastOutputProbeHash ? 0 : 1, group: group)
+                    self.lastOutputProbeHash = result
+                }
+            }
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
         StartupTrace.markOnce("first picture on screen")
@@ -635,7 +676,7 @@ final class VideoView: NSView {
         let out = CGSize(width: max(1, (cut.width * sx).rounded()), height: max(1, (cut.height * sy).rounded()))
         // MetalFX only up to 4×: past it the scaler may not be made, which would turn MetalFX off for the zoom.
         let mode = sx > 4 && (scaleMode == .auto || scaleMode == .metalfx) ? ScaleMode.lanczos : scaleMode
-        let scaled = scaler.scaled(colored, to: out, mode: mode, sharpen: sharpen, hdr: imageIsHDR,
+        let scaled = scaler.scaled(colored, to: out, mode: mode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: imageIsHDR, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: currentFrame?.number ?? 0),
                                    commandBuffer: commandBuffer)
         return scaled.transformed(by: CGAffineTransform(translationX: x.rounded(), y: y.rounded()))
     }

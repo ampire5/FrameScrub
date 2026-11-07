@@ -79,11 +79,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         preferences.addObserver { [weak self] in self?.appIcon.apply($0.appIcon) }
         appIcon.apply(config.appIcon)
         gestureBindings.addObserver { [weak controller] in controller?.applyInputMap($0) }
-        controller.onDisableSRStill = { [weak self, weak controller] in
-            do { try self?.preferences.update(["sr-still"]) { $0.srStill = false } } catch {
-                controller?.showMessage("Cannot save sr-still=no: \(error)", duration: 3)
-            }
-        }
         let clipQueue = ClipQueue()
         clipQueue.onFinished = { [weak self, weak controller, weak clipQueue] job, result in
             switch result {
@@ -124,6 +119,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             }
         }
         NSApp.activate()
+        if PlaybackDiagnostics.enabled, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_FOREGROUND"] == "1" {
+            // GUI benchmark launches from a terminal may otherwise remain occluded and measure decoding only.
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.window?.orderFrontRegardless()
+        }
         StartupTrace.mark("window shown")
         // The mouse search runs off the launch path: after the window is up (mouse spec §3.2, §8).
         DispatchQueue.main.async { [weak self, weak controller] in
@@ -544,13 +544,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return item
     }
 
-    @objc func setSaveUpscaler(_ sender: NSMenuItem) {
-        let upscaler: Upscaler = sender.tag == 0 ? .ml : .lanczos
-        do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = upscaler } } catch {
-            controller?.showMessage("Cannot save settings: \(error)", duration: 4)
-        }
-    }
-
     /// View › Subject Focus: on/off (H) and the styles (⇧H steps through them); a style turns it on.
     private func makeSubjectFocusMenu() -> NSMenuItem {
         let item = NSMenuItem(title: "Subject Focus", action: nil, keyEquivalent: "")
@@ -595,16 +588,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller?.setSubjectMatting(sender.tag == 1)
     }
 
-    private func makeUpscalerMenu() -> NSMenuItem {
-        let item = NSMenuItem(title: "Upscaler for Saved Frames", action: nil, keyEquivalent: "")
-        let submenu = NSMenu(title: "Upscaler for Saved Frames")
-        for (tag, title) in [(0, "Neural Network"), (1, "Lanczos")] {
-            let entry = NSMenuItem(title: title, action: #selector(setSaveUpscaler(_:)), keyEquivalent: "")
-            entry.tag = tag
-            entry.target = self
-            submenu.addItem(entry)
+    @objc private func toggleTemporalNoise(_ sender: NSMenuItem) {
+        do { try preferences.update(["temporal-noise"]) { $0.lowLatency.noiseEnabled.toggle() } }
+        catch { controller?.showMessage("Cannot save settings: \(error)", duration: 4) }
+    }
+
+    @objc private func toggleNoisePlayback(_ sender: NSMenuItem) {
+        do { try preferences.update(["temporal-noise-mode"]) { $0.lowLatency.noiseMode = $0.lowLatency.noiseMode == .paused ? .always : .paused } }
+        catch { controller?.showMessage("Cannot save settings: \(error)", duration: 4) }
+    }
+
+    @objc private func setLLScale(_ sender: NSMenuItem) {
+        let choice = LLScaleChoice.allCases[sender.tag]
+        do { try preferences.update(["ll-sr"]) { $0.lowLatency.scale = choice } }
+        catch { controller?.showMessage("Cannot save settings: \(error)", duration: 4) }
+    }
+
+    @objc private func setLLInterpolation(_ sender: NSMenuItem) {
+        do { try preferences.update(["ll-interpolation"]) { $0.lowLatency.intermediateFrames = sender.tag - 1 } }
+        catch { controller?.showMessage("Cannot save settings: \(error)", duration: 4) }
+    }
+
+    private func makeLowLatencyMenu() -> NSMenuItem {
+        let item = NSMenuItem(title: "Apple Low Latency", action: nil, keyEquivalent: "")
+        let menu = NSMenu(title: item.title)
+        let titles = ["Super Resolution: Off", "Super Resolution: Automatic", "Super Resolution: 1.5×", "Super Resolution: 2×", "Super Resolution: 4×"]
+        for (index, title) in titles.enumerated() {
+            let entry = NSMenuItem(title: title, action: #selector(setLLScale(_:)), keyEquivalent: "")
+            entry.target = self; entry.tag = index; menu.addItem(entry)
         }
-        item.submenu = submenu
+        menu.addItem(.separator())
+        for (factor, title) in [(1, "Interpolation: Off"), (2, "Interpolation: 2× frame rate"), (4, "Interpolation: 4× frame rate")] {
+            let entry = NSMenuItem(title: title, action: #selector(setLLInterpolation(_:)), keyEquivalent: "")
+            entry.target = self; entry.tag = factor; menu.addItem(entry)
+        }
+        menu.addItem(.separator())
+        let noise = NSMenuItem(title: "Temporal Noise Filter", action: #selector(toggleTemporalNoise(_:)), keyEquivalent: "")
+        noise.target = self; menu.addItem(noise)
+        let continuousNoise = NSMenuItem(title: "Temporal Noise: Include Playback (Experimental)", action: #selector(toggleNoisePlayback(_:)), keyEquivalent: "")
+        continuousNoise.target = self; menu.addItem(continuousNoise)
+        item.submenu = menu
         return item
     }
 
@@ -640,6 +663,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(toggleNoisePlayback(_:)) {
+            item.state = preferences.config.lowLatency.noiseMode == .always ? .on : .off
+            return true
+        }
+        if item.action == #selector(toggleTemporalNoise(_:)) {
+            item.state = preferences.config.lowLatency.noiseEnabled ? .on : .off
+            return true
+        }
+
+        if item.action == #selector(setLLScale(_:)) {
+            item.state = preferences.config.lowLatency.scale == LLScaleChoice.allCases[item.tag] ? .on : .off
+            return true
+        }
+        if item.action == #selector(setLLInterpolation(_:)) {
+            item.state = preferences.config.lowLatency.intermediateFrames == item.tag - 1 ? .on : .off
+            return true
+        }
+
         if item.action == #selector(refreshHome(_:)) { return controller?.canRefreshHome == true }
         if item.action == #selector(toggleFilmstrip(_:)) {
             item.title = controller?.filmstripShown == true ? "Fold Filmstrip" : "Show Filmstrip"
@@ -678,11 +719,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if let box = item.representedObject as? CommandBox, box.command == .toggleSubjectFocus {
             item.state = controller?.subjectFocus != nil ? .on : .off
         }
-        if item.action == #selector(setSaveUpscaler(_:)), let config = preferences?.config {
-            item.state = (item.tag == 0) == (config.saveUpscaler == .ml) ? .on : .off
-        }
         if let box = item.representedObject as? CommandBox, box.command == .toggleUpscaler, let config = preferences?.config {
-            item.state = config.srStill ? .on : .off
+            item.state = config.lowLatency.scale != .off ? .on : .off
         }
         if let box = item.representedObject as? CommandBox, box.command == .cycleMouseProfile, let config = preferences?.config {
             item.state = config.mouseProfile == .editing ? .on : .off
@@ -848,8 +886,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(makeSlotsMenu())
         viewMenu.addItem(.separator())
         viewMenu.addItem(makePreviewSizeMenu())
-        viewMenu.addItem(commandItem("Upscale Still Frame", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
-        viewMenu.addItem(makeUpscalerMenu())
+        viewMenu.addItem(makeLowLatencyMenu())
+        viewMenu.addItem(commandItem("Filters On / Off", .toggleArtifactFilters, key: "", modifiers: []))
+        viewMenu.addItem(commandItem("Filter Panel", .toggleArtifactFilterPanel, key: "", modifiers: []))
+        viewMenu.addItem(ArtifactFilterMenu.make(preferences: { [weak self] in self?.preferences }) { [weak self] message in self?.controller?.showMessage(message, duration: 4) })
+        viewMenu.addItem(commandItem("Toggle Apple LL Super Resolution", .toggleUpscaler, key: "", modifiers: []))   // U stays an input.conf binding
         viewMenu.addItem(makeSubjectFocusMenu())
         viewMenu.addItem(commandItem("Next Aspect Ratio", .cycleAspect, key: "", modifiers: []))   // a stays an input.conf binding
         viewMenu.addItem(commandItem("Show Playlist", .togglePlaylist, key: "", modifiers: []))   // F8 stays an input.conf binding
