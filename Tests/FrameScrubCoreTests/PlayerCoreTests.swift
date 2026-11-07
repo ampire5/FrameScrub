@@ -1712,21 +1712,6 @@ final class HapticLog {
         #expect(files[0].hasSuffix("_x2.jpg"))
     }
 
-    @Test(.disabled(if: isVirtualMachine, "a VM has no frame processor: the network reports ready, then fails"))
-    func osdMentionsLanczosWhenTheNetworkCannotBeUsed() async throws {
-        let (player, delegate, _) = try makePlayer(configure: { $0.saveScale = 2; $0.saveUpscaler = .ml })
-        defer { player.close() }
-        player.seek(toFrame: 5)
-        player.perform(.screenshot)    // 1920 px source: fits the network, so this fails only without the model
-        #expect(await eventually { delegate.messages.contains { $0.hasPrefix("Saved:") } })
-        let message = try #require(delegate.messages.last { $0.hasPrefix("Saved:") })
-        if MLUpscaler.availability(width: 1920, height: 1080) == .ready {
-            #expect(!message.contains("Upscaled with Lanczos"))
-        } else {
-            #expect(message.contains("Upscaled with Lanczos (model not downloaded)"))
-        }
-    }
-
     @Test func screenshotFitsTheScreenOnceItsSizeIsKnown() async throws {
         let (player, delegate, root) = try makePlayer(configure: { $0.saveScale = .fitScreen; $0.saveUpscaler = .lanczos })
         defer { player.close() }

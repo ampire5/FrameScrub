@@ -8,7 +8,7 @@ import LogiHIDPP
 import StashKitUI
 import SwiftUI
 
-final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate, StillEnhancerDelegate {
+final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate {
     private let core: PlayerCore
     /// The bindings in effect: the user's (`baseInputMap`) with the keys of the plugin page's declared actions added.
     private var inputMap: InputMap
@@ -97,6 +97,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var statsPanel: InfoPanelController!
     /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
     private var slots: SlotsController!
+    private weak var artifactFilterPanel: ArtifactFilterPanelView?
     /// Which pages are heard and which may open files (`plugin-open-allowed`); seeded from the configured plugins.
     private var pluginPolicy = PluginPolicy()
     /// The video's edges in the window, set from the slots' layout (pinned slots take room from it).
@@ -157,9 +158,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var titlebarInset: CGFloat = 0
     private var titlebarObserver: NSObjectProtocol?
     private var isBackButtonShown = false
-    /// Persists `sr-still=no` through the shared settings store (set by AppDelegate).
-    var onDisableSRStill: (() -> Void)?
-
     /// The app's clip queue, shared by every file opened in this window.
     func setClipQueue(_ queue: ClipQueue) { core.clipQueue = queue }
     private var playlist: Playlist?
@@ -178,7 +176,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The opened file whose "12 / 48" line waits for the first read of its folder.
     private var positionPending: URL?
     private var hideSeekBarWork: DispatchWorkItem?
-    private let enhancer = StillEnhancer(upscaler: SystemStillUpscaling())
     private var lastFrame: DecodedFrame?
     /// `a` cycles it; every file starts at `auto` (aspect spec).
     private var aspectMode = AspectMode.auto
@@ -216,7 +213,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var sceneSampling = SceneSampling()
     private var signatureCatchUpScheduled = false
     private let preferences: PreferencesStore
-    private var memoryPressure: DispatchSourceMemoryPressure?
     /// What is asked of the Logitech mouse's wheel now (see `updatePrecisionWheel`): all off until the player is in
     /// front.
     private var wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
@@ -276,17 +272,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(config)
         window.delegate = self
         core.delegate = self
-        enhancer.delegate = self
         buildViews(in: window)
         setUpMouse()
         setUpTourBox()
         statsPanel.fontSize = CGFloat(config.statsFontSize)
-        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
-        source.setEventHandler { [weak self] in
-            MainActor.assumeIsolated { self?.enhancer.purgeCache() }
-        }
-        source.resume()
-        memoryPressure = source
         let center = NotificationCenter.default
         for name in [NSApplication.didBecomeActiveNotification, NSApplication.didResignActiveNotification] {
             appObservers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -368,9 +357,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pluginGrabber = nil
         saveThumbnail()
         dropSceneSearch()
-        videoView.clear()
-        enhancer.reset()
         lastFrame = nil
+        videoView.clear()
         cropSampler?.cancel()
         cropSampler = nil
         aspectMode = .auto
@@ -504,9 +492,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
         updateGeometry(reshapeWindow: false)
         startCropSampler()
-        enhancer.isEnabled = core.config.srStill
         videoView.scaleMode = core.config.scaleMode
         videoView.sharpen = core.config.sharpen
+        videoView.artifactSettings = core.config.artifactFilters
         updateColorCorrection()
         updateScreenPixelSize()
         configurePreview(force: true)
@@ -543,6 +531,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
+        lastFrame = nil
         videoView.clear(blank: true)
         failedURL = url
         var failure = failure
@@ -576,6 +565,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         stashSession?.leave()
         dropSceneSearch()
         closeCore()   // keeps the position for the next open
+        lastFrame = nil
         videoView.clear(blank: true)
         hideSeekBarWork?.cancel()
         seekBar.alphaValue = 0
@@ -674,6 +664,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         cancelStashTitleWait()
         dropSceneSearch()
         closeCore()
+        lastFrame = nil
         videoView.clear(blank: true)
         failedURL = nil
         failedScene = scene
@@ -1140,8 +1131,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         homeSource?.stopImages()
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)
-        memoryPressure?.cancel()
-        memoryPressure = nil
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)
         statsTimer?.invalidate()
         statsTimer = nil
@@ -1223,9 +1212,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         buttons.update(map: inputMap, longPressMilliseconds: config.mouseLongPress)
         mouseBridge?.apply(config: config, map: inputMap)
         updatePrecisionWheel()   // wheel-precision may have changed
-        enhancer.isEnabled = config.srStill
         videoView.scaleMode = config.scaleMode
         videoView.sharpen = config.sharpen
+        videoView.artifactSettings = config.artifactFilters
+        artifactFilterPanel?.refresh()
+        refreshLowLatency()
         if !config.autoColor, autoColorFrame != nil || autoColorSeconds != nil { resetAutoColor() }
         updateColorCorrection()   // a new threshold re-decides from the stored Δ
         if config.autoColor, let lastFrame { checkSceneCut(lastFrame) }   // turned on in Settings: a first frame is a cut
@@ -1245,7 +1236,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if showsHome, home?.browser.location == HomeRecent.location(of: .stash) { showHome() }
         }
         statsPanel.fontSize = CGFloat(config.statsFontSize)
-        refreshEnhancement()
         configurePreview()
     }
 
@@ -1683,7 +1673,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.updatePrecisionWheel()
         }
         videoView.onOpenFile = { [weak self] in self?.open($0) }
-        videoView.onDisplayRatioChange = { [weak self] in self?.refreshEnhancement() }
+        videoView.onDisplayRatioChange = { [weak self] in self?.refreshLowLatency() }
+        core.onDisplayReferencesChange = { [weak self] in self?.refreshLowLatency() }
+        videoView.effectClock = { [weak self] in self?.core.clock.seconds ?? 0 }
         videoView.onTick = { [weak self] in self?.core.tick() }
         seekBar.onSeek = { [weak self] fraction in
             guard let self else { return }
@@ -1971,12 +1963,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             goToField.open(with: FrameNaming.timecode(core.currentSeconds))
         case .cycleMouseProfile:
             switchMouseProfile()
+        case .toggleArtifactFilters:
+            do { try preferences.update(["artifact-enabled"]) { $0.artifactFilters.enabled.toggle() } }
+            catch { showMessage("Cannot save settings: \(error)", duration: 4) }
+            showMessage(preferences.config.artifactFilters.summary)
+        case .toggleArtifactFilterPanel:
+            slots.toggleArtifactFilterPanel()
         case .toggleUpscaler:
-            let enable = !core.config.srStill
-            do { try preferences.update(["sr-still"]) { $0.srStill = enable } } catch {
-                showMessage("Cannot save settings: \(error)", duration: 4)
-            }
-            showMessage("Still-frame upscaling: \(enable ? "on" : "off")")
+            do { try preferences.update(["ll-sr"]) { $0.lowLatency.scale = $0.lowLatency.scale == .off ? .auto : .off } }
+            catch { showMessage("Cannot save settings: \(error)", duration: 4) }
+            showMessage("Apple LL SR: \(preferences.config.lowLatency.scale.rawValue)")
         case .toggleVibrance:
             runColorOutcome(colorMemory.toggle(.vibrance, global: globalConfig))
         case .toggleAutoColor:
@@ -2009,11 +2005,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .toggleSubjectFocusPanel:
             slots.toggleSubjectFocusPanel()
         case .cycleUpscaler:
-            let next: Upscaler = core.config.saveUpscaler == .ml ? .lanczos : .ml
-            do { try preferences.update(["save-upscaler"]) { $0.saveUpscaler = next } } catch {
-                showMessage("Cannot save settings: \(error)", duration: 4)
-            }
-            showMessage("Upscaler: \(next == .ml ? "neural network" : "Lanczos")")
+            let choices = LLScaleChoice.allCases
+            let current = choices.firstIndex(of: core.config.lowLatency.scale) ?? 0
+            do { try preferences.update(["ll-sr"]) { $0.lowLatency.scale = choices[(current + 1) % choices.count] } }
+            catch { showMessage("Cannot save settings: \(error)", duration: 4) }
+            showMessage("Apple LL SR: \(preferences.config.lowLatency.scale.rawValue)")
         case .deleteFile:
             deleteCurrentFile()
         case .closeFile:
@@ -2785,7 +2781,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return !(slots?.isPointerOverShownSlot ?? false)
     }
 
-    /// (Re)creates the preview decoder for the open file; `preview=no` or a failed decoder leaves the timecode only.
+    /// Hover pictures follow `preview`; the filmstrip has its own visibility and utility decoder.
     private func configurePreview(force: Bool = false) {
         let scale = window?.backingScaleFactor ?? 2
         let key = PreviewKey(enabled: core.config.preview, width: CGFloat(core.config.previewWidth), url: core.url, scale: scale)
@@ -2802,35 +2798,33 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         previewPin = nil
         seekBar.previewFrame = nil
         previewView.hide()
-        guard core.config.preview else {
-            previewKey = key   // preview off: nothing to build until the key changes
-            return
-        }
         guard let url = core.url, let index = core.index, let info = core.info else { return }
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
         let imagePool = PreviewImagePool(url: url, rotationClockwise: info.rotationClockwise)
-        let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
-                                       widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
-                                       policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
-        provider.onImage = { [weak self] result in
-            guard let self else { return }
-            let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
-            if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
-            previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
-            updatePreviewView()
-            if PlaybackDiagnostics.enabled {
-                let report = PlaybackDiagnostics.shared
-                report.record("callback_ui_ms", (PlaybackDiagnostics.now() - start) * 1000, group: "preview.ui")
-                report.record("request_to_ui_ready_ms", (PlaybackDiagnostics.now() - result.requestedAt) * 1000, group: "preview.ui")
+        if core.config.preview {
+            let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
+                                           widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
+                                           policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
+            provider.onImage = { [weak self] result in
+                guard let self else { return }
+                let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
+                if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
+                previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
+                updatePreviewView()
+                if PlaybackDiagnostics.enabled {
+                    let report = PlaybackDiagnostics.shared
+                    report.record("callback_ui_ms", (PlaybackDiagnostics.now() - start) * 1000, group: "preview.ui")
+                    report.record("request_to_ui_ready_ms", (PlaybackDiagnostics.now() - result.requestedAt) * 1000, group: "preview.ui")
+                }
             }
+            provider.onUnavailable = { [weak self] in
+                self?.previewProvider?.stop()
+                self?.previewProvider = nil
+                self?.previewImage = nil
+                self?.updatePreviewView()
+            }
+            previewProvider = provider
         }
-        provider.onUnavailable = { [weak self] in
-            self?.previewProvider?.stop()
-            self?.previewProvider = nil
-            self?.previewImage = nil
-            self?.updatePreviewView()
-        }
-        previewProvider = provider
         let loader = FilmstripPreviewLoader(url: url, index: index, rotation: info.rotationClockwise,
                                             width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy,
                                             imagePool: imagePool, frameCache: core.cache)
@@ -3085,6 +3079,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             abandonOpening()   // ⌘⌫ while it was still being read
             dropSceneSearch(waitForTheDecoder: true)   // a permanent delete follows at once
             closeCore()
+            lastFrame = nil
             videoView.clear()
             statsFileChanged()
         })
@@ -3102,6 +3097,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 openFile(neighbour)
             } else {
                 closeCore()
+                lastFrame = nil
                 videoView.clear(blank: true)
                 showHome()
             }
@@ -3127,6 +3123,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         stashSession.leave()
         dropSceneSearch(waitForTheDecoder: true)
         closeCore()   // nothing of ours holds the file while Stash deletes it
+        lastFrame = nil
         videoView.clear()
         statsFileChanged()
         deletingScene = true
@@ -3165,6 +3162,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func backToStashAfterDelete() {
         stashLibrary?.leaveDeletedScene()
         deletingScene = false
+        lastFrame = nil
         videoView.clear(blank: true)
         failedURL = nil
         failedScene = nil
@@ -3305,6 +3303,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pluginPolicy = PluginPolicy(openAllowedText: globalConfig.pluginOpenAllowed)
         for entry in globalConfig.plugins { pluginPolicy.trust(entry.url) }
         slots = SlotsController(container: container, above: failureView, config: globalConfig, playlistView: playlistPanel)
+        slots.makeArtifactFilterPanel = { [weak self] in
+            let panel = ArtifactFilterPanelView()
+            panel.settings = { [weak self] in self?.preferences.config.artifactFilters ?? .init() }
+            panel.update = { [weak self] keys, edit in
+                guard let self else { return }
+                do { try preferences.update(keys) { edit(&$0.artifactFilters) } }
+                catch { showMessage("Cannot save settings: \(error)", duration: 4) }
+            }
+            self?.artifactFilterPanel = panel
+            return panel
+        }
         slots.configurePage = { [weak self] in self?.configurePluginPage($0) }
         slots.makeSubjectFocusPanel = { [weak self] in
             let panel = SubjectFocusPanelView()
@@ -3837,13 +3846,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let parts = (ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SCRUB"] ?? "").split(separator: ",").compactMap { Int($0) }
         guard parts.count == 2, parts[1] > 0 else { return }
         let step = parts[0], interval = 1 / Double(parts[1])
+        let requestedDuration = ProcessInfo.processInfo.environment["FRAMESCRUB_FOCUS_SCRUB_SECONDS"].flatMap(Double.init)
+        let duration = requestedDuration.flatMap { $0.isFinite && (1...60).contains($0) ? $0 : nil } ?? 60
         scrubBenchStep = 0
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
             guard let self else { return }
             if !core.isPaused { core.pause() }
             Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] timer in
                 let keepGoing = MainActor.assumeIsolated {
-                    guard let self, self.scrubBenchStep < Int(60 / interval) else { return false }
+                    guard let self, self.scrubBenchStep < Int(duration / interval) else { return false }
                     self.core.scrub(by: self.scrubBenchStep % 60 < 40 ? step : -step, ticks: false)
                     self.scrubBenchStep += 1
                     return true
@@ -3964,22 +3975,22 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         filmstripLoader?.resume()
         lastFrame = frame
+        refreshLowLatency()
         checkSceneCut(frame)
         pushPluginState(force: false)
         recomputeAutoColorIfDue(frame)
-        refreshEnhancement()
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
         filmstripLoader?.resume()
         videoView.diagnosticPlaybackChanged(playing: !core.isPaused)
+        refreshLowLatency()
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused
             if wasPaused { stashSession?.saveProgress() }
         }
         if seekBar.alphaValue > 0 { updateSeekBar() }
-        refreshEnhancement()
     }
 
     func player(_ player: PlayerCore, showOSD text: String) {
@@ -4045,37 +4056,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    // MARK: StillEnhancerDelegate
-
-    private func refreshEnhancement() {
-        enhancer.update(frame: lastFrame, isPaused: core.isPaused,
-                        rotationClockwise: core.info?.rotationClockwise ?? 0, ratio: videoView.displayRatio)
-    }
-
-    func stillEnhancer(_ enhancer: StillEnhancer, didEnhanceFrame number: Int, pts: Int64, image: CIImage) {
-        videoView.showEnhanced(image, forFrame: number, pts: pts)
-    }
-
-    func stillEnhancer(_ enhancer: StillEnhancer, message: String) {
-        showMessage(message, duration: 1.5)
-    }
-
-    func stillEnhancer(_ enhancer: StillEnhancer, requestModelDownload decide: @escaping (ModelDownloadChoice) -> Void) {
-        let alert = NSAlert()
-        alert.messageText = "Download the Apple image-enhancement model?"
-        alert.informativeText = "FrameScrub can redraw paused frames sharper with a neural network. The model downloads once."
-        alert.addButton(withTitle: "Download")
-        alert.addButton(withTitle: "Not now")
-        alert.addButton(withTitle: "Never")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn: decide(.download)
-        case .alertThirdButtonReturn: decide(.never)
-        default: decide(.notNow)
+    private func refreshLowLatency() {
+        guard !isTerminating, !showsHome, window?.occlusionState.contains(.visible) == true,
+              let frame = lastFrame, let index = core.index else { return }
+        let start = index.seconds(forFrame: frame.number)
+        let end = frame.number + 1 < index.frameCount ? index.seconds(forFrame: frame.number + 1) : start
+        let candidate = core.cache.frame(frame.number + 1)
+        let canInterpolate = candidate.map {
+            LLPresentation.canInterpolate(frame: frame.number, next: $0.number, start: start, end: end,
+                                          playing: !core.isPaused, speed: core.speed, direction: core.direction)
+        } ?? false
+        let settings = core.config.lowLatency.forPlayback(playing: !core.isPaused)
+        videoView.lowLatency.noiseOnPause = core.config.lowLatency.noiseActive && !settings.noiseActive
+        var noiseReferences: [TemporalNoiseReference] = []
+        if settings.noiseActive {
+            // M4 Max/macOS27.2 TNF query: one previous, two next frames. At most three retained references.
+            for n in [frame.number - 1, frame.number + 1, frame.number + 2] where n >= 0 && n < index.frameCount {
+                if let cached = core.cache.frame(n) {
+                    noiseReferences.append(.init(frame: cached, seconds: index.seconds(forFrame: n)))
+                }
+            }
         }
-    }
-
-    func stillEnhancerDidDisable(_ enhancer: StillEnhancer) {
-        onDisableSRStill?()
+        videoView.lowLatency.request(frame: frame, next: canInterpolate ? candidate : nil, start: start, end: end,
+                                    settings: settings, ratio: videoView.displayRatio,
+                                    rotation: videoView.rotationClockwise, noiseReferences: noiseReferences)
     }
 
     // MARK: NSWindowDelegate
@@ -4104,6 +4108,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let visible = !isTerminating && !showsHome && failureView.isHidden && window?.isVisible == true
             && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
         core.setViewingVisible(visible)
+        if visible { refreshLowLatency() } else { videoView.lowLatency.clear() }
     }
     func windowDidBecomeKey(_ notification: Notification) { updatePrecisionWheel(); updateViewingVisibility() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer(); seekBar.refreshVisibility(); updateViewingVisibility() }

@@ -127,6 +127,31 @@ enum SettingsBench {
         }
         print("one setting changed: " + edits.map { String(format: "%.0f", $0) }.joined(separator: ", ") + " ms")
 
+        // Filter Lab controls on their real page; measure the same store path used by controls/menu.
+        SettingsPanel.show(store: store, context: context, page: "display")
+        spin(settle)
+        var filterEdits: [Double] = []
+        for index in 0..<4 {
+            let t0 = threadCPU()
+            try? preferences.update(["artifact-antiring", "artifact-chroma", "artifact-deband", "artifact-compare", "artifact-deband-threshold", "artifact-deband-radius", "artifact-deband-iterations", "artifact-texture-protection", "artifact-grain", "artifact-grain-amount", "artifact-grain-size", "artifact-grain-base", "artifact-grain-adaptation"]) {
+                $0.artifactFilters.antiring = index % 2 == 0 ? .edge : .off
+                $0.artifactFilters.chroma = index % 2 == 0 ? .bilateral : .median
+                $0.artifactFilters.deband = index % 2 == 0 ? .window : .reference
+                $0.artifactFilters.debandIterations = index % 2 == 0 ? 1:3
+                $0.artifactFilters.debandThreshold = index % 2 == 0 ? 9:12
+                $0.artifactFilters.debandRadius = index % 2 == 0 ? 24:32
+                $0.artifactFilters.textureProtection = index % 2 == 0 ? 1:0.8
+                $0.artifactFilters.grain = index % 2 == 0 ? .av1:.particles
+                $0.artifactFilters.grainAmount = index % 2 == 0 ? 6:12
+                $0.artifactFilters.grainSize = index % 2 == 0 ? 2:3
+                $0.artifactFilters.grainBase = index % 2 == 0 ? 0.25:0.4
+                $0.artifactFilters.grainAdaptation = index % 2 == 0 ? 1:0.8
+                $0.artifactFilters.comparison = index % 2 == 0 ? .split : .processed
+            }
+            spin(settle); filterEdits.append(threadCPU() - t0)
+        }
+        print("filter controls changed: " + filterEdits.map { String(format: "%.0f", $0) }.joined(separator: ", ") + " ms")
+
         // ⇥ from the search field once around the loop: how many stops, and how many of them on a page that is not
         // open (an ancestor hidden or drawn at opacity 0).
         SettingsPanel.show(store: store, context: context, page: "mouse")

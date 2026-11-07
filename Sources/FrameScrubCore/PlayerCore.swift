@@ -42,6 +42,8 @@ public final class PlayerCore {
     /// Writes the A-B clips (`c`); set by the app.
     public var clipQueue: ClipQueue?
     /// Called on the main thread when the exact frame index replaces the approximate one.
+    /// Cache-only neighbors became available for the current display effect; no decoding is started here.
+    public var onDisplayReferencesChange: (() -> Void)?
     public var onIndexReady: ((FrameIndex) -> Void)?
     /// Called on the main thread with the fraction of the file the index scan has read (spec §2.2).
     public var onIndexProgress: ((Double) -> Void)?
@@ -808,7 +810,7 @@ public final class PlayerCore {
         case .showProgress: osd(progressText)
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
-             .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .showInFolder, .cycleABLoopMode, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .toggleSubjectFocus, .cycleSubjectFocus, .toggleSubjectFocusPanel, .cycleAspect, .windowScale, .windowFit,
+             .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .showInFolder, .cycleABLoopMode, .toggleArtifactFilters, .toggleArtifactFilterPanel, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .toggleSubjectFocus, .cycleSubjectFocus, .toggleSubjectFocusPanel, .cycleAspect, .windowScale, .windowFit,
              .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
@@ -1054,7 +1056,11 @@ public final class PlayerCore {
     }
 
     private func frameInserted(_ n: Int, session current: Int) {
-        guard current == session, n == position || n == pendingScreenshot || n == pendingCopy || seekTimer.isRunning,
+        guard current == session else { return }
+        if config.lowLatency.forPlayback(playing: !isPaused).noiseActive, n != position, n >= position - 1, n <= position + 2 {
+            onDisplayReferencesChange?()
+        }
+        guard n == position || n == pendingScreenshot || n == pendingCopy || seekTimer.isRunning,
               let frame = cache.frame(n) else { return }
         // Spec §3.2: while a seek series has not reached its target, a decoded frame between the picture and
         // the target is shown, so a held key moves the picture as fast as frames arrive.

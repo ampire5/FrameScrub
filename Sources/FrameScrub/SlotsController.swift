@@ -16,6 +16,9 @@ import Slots
     var isEnabled: Bool { get { host.isEnabled } set { host.isEnabled = newValue } }
     let playlistView: PlaylistPanelView
     var makeSubjectFocusPanel: (() -> SubjectFocusPanelView)?
+    var makeArtifactFilterPanel: (() -> ArtifactFilterPanelView)?
+    private var artifactFilterPanel: ArtifactFilterPanelView?
+    private static let artifactFilters = SlotTabID(rawValue: "artifact-filters")
     private var subjectFocusPanel: SubjectFocusPanelView?
     private static let subjectFocus = SlotTabID(rawValue: "subject-focus")
     private let host: Slots.SlotsController
@@ -34,6 +37,7 @@ import Slots
         registerPlaylist()
         registerPlugins()
         registerSubjectFocus()
+        registerArtifactFilters()
         var playlistTaken = false
         for edge in SlotEdge.allCases {
             var s = config.slots[edge] ?? .default(for: edge)
@@ -109,6 +113,24 @@ import Slots
         host.add(id, edge: edge, transient: true)
         host.select(id, edge: edge)
         host.show(edge)
+    }
+    func toggleArtifactFilterPanel() {
+        let id = Self.artifactFilters, edge = edge(holding: Self.artifactFilters) ?? .right
+        if host.isShown(edge), host.activeTab(edge) == id { host.hide(edge); return }
+        host.add(id, edge: edge, transient: true); host.select(id, edge: edge); host.show(edge)
+    }
+    private func registerArtifactFilters() {
+        host.register(SlotTabDescriptor(id: Self.artifactFilters, title: "Filters", symbol: "camera.filters", singleton: true) { [weak self] _ in
+            guard let self else { return nil }
+            if artifactFilterPanel == nil { artifactFilterPanel = makeArtifactFilterPanel?() }
+            guard let panel = artifactFilterPanel else { return nil }
+            panel.prepare()
+            let page = SlotPage(view: panel, visibilityChanged: { [weak panel] shown in
+                if shown { panel?.refresh() }
+            })
+            page.isTyping = { [weak panel] in panel?.isEditingText ?? false }
+            return page
+        })
     }
     private func registerSubjectFocus() {
         host.register(SlotTabDescriptor(id: Self.subjectFocus, title: "Subject Focus", symbol: "person.crop.rectangle", singleton: true) { [weak self] _ in

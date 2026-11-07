@@ -2,6 +2,16 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct InputMapTests {
+    @Test func filtersHaveASingleKeyInBothLayouts() {
+        for layout in [KeyLayout.classic, .leftHand] {
+            let command = InputMap(layout: layout).command(for: KeyChord(key: "n"))
+            #expect(command?.configText == "toggle-artifact-filters")
+            #expect(command?.repeatsWhenHeld == false)
+            #expect(InputMap(layout: layout).command(for: KeyChord.parse("Alt+n")!)?.configText == "toggle-artifact-filter-panel")
+        }
+        #expect(Command.parse("toggle-artifact-filters")?.configText == "toggle-artifact-filters")
+    }
+
     @Test func slotChordsAreMenuOwned() throws {
         for key in ["LEFT", "RIGHT", "DOWN"] {
             #expect(KeyChord.menuOwned.contains(try #require(KeyChord.parse("Ctrl+Meta+\(key)"))))
@@ -357,7 +367,7 @@ import Testing
         #expect(map.command(for: KeyChord(key: "h", modifiers: .shift)) == .cycleSubjectFocus)
         #expect(Command.parse("cycle-subject-focus") == .cycleSubjectFocus)
         #expect(map.command(for: KeyChord.parse("Alt+h")!) == .toggleSubjectFocusPanel)
-        #expect(map.bindings.count == 135)   // h ⇧H ⌥H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
+        #expect(map.bindings.count == 137)   // h ⇧H ⌥H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)

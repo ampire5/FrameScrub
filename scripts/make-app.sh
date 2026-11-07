@@ -12,6 +12,8 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 bin=$app/Contents/MacOS/FrameScrub
 built=$(swift build -c release --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScrub
 cp "$built" "$bin"
+# Include Core's prepared grain banks; never rely on the developer's build directory.
+cp -R "$(dirname "$built")/FrameScrub_FrameScrubCore.bundle" "$app/Contents/Resources/"
 # The symbols go to build/FrameScrub.dSYM, for symbolicating crash reports, not into the app (~6 MB less).
 rm -rf build/FrameScrub.dSYM
 dsymutil "$built" -o build/FrameScrub.dSYM >/dev/null 2>&1 || echo "warning: no build/FrameScrub.dSYM (dsymutil failed)" >&2
@@ -63,6 +65,9 @@ else
 fi
 # Document icons per video format, one picture per size.
 cp Resources/DocumentIcons/*.icns "$app/Contents/Resources/"
+# Third-party shader adaptation notices travel with standalone app bundles.
+mkdir -p "$app/Contents/Resources/Licenses/libplacebo"
+cp third_party/libplacebo/LICENSE third_party/libplacebo/SOURCE "$app/Contents/Resources/Licenses/libplacebo/"
 # Signed with the local identity "Local Code Signing" (login keychain) when present: the designated requirement is then
 # the bundle ID and the certificate, the same for every build, so TCC grants (network volumes, Accessibility) survive
 # rebuilds; ad hoc it is the build's own hash, and every new build must be allowed again.

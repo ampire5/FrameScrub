@@ -145,6 +145,7 @@ public enum Command: Equatable, Sendable {
     /// `show-in-folder`: Home's Folders on the video's folder, the video selected.
     case showInFolder
     case toggleUpscaler, cycleUpscaler
+    case toggleArtifactFilters, toggleArtifactFilterPanel
     /// The other mouse profile (`MouseProfile`).
     case cycleMouseProfile
     case toggleVibrance, toggleAutoColor
@@ -251,6 +252,8 @@ public enum Command: Equatable, Sendable {
         case .deleteFile: return "delete-file"
         case .closeFile: return "close-file"
         case .showInFolder: return "show-in-folder"
+        case .toggleArtifactFilters: return "toggle-artifact-filters"
+        case .toggleArtifactFilterPanel: return "toggle-artifact-filter-panel"
         case .toggleUpscaler: return "toggle-upscaler"
         case .cycleMouseProfile: return "cycle-mouse-profile"
         case .cycleUpscaler: return "cycle-upscaler"
@@ -356,6 +359,8 @@ public enum Command: Equatable, Sendable {
         case ("delete-file", nil): return .deleteFile
         case ("close-file", nil): return .closeFile
         case ("show-in-folder", nil): return .showInFolder
+        case ("toggle-artifact-filters", nil): return .toggleArtifactFilters
+        case ("toggle-artifact-filter-panel", nil): return .toggleArtifactFilterPanel
         case ("toggle-upscaler", nil): return .toggleUpscaler
         case ("cycle-mouse-profile", nil): return .cycleMouseProfile
         case ("cycle-upscaler", nil): return .cycleUpscaler
@@ -523,6 +528,8 @@ public struct InputMap: Equatable {
     Meta+w close-file
     ENTER show-in-folder
     Meta+UP show-in-folder
+    n toggle-artifact-filters
+    Alt+n toggle-artifact-filter-panel
     u toggle-upscaler
     U cycle-upscaler
     v toggle-vibrance
@@ -607,6 +614,8 @@ public struct InputMap: Equatable {
     Alt+m toggle-scrub-audio
     Alt+M toggle-scrub-audio-pitch
     Alt+V toggle-auto-color
+    n toggle-artifact-filters
+    Alt+n toggle-artifact-filter-panel
     u toggle-upscaler
     U cycle-upscaler
     9 add volume -2

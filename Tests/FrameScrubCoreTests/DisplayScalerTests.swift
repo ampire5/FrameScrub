@@ -112,4 +112,44 @@ private let metalFXSupported = MTLCreateSystemDefaultDevice().map { MTLFXSpatial
         #expect((0..<128).map { samplePixel(plain, x: $0, y: 20, context: context) }
                 == (0..<128).map { samplePixel(sharp, x: $0, y: 20, context: context) })
     }
+    @Test(.enabled(if: metalFXSupported, "MetalFX unsupported"), arguments: [ScaleMode.metalfx, .lanczos, .bilinear])
+    func artifactCleanupPrecedesScalingAndSplitKeepsUnfilteredBaseline(mode: ScaleMode) throws {
+        let w=64,h=32,color=CGColorSpace(name:CGColorSpace.displayP3)!
+        var bytes=[UInt8]()
+        for _ in 0..<h {for x in 0..<w {let v=UInt8(96+(x/8)*4);bytes += [v,v,v,255]}}
+        let image=CIImage(bitmapData:Data(bytes),bytesPerRow:w*4,size:CGSize(width:w,height:h),format:.RGBA8,colorSpace:color)
+        let q=try #require(device.makeCommandQueue()),pipes=try ArtifactFilterPipelines(device:device)
+        let d=MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.rgba16Float,width:w,height:h,mipmapped:false)
+        d.usage = [.shaderRead,.shaderWrite,.renderTarget];let src=try #require(device.makeTexture(descriptor:d))
+        var s=ArtifactFilterSettings();s.deband = .window;s.debandStrength=1;s.debandRadius=8;s.debandThreshold=12
+        let cb=try #require(q.makeCommandBuffer())
+        context.render(image,to:src,commandBuffer:cb,bounds:image.extent,colorSpace:color)
+        let filter=ArtifactFilterRenderer(device:device)
+        let pre=filter.encode(src,source:nil,settings:s,hdr:false,pipelines:pipes,commandBuffer:cb)
+        let preImage=try #require(CIImage(mtlTexture:pre,options:[.colorSpace:color]))
+        let expected=DisplayScaler(device:device,context:context).scaled(preImage,to:CGSize(width:128,height:64),mode:mode,sharpen:0,hdr:false,commandBuffer:cb)
+        cb.commit();cb.waitUntilCompleted();#expect(cb.status == .completed)
+        func pixels(_ image:CIImage)->[UInt8] {
+            var out=[UInt8](repeating:0,count:128*64*4)
+            context.render(image,toBitmap:&out,rowBytes:128*4,bounds:CGRect(x:0,y:0,width:128,height:64),format:.RGBA8,colorSpace:color);return out
+        }
+        let expectedBytes=pixels(expected),scaler=DisplayScaler(device:device,context:context)
+        func actual(_ settings:ArtifactFilterSettings)->[UInt8] {
+            let cb=q.makeCommandBuffer()!
+            let image=scaler.scaled(image,to:CGSize(width:128,height:64),mode:mode,sharpen:0,hdr:false,artifactSettings:settings,artifactPipelines:pipes,commandBuffer:cb)
+            cb.commit();cb.waitUntilCompleted();#expect(cb.status == .completed);return pixels(image)
+        }
+        let processed=actual(s),baseline=actual(.init())
+        #expect(zip(processed,expectedBytes).allSatisfy {abs(Int($0)-Int($1))<=1})
+        #expect(processed != baseline)
+        s.comparison = .split;let split=actual(s)
+        for y in 0..<64 {for x in 0..<128 where x != 64 {for c in 0..<3 {
+            let i=(y*128+x)*4+c,target=x<64 ? baseline[i]:processed[i]
+            #expect(abs(Int(split[i])-Int(target))<=1)
+        }}}
+        s.comparison = .changes;let heat=actual(s)
+        #expect(heat != processed)
+        #expect(stride(from:0,to:heat.count,by:4).contains {Int(heat[$0])>Int(heat[$0+1])+20})
+    }
+
 }

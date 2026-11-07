@@ -23,7 +23,7 @@ import Testing
 
     /// A value of `key` other than `current` that the conf takes and writes back the same.
     private func otherValue(_ key: String, than current: String?) -> String? {
-        let candidates = ["yes", "no", "1", "2", "5", "10", "20", "50", "100", "0.5", "0.25", "keep", "default", "auto",
+        let candidates = ["fine", "luma", "single", "bilateral", "split", "4", "8", "16", "32", "yes", "no", "1", "2", "5", "10", "20", "50", "100", "0.5", "0.25", "keep", "default", "auto",
                           "exact", "natural", "tape", "png", "next", "fit", "frames", "fps", "take", "editing", "x", "name", "date",
                           "size", "name-desc", "date-desc", "size-desc", "3", "7", "curve", "watch", "system", "ml",
                           "lanczos", "stop", "repeat", "loop", "left-hand", "classic", "every", "scenes", "sharp",
