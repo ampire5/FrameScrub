@@ -3,7 +3,7 @@ import Metal
 @testable import FrameScrubCore
 
 @Suite struct ArtifactFilterSettingsTests {
-    @Test func cleanupProfilesPreserveGrainAndOfferStrongerChroma() {
+    @Test func cleanupProfilesPreserveGrainAndDisableChroma() {
         var mild = ArtifactFilterSettings.texturedCleanup(grain: .particles)
         #expect(mild.antiring == .off)
         mild.antiring = .edge
@@ -15,8 +15,7 @@ import Metal
         #expect(mild.antiring == .off && strong.antiring == .off)
         #expect(mild.deband == .window && strong.deband == .window)
         #expect(strong.debandStrength > mild.debandStrength)
-        #expect(strong.chroma == .wide && mild.chroma == .bilateral)
-        #expect(strong.chromaStrength > mild.chromaStrength)
+        #expect(strong.chroma == .off && mild.chroma == .off)
         #expect(strong.textureProtection == 1)
         #expect(strong.grain == .particles && strong.grainAmount == 2 && strong.grainSize == 3)
         #expect(strong.grainBase == 0.4 && strong.grainAdaptation == 0.8)

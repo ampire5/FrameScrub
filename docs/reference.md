@@ -840,7 +840,8 @@ default off. Strength controls and optional fixed output dither are in Settings 
 The Enable Filters / A–B menu item bypasses all new filters while retaining their choices;
 split comparison keeps the
 original scaled image on the left and the processed image on the right. Presets include
-Smooth Gradients, Chroma Cleanup and Combined Mild.
+Smooth Gradients and Combined Mild. Colour noise filtering is off by default
+and in all presets; enable it manually when needed.
 MetalFX anti-ringing is off in all presets and can be enabled manually.
 HDR bypasses the lab.
 These are spatial experiments, not guaranteed codec restoration or temporal noise removal.
@@ -888,5 +889,4 @@ non-finite and out-of-range input restores the saved value. Units and algorithm-
 parameters are labelled. No separate advanced-settings screen is required for these controls.
 Mild/Strong Cleanup buttons preserve grain and dither, enable processing, and select processed
 comparison. Both disable MetalFX anti-ringing. Strong uses Window strength .95, threshold12,
-radius32, texture protection1 and luma-guided chroma5x5 strength1. Mild uses Window .5/9/24,
-chroma3x3 .35. These are stronger settings of existing shaders, not a new restoration model.
+radius32 and texture protection1. Mild uses Window .5/9/24. Both disable colour noise filtering. These are stronger settings of existing shaders, not a new restoration model.
