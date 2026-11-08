@@ -839,8 +839,10 @@ four-sample/two-pass deband, and chroma bilateral3×3/bilateral5×5/median3×3. 
 default off. Strength controls and optional fixed output dither are in Settings → Display.
 The Enable Filters / A–B menu item bypasses all new filters while retaining their choices;
 split comparison keeps the
-original scaled image on the left and the processed image on the right. Presets provide
-Edges Only, Smooth Gradients, Chroma Cleanup and Combined Mild. HDR bypasses the lab.
+original scaled image on the left and the processed image on the right. Presets include
+Smooth Gradients, Chroma Cleanup and Combined Mild.
+MetalFX anti-ringing is off in all presets and can be enabled manually.
+HDR bypasses the lab.
 These are spatial experiments, not guaranteed codec restoration or temporal noise removal.
 See [implementation and measurements](bench/player-filter-lab.md).
 
@@ -885,6 +887,6 @@ Deband, Colour Noise, Edges/Halos, Grain. Numeric fields accept exact values; in
 non-finite and out-of-range input restores the saved value. Units and algorithm-specific
 parameters are labelled. No separate advanced-settings screen is required for these controls.
 Mild/Strong Cleanup buttons preserve grain and dither, enable processing, and select processed
-comparison. Strong uses Window strength .95, threshold12, radius32, texture protection1,
-luma-guided chroma5x5 strength1, coherent-edge MetalFX cleanup1. Mild uses Window .5/9/24,
+comparison. Both disable MetalFX anti-ringing. Strong uses Window strength .95, threshold12,
+radius32, texture protection1 and luma-guided chroma5x5 strength1. Mild uses Window .5/9/24,
 chroma3x3 .35. These are stronger settings of existing shaders, not a new restoration model.

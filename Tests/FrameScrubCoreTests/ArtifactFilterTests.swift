@@ -5,9 +5,14 @@ import Metal
 @Suite struct ArtifactFilterSettingsTests {
     @Test func cleanupProfilesPreserveGrainAndOfferStrongerChroma() {
         var mild = ArtifactFilterSettings.texturedCleanup(grain: .particles)
+        #expect(mild.antiring == .off)
+        mild.antiring = .edge
         mild.grainAmount = 2; mild.grainSize = 3; mild.grainBase = 0.4; mild.grainAdaptation = 0.8
         mild.applyCleanup(strong: false)
-        var strong = mild; strong.applyCleanup(strong: true)
+        var strong = mild
+        strong.antiring = .luma
+        strong.applyCleanup(strong: true)
+        #expect(mild.antiring == .off && strong.antiring == .off)
         #expect(mild.deband == .window && strong.deband == .window)
         #expect(strong.debandStrength > mild.debandStrength)
         #expect(strong.chroma == .wide && mild.chroma == .bilateral)

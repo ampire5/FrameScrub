@@ -45,13 +45,13 @@ public struct ArtifactFilterSettings: Equatable, Sendable {
         debandThreshold = strong ? 12 : 9; debandRadius = strong ? 32 : 24
         debandIterations = 1; textureProtection = 1
         chroma = strong ? .wide : .bilateral; chromaStrength = strong ? 1 : 0.35
-        antiring = .edge; antiringStrength = 1
+        antiring = .off; antiringStrength = 1
     }
     /// Experimental working preset; global defaults remain unchanged.
     public static func texturedCleanup(grain: Grain) -> Self {
         var s=Self()
         s.deband = .window; s.debandStrength=0.8; s.debandThreshold=12; s.debandRadius=32
-        s.chroma = .bilateral; s.chromaStrength=0.6; s.antiring = .edge
+        s.chroma = .bilateral; s.chromaStrength=0.6
         s.grain=grain; s.grainAmount=6; s.grainSize=2; s.grainBase=0.8
         return s
     }

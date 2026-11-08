@@ -32,7 +32,7 @@ final class ArtifactFilterMenu: NSObject, NSMenuItemValidation {
         menu.addItem(.separator())
         for (i,title) in ["Grain: Off", "Grain: Uncorrelated / Comparison", "Grain: Fine", "Grain: Soft", "Grain: AV1-style", "Grain: Particles"].enumerated() { add(title, #selector(setGrain(_:)), i) }
         menu.addItem(.separator())
-        for (i,title) in ["Preset: Edges Only", "Preset: Smooth Gradients", "Preset: Chroma Cleanup", "Preset: Combined Mild", "Preset: Adaptive Gradients", "Preset: Directional Cleanup", "Preset: Reference Deband", "Preset: Adaptive Window", "Preset: Fine Grain Only", "Preset: Cleanup + Fine Grain", "Reset All Experimental Filters", "Preset: Cleanup + AV1-style Grain", "Preset: Cleanup + Particle Grain"].enumerated() { add(title, #selector(preset(_:)), i) }
+        for (i,title) in ["Preset: Smooth Gradients", "Preset: Chroma Cleanup", "Preset: Combined Mild", "Preset: Adaptive Gradients", "Preset: Directional Cleanup", "Preset: Reference Deband", "Preset: Adaptive Window", "Preset: Fine Grain Only", "Preset: Cleanup + Fine Grain", "Reset All Experimental Filters", "Preset: Cleanup + AV1-style Grain", "Preset: Cleanup + Particle Grain"].enumerated() { add(title, #selector(preset(_:)), i) }
         root.submenu = menu; return root
     }
     private func update(_ keys: [String], _ edit: (inout ArtifactFilterSettings) -> Void) {
@@ -51,20 +51,19 @@ final class ArtifactFilterMenu: NSObject, NSMenuItemValidation {
         update(["artifact-grain", "artifact-grain-amount", "artifact-grain-size", "artifact-grain-base", "artifact-grain-adaptation", "artifact-enabled", "artifact-antiring", "artifact-deband", "artifact-chroma", "artifact-strength", "artifact-antiring-strength", "artifact-deband-strength", "artifact-deband-threshold", "artifact-deband-radius", "artifact-deband-iterations", "artifact-texture-protection", "artifact-chroma-strength", "artifact-dither", "artifact-compare"]) {
             $0 = ArtifactFilterSettings()
             switch sender.tag {
-            case 0: $0.antiring = .edge
-            case 1: $0.deband = .single
-            case 2: $0.chroma = .bilateral
-            case 3: $0.antiring = .edge; $0.deband = .single; $0.debandStrength = 0.3; $0.chroma = .bilateral; $0.chromaStrength = 0.35
-            case 4: $0.deband = .adaptive
-            case 5: $0.antiring = .directional
-            case 6: $0 = .referencePreset
-            case 7: $0.deband = .window
-            case 8: $0.grain = .fine; $0.grainAmount = 1; $0.grainSize = 1.25; $0.grainBase = 0.4
-            case 9:
-                $0.deband = .window; $0.chroma = .bilateral; $0.chromaStrength = 0.35; $0.antiring = .edge
+            case 0: $0.deband = .single
+            case 1: $0.chroma = .bilateral
+            case 2: $0.deband = .single; $0.debandStrength = 0.3; $0.chroma = .bilateral; $0.chromaStrength = 0.35
+            case 3: $0.deband = .adaptive
+            case 4: $0.antiring = .directional
+            case 5: $0 = .referencePreset
+            case 6: $0.deband = .window
+            case 7: $0.grain = .fine; $0.grainAmount = 1; $0.grainSize = 1.25; $0.grainBase = 0.4
+            case 8:
+                $0.deband = .window; $0.chroma = .bilateral; $0.chromaStrength = 0.35
                 $0.grain = .fine; $0.grainAmount = 1; $0.grainSize = 1.25; $0.grainBase = 0.4
-            case 11: $0 = .texturedCleanup(grain: .av1)
-            case 12: $0 = .texturedCleanup(grain: .particles)
+            case 10: $0 = .texturedCleanup(grain: .av1)
+            case 11: $0 = .texturedCleanup(grain: .particles)
             default: break
             }
         }
