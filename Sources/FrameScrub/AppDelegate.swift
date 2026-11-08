@@ -59,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             becomeSecondary(primary)
             return
         }
-        Icons.set = Icons.Set(rawValue: config.iconSet.rawValue) ?? .lucide   // before the first icon is made
+        Icons.set = Icons.Set(rawValue: config.iconSet.rawValue) ?? .sf   // before the first icon is made
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
         preferences = PreferencesStore(config: config)

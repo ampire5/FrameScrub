@@ -156,7 +156,7 @@ public struct Config: Equatable, Sendable {
     /// `home-sidebar`: whether Home shows its sidebar (⌃⌘S).
     public var homeSidebar = true
     /// `icon-set`: the line icons, Lucide or SF Symbols (read at launch).
-    public var iconSet = IconSet.lucide
+    public var iconSet = IconSet.sf
     public var singleInstance = false
     /// `home-tab`: where Home opens at launch, Recent unless set (the user's moves are not saved: the owner wants every
     /// launch on Recent, 2026-10-27).

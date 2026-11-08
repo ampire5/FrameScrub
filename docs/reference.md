@@ -566,7 +566,7 @@ playlist-strip-return=3         # 0…30 seconds: the strip goes back to the pla
 home-card-size=220              # 60…480 points, width of Home's cards (⌘= / ⌘− / ⌘0 on Home)
 recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
-icon-set=lucide                 # the line icons: lucide | sf (SF Symbols); read at launch
+icon-set=sf                     # the line icons: lucide | sf (SF Symbols); read at launch
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
 home-tab=recent                 # where Home opens at launch: recent | folders | stash
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off

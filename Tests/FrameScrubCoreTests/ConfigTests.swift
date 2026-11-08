@@ -139,7 +139,8 @@ import Testing
         #expect(Config.parse("home-card-size=1000").0.homeCardSize == 220)
         #expect(Config.parse("recent-count=0").0.recentCount == 50)
         for key in ["home-tab", "home-card-size", "recent-count", "home-sidebar", "icon-set"] { #expect(Config.keys.contains(key)) }
-        #expect(d.iconSet == .lucide && Config.parse("icon-set=sf").0.iconSet == .sf)
+        #expect(d.iconSet == .sf)
+        #expect(Config.parse("icon-set=lucide").0.iconSet == .lucide)
     }
 
     /// The start screen's keys went with it (no migration): they are unknown now.
