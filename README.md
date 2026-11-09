@@ -82,7 +82,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
 - **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
-- **Viewing timeline:** a full-width filmstrip with a time lens (seconds near the playhead, larger intervals towards the ends) and a separate linear overview for direct seeking. Two translucent capsules appear above it on hover: Play/Pause and ±10 s on the left; mute/volume, playback speed and full screen on the right. Right-click the timeline to change thumbnail size, hide the film, or keep the controls visible. The playlist slot and `<` / `>` switch files.
+- **Viewing timeline:** a full-width filmstrip with a time lens (seconds near the playhead, larger intervals towards the ends) and a separate linear overview for direct seeking. Two translucent capsules appear above it on hover: Play/Pause and ±10 s on the left; mute/volume, playback speed and full screen on the right. Seek directly in the filmstrip and preview frames on hover. Right-click the timeline to change thumbnail size, hide the film, or keep the controls visible. The playlist slot and `<` / `>` switch files.
 - Scene detection: jump to the next scene or back to the start of this one.
 - `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
@@ -92,6 +92,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 
 **Picture**
 - MetalFX upscaling and HDR tone mapping; optional Apple low-latency super resolution and frame interpolation for supported SDR sources.
+- **Display cleanup and grain:** debanding, luma-guided chroma cleanup, edge cleanup, and optional SDR grain. Debanding and chroma cleanup run before scaling, and grain runs after scaling and sharpening. Each effect starts off. Press `N` to bypass or restore the filter chain and `⌥N` to open its controls. Split and changed-pixel views show what the filters affect.
 - Per-scene auto colour and vibrance, remembered per file and per folder.
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
 

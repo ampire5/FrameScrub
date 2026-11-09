@@ -37,7 +37,7 @@ final class PerceptualGrainPipelines {
                 }
                 let mean=field.reduce(0,+)/Float(field.count)
                 let rms=sqrt(field.reduce(0){$0+($1-mean)*($1-mean)}/Float(field.count))
-                var pixels=field.map{Float16(max(-3.5,min(3.5,($0-mean)/rms)))}
+                var pixels=field.map{Half(max(-3.5,min(3.5,($0-mean)/rms)))}
                 pixels.withUnsafeMutableBytes {t.replace(region:MTLRegionMake2D(0,0,side,side),mipmapLevel:0,slice:layer,withBytes:$0.baseAddress!,bytesPerRow:side*2,bytesPerImage:side*side*2)}
             }
             textures.append(t)

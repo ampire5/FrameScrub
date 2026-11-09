@@ -33,8 +33,8 @@ import CoreImage
     }
 
     @Test func candidateBanksAreVisibleDistinctAndProtected() throws {
-        let flat = [Float16](repeating: 0.5, count: 128*64*4)
-        var outputs = [[Float16]]()
+        let flat = [Half](repeating: 0.5, count: 128*64*4)
+        var outputs = [[Half]]()
         for mode in ["av1", "particles"] {
             var s = Config.parse("artifact-grain=\(mode)\nartifact-grain-amount=6\nartifact-grain-size=2\nartifact-grain-base=0.8").0.artifactFilters
             let result = try run(flat, settings:s)
@@ -61,15 +61,15 @@ import CoreImage
         #expect(throws: Error.self) { try GrainTemplateBank.load("missing",device:gpu) }
     }
 
-    private func texture(_ gpu: MTLDevice, _ w: Int, _ h: Int, _ pixels: [Float16]) throws -> MTLTexture {
+    private func texture(_ gpu: MTLDevice, _ w: Int, _ h: Int, _ pixels: [Half]) throws -> MTLTexture {
         let d=MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.rgba16Float,width:w,height:h,mipmapped:false)
         d.storageMode = .shared; d.usage=[.shaderRead,.shaderWrite,.renderTarget]
         let t=try #require(gpu.makeTexture(descriptor:d))
         pixels.withUnsafeBytes { t.replace(region:MTLRegionMake2D(0,0,w,h),mipmapLevel:0,withBytes:$0.baseAddress!,bytesPerRow:w*8) }
         return t
     }
-    private func run(_ pixels:[Float16], cleaned:[Float16]?=nil, w:Int=128,h:Int=64, seed:UInt32=7,
-                     settings:ArtifactFilterSettings) throws -> [Float16] {
+    private func run(_ pixels:[Half], cleaned:[Half]?=nil, w:Int=128,h:Int=64, seed:UInt32=7,
+                     settings:ArtifactFilterSettings) throws -> [Half] {
         let gpu=try #require(MTLCreateSystemDefaultDevice()),queue=try #require(gpu.makeCommandQueue())
         let a=try texture(gpu,w,h,pixels),b=try texture(gpu,w,h,cleaned ?? pixels),read=try texture(gpu,w,h,pixels)
         let pipes=try ArtifactFilterPipelines(device:gpu),r=PerceptualGrainRenderer(device:gpu)
@@ -81,7 +81,7 @@ import CoreImage
         var result=pixels;result.withUnsafeMutableBytes { read.getBytes($0.baseAddress!,bytesPerRow:w*8,from:MTLRegionMake2D(0,0,w,h),mipmapLevel:0) };return result
     }
     @Test func flatGrainIsZeroMeanAchromaticAndDeterministic() throws {
-        let a=[Float16](repeating:0.5,count:128*64*4)
+        let a=[Half](repeating:0.5,count:128*64*4)
         var s=ArtifactFilterSettings();s.grain = .fine;s.grainAmount=1;s.grainBase=1
         let b=try run(a,settings:s),same=try run(a,settings:s),other=try run(a,seed:8,settings:s)
         #expect(b==same);#expect(b != other)
@@ -96,26 +96,26 @@ import CoreImage
     @Test func preservedLumaAndColorTextureRejectGrain() throws {
         var s=ArtifactFilterSettings();s.grain = .soft;s.grainAmount=1;s.grainBase=1
         for color in [false,true] {
-            var a=[Float16]()
+            var a=[Half]()
             for y in 0..<64 {for x in 0..<128 {
                 let v:Float=(x+y)%2==0 ? 0.08:-0.08
-                a += color ? [Float16(0.5+v),Float16(0.5-v*0.2289746/0.6917385),0.5,1] : [Float16(0.5+v),Float16(0.5+v),Float16(0.5+v),1]
+                a += color ? [Half(0.5+v),Half(0.5-v*0.2289746/0.6917385),0.5,1] : [Half(0.5+v),Half(0.5+v),Half(0.5+v),1]
             }}
             #expect(try run(a,settings:s)==a)
         }
     }
     @Test func removedWeakTextureGetsMoreGrainThanInitiallyFlat() throws {
-        let flat=[Float16](repeating:0.5,count:128*64*4);var rough=flat
-        for y in 0..<64 {for x in 0..<128 {for c in 0..<3 {rough[(y*128+x)*4+c]=Float16(0.5+((x+y)%2==0 ? 0.004:-0.004))}}}
+        let flat=[Half](repeating:0.5,count:128*64*4);var rough=flat
+        for y in 0..<64 {for x in 0..<128 {for c in 0..<3 {rough[(y*128+x)*4+c]=Half(0.5+((x+y)%2==0 ? 0.004:-0.004))}}}
         var s=ArtifactFilterSettings();s.grain = .fine;s.grainAmount=1;s.grainBase=0.2
         let a=try run(flat,settings:s),b=try run(rough,cleaned:flat,settings:s)
-        func energy(_ p:[Float16])->Double {stride(from:0,to:p.count,by:4).reduce(0){$0+pow(Double(Float(p[$1])-0.5),2)}}
+        func energy(_ p:[Half])->Double {stride(from:0,to:p.count,by:4).reduce(0){$0+pow(Double(Float(p[$1])-0.5),2)}}
         #expect(energy(b)>energy(a)*2)
     }
     @Test func textureAtEverySourcePixelPhaseIsProtected() throws {
         var s=ArtifactFilterSettings();s.grain = .fine;s.grainAmount=1;s.grainBase=1
         for phase in 0..<4 {
-            var a=[Float16](repeating:0.5,count:128*64*4)
+            var a=[Half](repeating:0.5,count:128*64*4)
             for y in 0..<64 {for x in 0..<128 where x%2==phase%2 && y%2==phase/2 {
                 for c in 0..<3 {a[(y*128+x)*4+c]=0.58}
             }}
@@ -134,10 +134,10 @@ import CoreImage
         let ci=CIContext(mtlDevice:gpu,options:[.cacheIntermediates:false]),color=CGColorSpace(name:CGColorSpace.displayP3)!
         let source=CIImage(color:CIColor(red:0.5,green:0.5,blue:0.5,colorSpace:color)!).cropped(to:CGRect(x:0,y:0,width:64,height:32))
         let scaler=DisplayScaler(device:gpu,context:ci),pipes=try ArtifactFilterPipelines(device:gpu)
-        func render(_ s:ArtifactFilterSettings,_ seed:UInt32=11,_ hdr:Bool=false,_ sharp:Double=0)->[Float16] {
+        func render(_ s:ArtifactFilterSettings,_ seed:UInt32=11,_ hdr:Bool=false,_ sharp:Double=0)->[Half] {
             let cb=q.makeCommandBuffer()!,im=scaler.scaled(source,to:CGSize(width:128,height:64),mode:mode,sharpen:sharp,hdr:hdr,artifactSettings:s,artifactPipelines:pipes,grainSeed:seed,commandBuffer:cb)
             cb.commit();cb.waitUntilCompleted();#expect(cb.status == .completed)
-            var a=[Float16](repeating:0,count:128*64*4);a.withUnsafeMutableBytes{ci.render(im,toBitmap:$0.baseAddress!,rowBytes:128*8,bounds:CGRect(x:0,y:0,width:128,height:64),format:.RGBAh,colorSpace:color)};return a
+            var a=[Half](repeating:0,count:128*64*4);a.withUnsafeMutableBytes{ci.render(im,toBitmap:$0.baseAddress!,rowBytes:128*8,bounds:CGRect(x:0,y:0,width:128,height:64),format:.RGBAh,colorSpace:color)};return a
         }
         var s=ArtifactFilterSettings();s.grain = try #require(ArtifactFilterSettings.Grain(rawValue:grainMode));s.grainAmount=grainMode == "fine" ? 1:6;s.grainBase=1
         for sharp in [0.0,0.5] {
@@ -171,12 +171,12 @@ import CoreImage
     func fusedMatchesSeparateAndRetainsFallbacks(ar:ArtifactFilterSettings.Antiring, grainMode:String) throws {
         let gpu=try #require(MTLCreateSystemDefaultDevice()),q=try #require(gpu.makeCommandQueue())
         let ci=CIContext(mtlDevice:gpu,options:[.cacheIntermediates:false]),color=CGColorSpace(name:CGColorSpace.displayP3)!
-        var a=[Float16]()
+        var a=[Half]()
         for y in 0..<32 {for x in 0..<64 {
             let v:Float=(x<32 ? 0.25:0.65)+Float((x+y)%3)*0.004
-            a += [Float16(v),Float16(v+0.02),Float16(v-0.01),1]
+            a += [Half(v),Half(v+0.02),Half(v-0.01),1]
         }}
-        let original=try texture(gpu,64,32,a),clean=try texture(gpu,64,32,a),scaled=try texture(gpu,128,64,[Float16](repeating:0,count:128*64*4))
+        let original=try texture(gpu,64,32,a),clean=try texture(gpu,64,32,a),scaled=try texture(gpu,128,64,[Half](repeating:0,count:128*64*4))
         let source=try #require(CIImage(mtlTexture:original,options:[.colorSpace:color])),pipes=try ArtifactFilterPipelines(device:gpu)
         var s=ArtifactFilterSettings();s.antiring=ar;s.grain = try #require(ArtifactFilterSettings.Grain(rawValue:grainMode));s.grainAmount=1;s.grainBase=0.4
         var arOnly=s;arOnly.grain = .off
@@ -192,8 +192,8 @@ import CoreImage
         cb.commit();cb.waitUntilCompleted();#expect(cb.status == .completed)
         #expect(actualScaler.grainUsesFusedPass)
         #expect(actualScaler.grainScratchBytes<128*64*8)
-        func read(_ image:CIImage)->[Float16] {
-            var p=[Float16](repeating:0,count:128*64*4)
+        func read(_ image:CIImage)->[Half] {
+            var p=[Half](repeating:0,count:128*64*4)
             p.withUnsafeMutableBytes{ci.render(image,toBitmap:$0.baseAddress!,rowBytes:128*8,bounds:CGRect(x:0,y:0,width:128,height:64),format:.RGBAh,colorSpace:color)};return p
         }
         let expectedPixels=read(try #require(CIImage(mtlTexture:expected,options:[.colorSpace:color]))),actualPixels=read(actual)

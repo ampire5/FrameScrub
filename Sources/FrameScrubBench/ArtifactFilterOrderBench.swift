@@ -30,12 +30,12 @@ enum ArtifactFilterOrderBench {
             desc.colorTextureFormat = .rgba16Float;desc.outputTextureFormat = .rgba16Float;desc.colorProcessingMode = .perceptual
             guard let fx=desc.makeSpatialScaler(device:gpu) else {fail("MetalFX unsupported")}
             fx.outputTexture=scaled;fx.inputContentWidth=w;fx.inputContentHeight=h
-            func readPixels(_ texture:MTLTexture) throws -> [Float16] {
+            func readPixels(_ texture:MTLTexture) throws -> [Half] {
                 let cb=queue.makeCommandBuffer()!,b=cb.makeBlitCommandEncoder()!
                 b.copy(from:texture,sourceSlice:0,sourceLevel:0,sourceOrigin:.init(),sourceSize:.init(width:ow,height:oh,depth:1),to:read,destinationSlice:0,destinationLevel:0,destinationOrigin:.init())
                 b.endEncoding();cb.commit();cb.waitUntilCompleted()
                 guard cb.status == .completed else {throw cb.error ?? NSError(domain:"GPU",code:1)}
-                var a=[Float16](repeating:0,count:ow*oh*4);read.getBytes(&a,bytesPerRow:ow*8,from:MTLRegionMake2D(0,0,ow,oh),mipmapLevel:0);return a
+                var a=[Half](repeating:0,count:ow*oh*4);read.getBytes(&a,bytesPerRow:ow*8,from:MTLRegionMake2D(0,0,ow,oh),mipmapLevel:0);return a
             }
             fx.colorTexture=truth;let cb=queue.makeCommandBuffer()!;fx.encode(commandBuffer:cb);cb.commit();cb.waitUntilCompleted()
             guard cb.status == .completed else {throw cb.error ?? NSError(domain:"GPU",code:1)}

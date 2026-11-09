@@ -20,10 +20,10 @@ enum ArtifactFilterBench {
                         return device.makeTexture(descriptor: d)!
                     }
                     let upload = tex(w,h,.shared), source = tex(w,h,.private), base = tex(ow,oh,.private)
-                    var pixels = [Float16](repeating: 1, count: w*h*4)
+                    var pixels = [Half](repeating: 1, count: w*h*4)
                     for y in 0..<h { for x in 0..<w {
                         let v = Float((x/8)%64)/128 + (x%320<160 ? 0.1:0.4)
-                        let i = (y*w+x)*4; pixels[i] = Float16(v); pixels[i+1] = Float16(v+Float((x+y)%3)*0.008); pixels[i+2] = Float16(v)
+                        let i = (y*w+x)*4; pixels[i] = Half(v); pixels[i+1] = Half(v+Float((x+y)%3)*0.008); pixels[i+2] = Half(v)
                     } }
                     pixels.withUnsafeBytes { upload.replace(region: MTLRegionMake2D(0,0,w,h), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: w*8) }
                     let cb = queue.makeCommandBuffer()!, blit = cb.makeBlitCommandEncoder()!
@@ -72,7 +72,7 @@ enum ArtifactFilterBench {
             let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.rgba16Float,width:w,height:h,mipmapped:false)
             d.storageMode = .shared;d.usage = [.shaderRead,.shaderWrite]
             let input = device.makeTexture(descriptor:d)!,read=device.makeTexture(descriptor:d)!
-            var pixels=[Float16](),ideal=[Float]()
+            var pixels=[Half](),ideal=[Float]()
             pixels.reserveCapacity(w*h*4);ideal.reserveCapacity(w*h*4)
             for y in 0..<h { for x in 0..<w {
                 let ramp=0.25+0.5*Float(x)/Float(w-1)
@@ -80,7 +80,7 @@ enum ArtifactFilterBench {
                 let texture: Float = y>=h/3 && y<2*h/3 ? ((x+y)%2 == 0 ? 0.004 : -0.004):0
                 let v: Float = y>=2*h/3 ? (x<w/2 ? 0.25:0.75):band
                 let truth: Float = y>=2*h/3 ? v:ramp
-                pixels += [Float16(v+texture),Float16(v-texture),Float16(v+texture),1]
+                pixels += [Half(v+texture),Half(v-texture),Half(v+texture),1]
                 ideal += [truth+texture,truth-texture,truth+texture,1]
             } }
             pixels.withUnsafeBytes { input.replace(region:MTLRegionMake2D(0,0,w,h),mipmapLevel:0,withBytes:$0.baseAddress!,bytesPerRow:w*8) }
@@ -139,12 +139,12 @@ enum ArtifactFilterBench {
                 cb.commit();cb.waitUntilCompleted()
                 if cb.status != .completed {throw cb.error ?? NSError(domain:"GPU",code:1)}
             }
-            func pixels(_ t:MTLTexture)->[Float16] {
-                var a=[Float16](repeating:0,count:w*h*4)
+            func pixels(_ t:MTLTexture)->[Half] {
+                var a=[Half](repeating:0,count:w*h*4)
                 t.getBytes(&a,bytesPerRow:w*8,from:MTLRegionMake2D(0,0,w,h),mipmapLevel:0);return a
             }
             try upload(image,to:input)
-            var truth:[Float16]?
+            var truth:[Half]?
             if arguments.count>2 {
                 guard let clean=CIImage(contentsOf:URL(fileURLWithPath:arguments[2])),clean.extent.size==image.extent.size else {fail("Clean image dimensions must match")}
                 try upload(clean,to:read);truth=pixels(read)

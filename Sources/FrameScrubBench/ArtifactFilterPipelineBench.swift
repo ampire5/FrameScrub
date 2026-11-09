@@ -13,10 +13,10 @@ enum ArtifactFilterPipelineBench {
                 let d=MTLTextureDescriptor.texture2DDescriptor(pixelFormat:.rgba16Float,width:w,height:h,mipmapped:false)
                 d.storageMode = .shared;d.usage = [.shaderRead,.shaderWrite,.renderTarget]
                 let source=gpu.makeTexture(descriptor:d)!
-                var pixels=[Float16](repeating:1,count:w*h*4)
+                var pixels=[Half](repeating:1,count:w*h*4)
                 for y in 0..<h {for x in 0..<w {
                     let v=Float((x/8)%64)/128+(x%320<160 ? 0.1:0.4),i=(y*w+x)*4
-                    pixels[i]=Float16(v);pixels[i+1]=Float16(v+Float((x+y)%3)*0.008);pixels[i+2]=Float16(v)
+                    pixels[i]=Half(v);pixels[i+1]=Half(v+Float((x+y)%3)*0.008);pixels[i+2]=Half(v)
                 }}
                 pixels.withUnsafeBytes {source.replace(region:MTLRegionMake2D(0,0,w,h),mipmapLevel:0,withBytes:$0.baseAddress!,bytesPerRow:w*8)}
                 let image=CIImage(mtlTexture:source,options:[.colorSpace:color])!

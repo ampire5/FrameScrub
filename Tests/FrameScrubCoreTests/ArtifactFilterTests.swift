@@ -91,7 +91,7 @@ import Metal
 }
 
 @Suite(.serialized) struct ArtifactFilterGPUTests {
-    private func processed(_ pixels: [Float16], settings: ArtifactFilterSettings, width: Int = 32, height: Int = 16) throws -> [Float16] {
+    private func processed(_ pixels: [Half], settings: ArtifactFilterSettings, width: Int = 32, height: Int = 16) throws -> [Half] {
         let device = try #require(MTLCreateSystemDefaultDevice()), queue = try #require(device.makeCommandQueue())
         let input = try texture(device, width: width, height: height, pixels: pixels), read = try texture(device, width: width, height: height, pixels: pixels)
         let renderer = ArtifactFilterRenderer(device: device), pipes = try ArtifactFilterPipelines(device: device)
@@ -106,13 +106,13 @@ import Metal
         return result
     }
     @Test func medianCleansChromaPreservesLumaAndSplitKeepsOriginalLeft() throws {
-        var pixels = [Float16]()
+        var pixels = [Half]()
         for _ in 0..<32*16 { pixels += [0.45,0.55,0.5,1] }
         for x in [8,24] { let i = (8*32+x)*4; pixels[i] = 0.7; pixels[i+1] = 0.4; pixels[i+2] = 0.65 }
         var s = ArtifactFilterSettings(); s.chroma = .median; s.chromaStrength = 1
         let out = try processed(pixels, settings: s)
         for i in stride(from: 0, to: pixels.count, by: 4) {
-            func luma(_ a: [Float16]) -> Float { Float(a[i]) * 0.2289746 + Float(a[i+1]) * 0.6917385 + Float(a[i+2]) * 0.0792869 }
+            func luma(_ a: [Half]) -> Float { Float(a[i]) * 0.2289746 + Float(a[i+1]) * 0.6917385 + Float(a[i+2]) * 0.0792869 }
             #expect(abs(luma(pixels)-luma(out)) < 0.001)
         }
         #expect(abs(Float(out[(8*32+24)*4])-Float(pixels[(8*32+24)*4])) > 0.1)
@@ -122,12 +122,12 @@ import Metal
         #expect(split[(8*32+24)*4] == out[(8*32+24)*4])
     }
     @Test func debandProducesIntermediateLevelsAndConstantImagesStayConstant() throws {
-        var pixels = [Float16]()
-        for _ in 0..<16 { for x in 0..<32 { let v: Float16 = x < 16 ? 0.4 : 0.412; pixels += [v,v,v,1] } }
+        var pixels = [Half]()
+        for _ in 0..<16 { for x in 0..<32 { let v: Half = x < 16 ? 0.4 : 0.412; pixels += [v,v,v,1] } }
         var s = ArtifactFilterSettings(); s.deband = .double; s.debandStrength = 1
         let out = try processed(pixels, settings: s)
         #expect(stride(from: 0, to: out.count, by: 4).contains { Float(out[$0]) > 0.401 && Float(out[$0]) < 0.411 })
-        var constant = [Float16]()
+        var constant = [Half]()
         for _ in 0..<32*16 { constant += [0.5,0.5,0.5,1] }
         s.chroma = .wide
         #expect(try processed(constant, settings: s) == constant)
@@ -135,12 +135,12 @@ import Metal
     @Test func adaptiveDebandSmoothsBandsButProtectsFineLumaAndColorTexture() throws {
         var s = ArtifactFilterSettings(); s.deband = .adaptive; s.debandStrength = 1
         s.debandThreshold = 12; s.debandRadius = 8; s.textureProtection = 1
-        var bands = [Float16](), textured = [Float16]()
+        var bands = [Half](), textured = [Half]()
         for y in 0..<16 { for x in 0..<32 {
             let v: Float = x < 16 ? 0.4 : 0.412
-            bands += [Float16(v),Float16(v),Float16(v),1]
+            bands += [Half(v),Half(v),Half(v),1]
             let noise: Float = (x+y)%2 == 0 ? 0.004 : -0.004
-            textured += [Float16(v+noise),Float16(v-noise),Float16(v+noise),1]
+            textured += [Half(v+noise),Half(v-noise),Half(v+noise),1]
         } }
         let clean = try processed(bands,settings:s)
         #expect(stride(from:0,to:clean.count,by:4).contains { Float(clean[$0]) > 0.401 && Float(clean[$0]) < 0.411 })
@@ -153,10 +153,10 @@ import Metal
     }
     @Test func adaptivePreservesPlaneRealEdgesAndConstantsAndIsDeterministic() throws {
         var s = ArtifactFilterSettings(); s.deband = .adaptive; s.debandStrength = 1; s.debandRadius = 4
-        var plane = [Float16](), edges = [Float16](), constant = [Float16]()
+        var plane = [Half](), edges = [Half](), constant = [Half]()
         for y in 0..<16 { for x in 0..<32 {
             let v = Float(0.3)+Float(x)*0.001+Float(y)*0.002
-            plane += [Float16(v),Float16(v+0.1),Float16(v+0.2),0.75]
+            plane += [Half(v),Half(v+0.1),Half(v+0.2),0.75]
             edges += x<16 ? [0.2,0.4,0.5,1] : [0.7,0.3,0.2,1]
             constant += [0.3,0.4,0.5,1]
         } }
@@ -172,9 +172,9 @@ import Metal
     }
     @Test func directionalCleanupSuppressesSmallOscillationsAndPreservesStrongEdges() throws {
         var s = ArtifactFilterSettings();s.antiring = .directional;s.antiringStrength=1
-        var noisy = [Float16](), edge = [Float16]()
+        var noisy = [Half](), edge = [Half]()
         for _ in 0..<16 { for x in 0..<32 {
-            let v: Float16 = x%2 == 0 ? 0.49:0.51
+            let v: Half = x%2 == 0 ? 0.49:0.51
             noisy += [v,v,v,1];edge += x<16 ? [0.2,0.2,0.2,1]:[0.8,0.8,0.8,1]
         } }
         let out = try processed(noisy,settings:s)
@@ -183,8 +183,8 @@ import Metal
     }
     @Test func adaptiveAndDirectionalHandleTinyConstantInputs() throws {
         for (w,h) in [(1,1),(1,2),(2,1),(3,3)] {
-            let color: [Float16] = [0.3,0.4,0.5,0.75]
-            let pixels: [Float16] = Array(repeating: color, count:w*h).flatMap { $0 }
+            let color: [Half] = [0.3,0.4,0.5,0.75]
+            let pixels: [Half] = Array(repeating: color, count:w*h).flatMap { $0 }
             for directional in [false,true] {
                 var s = ArtifactFilterSettings()
                 if directional { s.antiring = .directional } else { s.deband = .adaptive;s.debandRadius=64 }
@@ -193,7 +193,7 @@ import Metal
         }
     }
     @Test func referenceThresholdsEachChannelAndIterationsActuallyChangeOutput() throws {
-        var pixels=[Float16]()
+        var pixels=[Half]()
         for _ in 0..<16 {for x in 0..<32 {pixels += x<16 ? [0.4,0.2,0.4,0.75]:[0.412,0.8,0.412,0.75]}}
         var s=ArtifactFilterSettings();s.deband = .reference;s.debandStrength=1;s.debandThreshold=9;s.debandRadius=12
         let out=try processed(pixels,settings:s)
@@ -205,8 +205,8 @@ import Metal
         #expect(try processed(pixels,settings:s) != out)
     }
     @Test func windowShrinksNearEdgesAndChangesViewShowsModifiedPixels() throws {
-        var pixels=[Float16]()
-        for _ in 0..<16 {for x in 0..<32 {let v:Float16=x<16 ? (x<8 ? 0.4:0.412):0.8;pixels += [v,v,v,1]}}
+        var pixels=[Half]()
+        for _ in 0..<16 {for x in 0..<32 {let v:Half=x<16 ? (x<8 ? 0.4:0.412):0.8;pixels += [v,v,v,1]}}
         var s=ArtifactFilterSettings();s.deband = .window;s.debandStrength=1;s.debandRadius=24;s.debandThreshold=12
         let out=try processed(pixels,settings:s)
         #expect((1..<15).contains {abs(Float(out[(8*32+$0)*4])-Float(pixels[(8*32+$0)*4])) > 0.001})
@@ -217,12 +217,12 @@ import Metal
         #expect((1..<15).contains {Float(heat[(8*32+$0)*4]) > Float(heat[(8*32+$0)*4+1])+0.1})
     }
     @Test func adaptiveProtectsIsoluminantTextureAndPlanarBorders() throws {
-        var texture=[Float16](),plane=[Float16]()
+        var texture=[Half](),plane=[Half]()
         for y in 0..<16 {for x in 0..<32 {
             let delta:Float=(x+y)%2==0 ? 0.006:-0.006
-            texture += [Float16(0.5+delta),Float16(0.5-delta*0.2289746/0.6917385),0.5,1]
+            texture += [Half(0.5+delta),Half(0.5-delta*0.2289746/0.6917385),0.5,1]
             let v=Float(0.3)+Float(x)*0.001+Float(y)*0.002
-            plane += [Float16(v),Float16(v+0.1),Float16(v+0.2),0.75]
+            plane += [Half(v),Half(v+0.1),Half(v+0.2),0.75]
         }}
         for mode in [ArtifactFilterSettings.Deband.adaptive,.window] {
             var s=ArtifactFilterSettings();s.deband=mode;s.debandStrength=1;s.debandRadius=8
@@ -231,7 +231,7 @@ import Metal
             #expect(zip(g,plane).allSatisfy {abs(Float($0)-Float($1)) < 0.001})
         }
     }
-    private func texture(_ device: MTLDevice, width: Int = 32, height: Int = 16, pixels: [Float16]) throws -> MTLTexture {
+    private func texture(_ device: MTLDevice, width: Int = 32, height: Int = 16, pixels: [Half]) throws -> MTLTexture {
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: width, height: height, mipmapped: false)
         d.storageMode = .shared; d.usage = [.shaderRead, .shaderWrite]
         let t = try #require(device.makeTexture(descriptor: d))
@@ -242,9 +242,9 @@ import Metal
         guard let device = MTLCreateSystemDefaultDevice() else { return }
         let queue = try #require(device.makeCommandQueue())
         let pipes = try ArtifactFilterPipelines(device: device)
-        var source = [Float16](), exaggerated = [Float16]()
+        var source = [Half](), exaggerated = [Half]()
         for _ in 0..<16 { for x in 0..<32 {
-            let s: Float16 = x < 16 ? 0.2 : 0.8, v: Float16 = x < 16 ? 0.15 : 0.85
+            let s: Half = x < 16 ? 0.2 : 0.8, v: Half = x < 16 ? 0.15 : 0.85
             source += [s,s,s,1]; exaggerated += [v,v,v,1]
         } }
         let src = try texture(device, pixels: source), input = try texture(device, pixels: exaggerated)
@@ -257,7 +257,7 @@ import Metal
         blit.copy(from: out, sourceSlice: 0, sourceLevel: 0, sourceOrigin: .init(), sourceSize: .init(width: 32, height: 16, depth: 1), to: read, destinationSlice: 0, destinationLevel: 0, destinationOrigin: .init())
         blit.endEncoding(); cb.commit(); cb.waitUntilCompleted()
         #expect(cb.status == .completed)
-        var values = [Float16](repeating: 0, count: 32*16*4)
+        var values = [Half](repeating: 0, count: 32*16*4)
         read.getBytes(&values, bytesPerRow: 32*8, from: MTLRegionMake2D(0,0,32,16), mipmapLevel: 0)
         #expect(Float(values[0]) >= 0.191)
         #expect(Float(values[(31)*4]) <= 0.809)
