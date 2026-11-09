@@ -88,6 +88,8 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
 - H.264 and HEVC (incl. 10-bit HDR) on its own VideoToolbox pipeline; AV1 through FFmpeg, in hardware on M3 and later and with libdav1d otherwise; everything else through FFmpeg too. MP4, MOV, MKV, WebM, TS and more.
 
+<p align="center"><img src="docs/images/filmstrip.webp" alt="Current filmstrip layout with playback controls, time lens, and synthetic test thumbnails"></p>
+
 <p align="center"><img src="docs/images/lens.webp" width="70%" alt="Seek-bar preview with the keyframe lens: keyframes as ticks, K −1.50 s / +0.25 s"></p>
 
 **Picture**
@@ -95,6 +97,8 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - **Display cleanup and grain:** debanding, luma-guided chroma cleanup, edge cleanup, and optional SDR grain. Debanding and chroma cleanup run before scaling, and grain runs after scaling and sharpening. Each effect starts off. Press `N` to bypass or restore the filter chain and `⌥N` to open its controls. Split and changed-pixel views show what the filters affect.
 - Per-scene auto colour and vibrance, remembered per file and per folder.
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
+
+<p align="center"><img src="docs/images/settings-display.webp" width="72%" alt="Display settings showing low-latency super resolution, frame interpolation and temporal noise reduction"></p>
 
 **Saving**
 - `s` saves the frame; `⇧S` exports an A-B range — every frame, every N-th, N per second, or only the sharpest of every N. The export can skip blurred stretches and frames too like the last one it saved.
