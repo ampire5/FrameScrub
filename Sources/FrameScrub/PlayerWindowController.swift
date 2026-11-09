@@ -133,6 +133,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var catalogOpen: Task<Void, Never>?
     private var virtualCutBenchBoundary: Double?
     private var isVirtualCutBench = false
+    private var cutBenchRequest = 0
+    private var cutBenchPresented = 0
+    private var cutBenchStarted = 0.0
+    private var cutBenchOpenStarts = 0
+    private var cutBenchSuperseded = 0
+    private var cutBenchWarmStarts = 0
+    private var cutBenchWarmReused = 0
 
     private var seekBarHeight: NSLayoutConstraint!
     private var filmstripLoader: FilmstripPreviewLoader?
@@ -360,6 +367,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                           warmed: PreparedOpen? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         guard !isTerminating else { warmed?.discard(); done?(.superseded); return }
         if virtualSource == nil { leaveVirtualCut() }
+        else if isVirtualCutBench { cutBenchOpenStarts += 1 }
         StartupTrace.beginOpen(url.lastPathComponent)
         MetadataInspectionQueue.shared.cancel()
         abandonOpening()
@@ -419,6 +427,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 }
             }
             guard let self, open == fileOpens else {
+                if virtualSource != nil, self?.isVirtualCutBench == true { self?.cutBenchSuperseded += 1 }
                 try? result.get().discard()
                 done?(.superseded)
                 return
@@ -4134,6 +4143,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             default: break
             }
         }
+        if isVirtualCutBench, cutBenchRequest > cutBenchPresented, frame.number == core.position,
+           let cut = virtualCut, cut.playback.pending == nil, let span = cut.playback.activeSpan {
+            let request = cutBenchRequest, start = cutBenchStarted
+            videoView.onBenchPresented = { [weak self] time in
+                guard let self, cutBenchRequest == request, cutBenchPresented < request else { return }
+                cutBenchPresented = request
+                let stats = core.readCache?.stats
+                print("virtual-cut: picture request=\(request) span=\(span) ms=\((time - start) * 1000) bytes=\(stats?.bytesFromFile ?? 0) hits=\(stats?.hits ?? 0)/\(stats?.requests ?? 0)")
+            }
+        }
         videoView.show(frame, playing: !core.isPaused)
         if !diagnosticSweepStarted, ProcessInfo.processInfo.environment["FRAMESCRUB_DIAGNOSTIC_SWEEP"] == "1" {
             diagnosticSweepStarted = true
@@ -4443,6 +4462,11 @@ extension PlayerWindowController {
     }
 
     private func moveVirtualCut(_ session: VirtualCutSession, _ request: VirtualCutPlayback.Request) {
+        if isVirtualCutBench {
+            cutBenchRequest += 1
+            cutBenchStarted = CACurrentMediaTime()
+            videoView.onBenchPresented = nil
+        }
         let span = session.playback.timeline.spans[request.location.spanIndex]
         if session.openingSource == span.source { updateSeekBar(); return } // the in-flight open uses the latest target
         if session.openingSource != nil {
@@ -4486,6 +4510,7 @@ extension PlayerWindowController {
         if let warm = session.warm, warm.source == span.source, let prepared = warm.prepared,
            let url = warm.url, let origin = warm.origin {
             session.warm = nil
+            if isVirtualCutBench { cutBenchWarmReused += 1 }
             open(url, origin, prepared)
             return
         }
@@ -4685,6 +4710,7 @@ extension PlayerWindowController {
         let prepare: (URL, FileOrigin) -> Void = { [weak self, weak session, weak warm] url, origin in
             guard let self, let session, let warm, virtualCut === session, session.warm === warm,
                   !showsHome, core.allowsBackgroundPreview else { return }
+            if isVirtualCutBench { cutBenchWarmStarts += 1 }
             let read = core.preparation(for: url, cancellation: warm.cancellation, expectedVersion: source.version)
             Task { [weak self, weak session, weak warm] in
                 let prepared: PreparedOpen? = await withCheckedContinuation { continuation in
@@ -4742,6 +4768,37 @@ extension PlayerWindowController {
             guard await wait({ !pluginCatalogs.isEmpty }), let catalog = pluginCatalogs.values.first,
                   let browser = home?.browser else { fail("catalog not registered") }
             let location = BrowserLocation.source(catalog.locationID)
+            if ProcessInfo.processInfo.environment["FRAMESCRUB_CUT_CACHE_BENCH"] == "catalog" {
+                browser.show(location, selecting: nil)
+                guard await wait({ (catalog.lastListing?.entries.count ?? 0) >= 100 }),
+                      let entries = catalog.lastListing?.entries else { fail("catalog needs 100 cards") }
+                hideHome()
+                catalog.stop()
+                let ids = entries.map(\.id)
+                for offset in [0, 32, 64] {
+                    // End the previous batch's subscription while preserving the cached images.
+                    catalog.stop()
+                    let batch = Array(ids.dropFirst(offset).prefix(32))
+                    var delivered = Set<String>()
+                    let start = ProcessInfo.processInfo.systemUptime
+                    catalog.want(batch) { id, _ in delivered.insert(id) }
+                    let warm = delivered.count
+                    guard await wait({ delivered.count == batch.count }) else {
+                        fail("preview batch \(offset) incomplete (\(delivered.count)/\(batch.count))")
+                    }
+                    print("virtual-cut: previews batch=\(offset) hits=\(warm)/\(batch.count) ms=\((ProcessInfo.processInfo.systemUptime - start) * 1000)")
+                }
+                // Immediate responses are decoded images already in the Mac cache. Do not
+                // let a refill alter the cache between the two probes.
+                for offset in [0, 64] {
+                    catalog.stop()
+                    var warm = Set<String>()
+                    catalog.want(Array(ids.dropFirst(offset).prefix(32))) { id, _ in warm.insert(id) }
+                    catalog.stop()
+                    print("virtual-cut: revisit previews batch=\(offset) immediate hits=\(warm.count)/32")
+                }
+                exit(0)
+            }
             for round in 1...3 {
                 browser.show(.source(HomeRecent.source), selecting: nil)
                 let cpu = StartupTrace.threadCPU()
@@ -4754,12 +4811,16 @@ extension PlayerWindowController {
                     fail("card not listed")
                 }
             }
+            let measureCache = ProcessInfo.processInfo.environment["FRAMESCRUB_CUT_CACHE_BENCH"] == "playback"
             let began = ProcessInfo.processInfo.systemUptime
             chooseCatalogCut(catalog, id: card, edit: false)
             guard await wait({ virtualCut?.playback.activeSpan == 0 || virtualCut?.playback.failure != nil }),
                   let cut = virtualCut, cut.playback.failure == nil else { fail("first source did not open") }
             print("virtual-cut: first source wall \((ProcessInfo.processInfo.systemUptime - began) * 1_000) ms")
             guard cut.playback.timeline.spans.count > 1 else { fail("benchmark needs multiple spans") }
+            if measureCache {
+                guard await wait({ cutBenchPresented >= 1 }) else { fail("first source not presented") }
+            }
             let crossing = ProcessInfo.processInfo.systemUptime
             guard await wait({ cut.playback.activeSpan == 1 || cut.playback.failure != nil }),
                   cut.playback.failure == nil else { fail("playback did not cross the join") }
@@ -4767,11 +4828,33 @@ extension PlayerWindowController {
             if let boundary = virtualCutBenchBoundary {
                 print("virtual-cut: boundary to source ready \((ProcessInfo.processInfo.systemUptime - boundary) * 1_000) ms")
             }
+            if measureCache {
+                guard await wait({ cutBenchPresented == cutBenchRequest }) else { fail("join was not presented") }
+            }
             cut.playback.wantsPlayback = false
             core.pause()
             _ = seekVirtualCut(to: 0.25)
             guard await wait({ cut.playback.activeSpan == 0 && cut.playback.pending == nil }),
                   cut.playback.failure == nil else { fail("seek back across join failed") }
+            if measureCache {
+                let join = cut.playback.timeline.spans[1].cutStart
+                guard await wait({ cutBenchPresented == cutBenchRequest }) else { fail("A return was not presented") }
+                for time in [join + 0.2, 0.25, join + 0.3, 0.35] {
+                    _ = seekVirtualCut(to: time)
+                    let request = cutBenchRequest
+                    guard await wait({ cutBenchPresented == request || cut.playback.failure != nil }),
+                          cut.playback.failure == nil else { fail("settled seek was not presented") }
+                }
+                let beforeBurst = cutBenchOpenStarts
+                for n in 0..<20 {
+                    _ = seekVirtualCut(to: (n.isMultiple(of: 2) ? join : 0) + 0.4)
+                    try? await Task.sleep(for: .milliseconds(12))
+                }
+                let request = cutBenchRequest
+                guard await wait({ cutBenchPresented == request || cut.playback.failure != nil }),
+                      cut.playback.activeSpan == 0, cut.playback.failure == nil else { fail("latest rapid seek did not win") }
+                print("virtual-cut: 20 rapid seeks settled, burst opens=\(cutBenchOpenStarts - beforeBurst), total opens=\(cutBenchOpenStarts), superseded opens=\(cutBenchSuperseded), warm reused=\(cutBenchWarmReused)/\(cutBenchWarmStarts)")
+            }
             showHome()
             guard browser.location == location else { fail("did not return to File View catalog") }
             print("virtual-cut: passed")

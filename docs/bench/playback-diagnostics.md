@@ -58,3 +58,37 @@ For bounded scrub-and-stop experiments, `FRAMESCRUB_FOCUS=none` with
 `FRAMESCRUB_FOCUS_SCRUB=4,60` runs the existing wheel-like scrub bench without a subject effect.
 `FRAMESCRUB_FOCUS_SCRUB_SECONDS=5` stops it after five seconds (validated 1–60, default 60),
 allowing the final paused-frame effect to settle before the diagnostic launch exits.
+
+## 4K source over SMB and audio clock
+
+2026-11-09, MacBook Pro M4 Max, PC adapter negotiated at 2.5 Gb/s.
+Two 18-second generated 3840×2160 files, with AAC audio, played directly
+from the Windows SMB share. The measured drawable was 1920×1080 and
+display presentation intervals showed 60 Hz cadence. Effects were off.
+Bit rates below are measured video rates.
+
+| Source | Configuration | Presented frames/s | P95 interval |
+|---|---|---:|---:|
+| H.264 25 fps, 12.18 Mb/s | SMB, audio | 24.89 | 50.00 ms |
+| HEVC 10-bit 60 fps, 32.27 Mb/s | SMB, audio, before clock fix | 51.07 | 33.33 ms |
+| Same HEVC source | Local copy with audio, before fix, sampled | 38.61 | 33.33 ms |
+| Same HEVC video track | Local, audio removed, before fix | 59.18 | 16.67 ms |
+| HEVC 10-bit 60 fps, 32.27 Mb/s | SMB, audio, after clock fix, two debug runs | 58.57–58.78 | 16.67 ms |
+| Same HEVC source | SMB, audio, release build | 58.68 | 16.67 ms |
+| Separate copy on the PC, first open on the Mac | SMB, audio, release build | 59.08 | 16.67 ms |
+
+On an instrumented run before the fix the display callbacks averaged
+16.66 ms. The media clock stepped 21.33 ms on 335 of 590 ticks, while
+the video target was already cached. Audio render timestamps led host
+time by a median of 11.72 ms. Projecting those samples back to the
+current host time removed the buffer-sized jumps. The two corrected
+runs still had five and nine source frame gaps over about ten seconds
+each. The two release runs had six and four source frame gaps. Hardware
+decode P95 was 5.86 ms in the original SMB 60 fps run. The first-open
+run used a newly copied file on the share. No global OS cache was flushed.
+
+A real virtual cut then played from the 25 fps file into the 60 fps
+file, presented the first frame of the new source in 81 ms, and
+accepted twenty rapid seeks across the join. The run does not measure
+4K output, effects, sustained playback on Intel, or simultaneous
+analysis and playback load.

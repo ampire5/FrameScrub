@@ -168,3 +168,11 @@ import Testing
         #expect(output.isEngineRunning)
     }
 }
+
+@Test func futureRenderSamplesProjectToTheSameAudibleTime() {
+    let older = AudioOutput.projectedSeconds(sample: 1.012, age: -0.012, rate: 1)
+    let newer = AudioOutput.projectedSeconds(sample: 1.033333, age: -0.033333, rate: 1)
+    #expect(abs(older - 1) < 1e-9)
+    #expect(abs(newer - older) < 1e-9)
+    #expect(AudioOutput.projectedSeconds(sample: 0.002, age: -0.012, rate: 2) == 0)
+}

@@ -29,6 +29,7 @@ final class VideoView: NSView {
     var onTick: (() -> Void)?
     /// Called once, after the next picture is sent to the screen (then cleared).
     var onNextPicture: (() -> Void)?
+    var onBenchPresented: (@MainActor @Sendable (Double) -> Void)?
     var onDisplayRatioChange: (() -> Void)?
     private(set) var displayRatio = 1.0
 
@@ -637,6 +638,13 @@ final class VideoView: NSView {
                     PlaybackDiagnostics.shared.record("output_patch_changed", result == self.lastOutputProbeHash ? 0 : 1, group: group)
                     self.lastOutputProbeHash = result
                 }
+            }
+        }
+        if let callback = onBenchPresented {
+            onBenchPresented = nil
+            drawable.addPresentedHandler { drawable in
+                let time = drawable.presentedTime
+                if time > 0 { DispatchQueue.main.async { callback(time) } }
             }
         }
         commandBuffer.present(drawable)

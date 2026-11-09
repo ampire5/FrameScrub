@@ -718,6 +718,8 @@ public final class PlayerCore {
     }
 
     /// Advances playback to the clock; call on every display refresh.
+    private var diagnosticLastTick: (host: Double, media: Double)?
+
     public func tick() {
         checkPendingScreenshot()
         // Before the starting frame is on screen the clock stands still: following it would move off the start. The frame
@@ -726,8 +728,22 @@ public final class PlayerCore {
             if let frame = cache.frame(position), frame.number != displayedFrame { display(frame) }
             else if displayedFrame == position || cache.isUndecodable(position) { restartClock() }
         }
-        guard !isPaused, !clockWaitsForPicture, let index else { return }
+        guard !isPaused, !clockWaitsForPicture, let index else {
+            diagnosticLastTick = nil
+            return
+        }
         let seconds = clock.seconds
+        if PlaybackDiagnostics.enabled {
+            let host = CACurrentMediaTime(), report = PlaybackDiagnostics.shared
+            if let previous = diagnosticLastTick {
+                report.record("host_interval_ms", (host - previous.host) * 1000, group: "playback.tick")
+                report.record("clock_step_ms", max(0, seconds - previous.media) * 1000, group: "playback.tick")
+                if seconds < previous.media {
+                    report.record("clock_went_backward_ms", (previous.media - seconds) * 1000, group: "playback.tick")
+                }
+            }
+            diagnosticLastTick = (host, seconds)
+        }
         let n = index.frameNumber(forSeconds: max(seconds, 0))
         let last = index.frameCount - 1
         let atEnd = direction > 0 && n >= last && seconds >= index.seconds(forFrame: last) + 1 / (info?.frameRate ?? 30)
@@ -789,6 +805,9 @@ public final class PlayerCore {
         filler?.setFocus(n, mode: direction < 0 ? .reversing : .playing, direction: direction)
         // Skipping frames (spec §3): the decoded frame nearest the clock between it and the one on screen, within two
         // seconds of the clock — further back is another place (a seek), not a skipped stretch.
+        if PlaybackDiagnostics.enabled, cache.frame(n) == nil {
+            PlaybackDiagnostics.shared.record("frame_cache_miss", 1, group: "playback.tick")
+        }
         let reach = Int(2 * speed * (info?.frameRate ?? 30)) + 1
         let passed = displayedFrame.flatMap { shown -> ClosedRange<Int>? in
             direction < 0 ? (shown > n ? n...min(shown - 1, n + reach) : nil)

@@ -107,7 +107,7 @@ public final class AudioOutput: @unchecked Sendable {
                 // The time heard so far stays; from here on it runs at the new rate.
                 if let heard = s.heardSeconds {
                     let now = CACurrentMediaTime()
-                    s.heardSeconds = heard + min(max(now - s.heardAtHost, 0), Self.carryLimit) * Double(s.rate)
+                    s.heardSeconds = Self.projectedSeconds(sample: heard, age: now - s.heardAtHost, rate: Double(s.rate))
                     s.heardAtHost = now
                 }
                 s.rate = value
@@ -130,8 +130,18 @@ public final class AudioOutput: @unchecked Sendable {
     public var currentSeconds: Double? {
         let s = state.withLock { $0 }
         guard let heard = s.heardSeconds else { return nil }
-        let carried = min(max(CACurrentMediaTime() - s.heardAtHost, 0), Self.carryLimit) * Double(s.rate)
-        return s.startSeconds + heard + carried
+        let age = CACurrentMediaTime() - s.heardAtHost
+        if PlaybackDiagnostics.enabled, age < 0 {
+            PlaybackDiagnostics.shared.record("sample_lead_ms", -age * 1000, group: "playback.audio")
+        }
+        return s.startSeconds + Self.projectedSeconds(sample: heard, age: age, rate: Double(s.rate))
+    }
+
+    /// The render callback can timestamp samples ahead of the current host time. Interpolate back from
+    /// those samples too, so publishing a new render buffer does not jump the video clock forward.
+    static func projectedSeconds(sample: Double, age: Double, rate: Double) -> Double {
+        let boundedAge = min(max(age, -carryLimit), carryLimit)
+        return max(0, sample + boundedAge * rate)
     }
 
     /// Asked to play and not heard yet: the feed is still seeking and decoding its first piece, or the output has
