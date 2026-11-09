@@ -39,12 +39,16 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   PlayerCore checks session/current position and emits a state change even without a displayable frame.
   Hidden/interaction gating and display/state callbacks defer/resume work without polling. Stop suppresses
   queued delivery/completion; old providers can only populate their old per-file pool.
-  Before reveal, a separate bounded prewarm snapshot contains only candidates currently reusable from that pool
-  or playback cache. `readyOnly` requests prohibit fallback to decoding if the source is evicted. Visible requests
-  take priority on the same worker. Exact-index/configuration readiness and display of a missing sample frame
-  trigger planning; all-intra playback does not replan every frame. Folded delivery caches without invalidation.
-  The prewarm gate also excludes active hover preview, export, interactions, Home and occlusion. Unavailable
-  candidates are not retained/retried on playback ticks; no new reader, full-file scan or timer is introduced.
+  The folded strip reveals as soon as the pointer enters its future height. A bounded preparation snapshot runs on
+  the same worker and yields to visible requests. During playback it reuses only the shared pool or playback cache.
+  While paused it can decode misses one at a time. On network volumes a miss taking at least the existing preview
+  settle interval ends speculative reads for that snapshot. A failed speculative read also ends the batch of misses
+  without disabling visible previews. `readyOnly` prohibits fallback if a cached source is evicted. Filmstrip reads
+  skip read-ahead and software fallback uses one codec thread. Index/configuration readiness, paused position
+  changes, folding, live resize completion and visibility restoration trigger planning. During playback a displayed missing
+  sample can trigger planning, with no per-frame replan for all-intra media. Folded delivery caches without
+  invalidation. Active hover preview, export, interactions, Home and occlusion gate preparation. It uses the same
+  reader and introduces no full-file scan or timer.
 - `LowLatencyDisplay` (App) owns display-only Apple LL SR, temporal-only LL interpolation and Temporal Noise Filter.
   For TNF the controller retains at most one previous and two next cached originals with index timestamps; LL FI needs
   one consecutive next frame. `PlayerCore.onDisplayReferencesChange` wakes only the current TNF neighborhood when

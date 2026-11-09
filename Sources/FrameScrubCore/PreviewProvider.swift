@@ -25,6 +25,7 @@ public final class PreviewProvider: @unchecked Sendable {
     private let widthPixels: Int
     private var readThrottle: PreviewReadThrottle
     private let readAhead: Bool
+    private let softwareThreads: Int32
     private let diagnosticGroup: String
     private lazy var renderer = FrameImageRenderer() // worker-only, including Core Image context creation
     private let imagePool: PreviewImagePool
@@ -37,7 +38,13 @@ public final class PreviewProvider: @unchecked Sendable {
     private var decodes = 0
     private var requestedGeneration = 0
     private var deliveredGeneration = 0
-    private struct Request: Sendable { let seconds: Double; let readyOnly: Bool; let generation: Int; let at: Double }
+    private struct Request: Sendable {
+        let seconds: Double
+        let readyOnly: Bool
+        let speculative: Bool
+        let generation: Int
+        let at: Double
+    }
     private var worker: LatestOnlyWorker<Request>!
 
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
@@ -53,17 +60,20 @@ public final class PreviewProvider: @unchecked Sendable {
         self.widthPixels = max(1, widthPixels)
         readThrottle = PreviewReadThrottle(interval: policy.previewSettle)
         readAhead = policy.sideReadAhead
+        // A filmstrip samples one keyframe at a time. Its software fallback stays within the serial utility budget.
+        softwareThreads = qos == .utility || qos == .background ? 1 : 0
         diagnosticGroup = policy.isNetwork ? "preview.network" : "preview.local"
         worker = LatestOnlyWorker<Request>(label: "framescrub.preview", qos: qos) { [weak self] in self?.handle($0) }
     }
 
-    public func request(seconds: Double, readyOnly: Bool = false) {
+    public func request(seconds: Double, readyOnly: Bool = false, speculative: Bool = false) {
         let (generation, current, skip) = lock.withLock { () -> (Int, FrameIndex, Bool) in
             requestedGeneration += 1
             return (requestedGeneration, index, stopped || failed)
         }
         guard !skip else { finishRequest(); return }
-        let request = Request(seconds: seconds, readyOnly: readyOnly, generation: generation, at: PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0)
+        let request = Request(seconds: seconds, readyOnly: readyOnly, speculative: speculative,
+                              generation: generation, at: PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0)
         // Shared ready images bypass a worker waiting on a cold-read deadline or decoding.
         if current.isExact {
             let key = current.pts(forFrame: current.keyframe(atOrBefore: current.frameNumber(forSeconds: seconds)))
@@ -123,7 +133,7 @@ public final class PreviewProvider: @unchecked Sendable {
             }
         }
         // A speculative reuse may lose its source frame to eviction before this worker runs. Never turn it
-        // into a new read/decode; only a visible request may fall back to the decoder.
+        // into a new read/decode.
         guard !request.readyOnly else { return }
         // Limit cold reads without starving a moving pointer; ready-only work never reaches this path.
         let delay = readThrottle.delay(at: ProcessInfo.processInfo.systemUptime)
@@ -138,7 +148,13 @@ public final class PreviewProvider: @unchecked Sendable {
         if decoder == nil {
             let start = PlaybackDiagnostics.now()
             defer { measure("decoder_open_ms", since: start) }
-            do { decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache, readAhead: readAhead), index: current) } catch {
+            do {
+                decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache, readAhead: readAhead),
+                                           index: current, preferHardware: true, allowVideoToolboxBackend: true,
+                                           softwareThreads: softwareThreads)
+            } catch {
+                // A folded filmstrip may hit a temporary read failure before the user asks for previews.
+                guard !request.speculative else { return }
                 lock.withLock { failed = true }
                 DispatchQueue.main.async { [weak self] in
                     guard let self, !self.lock.withLock({ self.stopped }) else { return }

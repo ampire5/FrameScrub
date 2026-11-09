@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2 — 2026-11-09
+
+- Reveal the filmstrip as soon as the pointer enters its area.
+- Prepare thumbnails while paused before the filmstrip opens. On network volumes, adapt preparation to thumbnail delivery time.
+
 ## 0.4.1 — 2026-11-09
 
 - Seek directly in the filmstrip and preview frames on hover. Keep transport controls clear of the timeline input probe.

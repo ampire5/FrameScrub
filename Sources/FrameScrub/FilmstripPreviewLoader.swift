@@ -5,26 +5,33 @@ import CoreGraphics
 /// One utility decoder, at most one screenful waiting; foreground playback always wins the next request.
 @MainActor final class FilmstripPreviewLoader {
     var mayRead: (() -> Bool)?
-    var mayPrewarm: (() -> Bool)?
+    var mayPrewarm: ((_ readyOnly: Bool) -> Bool)?
     var onImage: ((CGImage, Double) -> Void)?
     private let provider: PreviewProvider
     private var pending: [Double] = []
     private var warming: [Double] = []
+    private var warmReadyOnly = true
+    private let networkWarmBudget: TimeInterval?
+    private var coldWarmStartedAt: TimeInterval?
+    private var coldWarmDelivered = false
     private var inFlight = false
     var decodeCount: Int { provider.decodeCount }
 
     init(url: URL, index: FrameIndex, rotation: Int, width: Int, cache: ReadCache?, policy: NetworkPolicy,
          imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil) {
+        networkWarmBudget = policy.isNetwork ? policy.previewSettle : nil
         // SeekBarView already waits once for the whole visible batch. Paying the pointer dwell again
         // for each serial cell adds 250 ms per image on network volumes (see timeline bench).
         var settledPolicy = policy
         settledPolicy.previewSettle = 0
+        settledPolicy.sideReadAhead = false
         provider = PreviewProvider(url: url, index: index, rotationClockwise: rotation, widthPixels: width,
                                    readCache: cache, policy: settledPolicy, qos: .utility,
                                    imagePool: imagePool, frameCache: frameCache)
         provider.onImage = { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                self.coldWarmDelivered = self.coldWarmStartedAt != nil
                 self.pending.removeAll { $0 == result.requestedSeconds }
                 self.warming.removeAll { $0 == result.requestedSeconds }
                 // A playback tick may have moved the visible samples while this one was decoding.
@@ -35,6 +42,14 @@ import CoreGraphics
         provider.onRequestFinished = { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                if let start = self.coldWarmStartedAt,
+                   !self.coldWarmDelivered || ProcessInfo.processInfo.systemUptime - start >= (self.networkWarmBudget ?? .infinity) {
+                    // Keep serving cached frames after a failed sample or a slow network request.
+                    self.warmReadyOnly = true
+                    self.warming = self.warming.filter { self.provider.canReuse(seconds: $0) }
+                }
+                self.coldWarmStartedAt = nil
+                self.coldWarmDelivered = false
                 self.inFlight = false
                 self.advance()
             }
@@ -46,9 +61,11 @@ import CoreGraphics
         pending = Array(times.prefix(TimelineFilmLayout.maximumCells))
         advance()
     }
-    /// A bounded snapshot, not a queue of speculative misses to retry on every playback tick.
-    func prewarm(_ times: [Double]) {
-        warming = times.prefix(TimelineFilmLayout.maximumCells).filter { provider.canReuse(seconds: $0) }
+    /// Replace the previous snapshot. While paused, prepare misses one by one as long as reads remain responsive.
+    func prewarm(_ times: [Double], paused: Bool) {
+        warmReadyOnly = !paused
+        let samples = times.prefix(TimelineFilmLayout.maximumCells)
+        warming = warmReadyOnly ? samples.filter { provider.canReuse(seconds: $0) } : Array(samples)
         advance()
     }
     func updateIndex(_ index: FrameIndex) { warming = []; provider.updateIndex(index) }
@@ -58,10 +75,13 @@ import CoreGraphics
     private func advance() {
         guard !inFlight else { return }
         if pending.isEmpty {
-            guard !warming.isEmpty, mayPrewarm?() == true else { return }
-            let seconds = warming.removeFirst()
+            guard !warming.isEmpty, mayPrewarm?(warmReadyOnly) == true else { return }
+            let ready = warming.firstIndex { provider.canReuse(seconds: $0) }
+            let seconds = warming.remove(at: ready ?? warming.startIndex)
+            let readyOnly = warmReadyOnly || ready != nil
+            if !readyOnly { coldWarmStartedAt = ProcessInfo.processInfo.systemUptime }
             inFlight = true
-            provider.request(seconds: seconds, readyOnly: true)
+            provider.request(seconds: seconds, readyOnly: readyOnly, speculative: true)
             return
         }
         guard mayRead?() == true else { return }

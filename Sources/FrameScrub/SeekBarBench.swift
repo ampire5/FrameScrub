@@ -43,7 +43,8 @@ import QuartzCore
         geometryBar.setPlaybackControlsVisible(false)
         geometryBar.updateFilmPointer(NSPoint(x: 450, y: 120))
         precondition(!geometryBar.showsFilmstrip, "Movement over the video must not reveal film")
-        geometryBar.updateFilmPointer(filmPoint)
+        geometryBar.updateFilmPointer(NSPoint(x: 450, y: 47))
+        precondition(geometryBar.showsFilmstrip, "Entering the future film area must reveal it immediately")
         geometryBar.setPlaybackControlsVisible(true)
         precondition(geometryBar.showsFilmstrip && geometryBar.hitTest(filmPoint) === geometryBar &&
                      geometryBar.hitTest(filmMargin) === geometryBar, "The edge opens the film and its hover margin")
@@ -644,15 +645,20 @@ import QuartzCore
         let times = bar.prewarmFilmstripTimes(center: 0)
         precondition(times.count >= 2 && times.count <= TimelineFilmLayout.maximumCells)
         let ready = times[0]
+        let paused = CommandLine.arguments.contains("--paused-prewarm")
+        let network = CommandLine.arguments.contains("--network")
+        let slowNetwork = CommandLine.arguments.contains("--slow-network")
+        var policy: NetworkPolicy = network || slowNetwork ? .network : .local
+        if slowNetwork { policy.previewSettle = .leastNonzeroMagnitude }
         let cache = FrameCache(budgetBytes: 32 * 1024 * 1024)
         let decoder = try! VideoDecoder(source: source, index: index)
         try! decoder.seekToKeyframe(near: index.frameNumber(forSeconds: ready))
         cache.insert(try! decoder.nextFrame()!)
         let loader = FilmstripPreviewLoader(url: url, index: index, rotation: 0, width: 320, cache: nil,
-                                           policy: .local, frameCache: cache)
+                                           policy: policy, frameCache: cache)
         var blocked = true
         loader.mayRead = { !blocked && bar.showsFilmstrip }
-        loader.mayPrewarm = { !blocked && !bar.showsFilmstrip }
+        loader.mayPrewarm = { _ in !blocked && !bar.showsFilmstrip }
         var images: [Double] = []
         let started = ProcessInfo.processInfo.systemUptime
         loader.onImage = { image, seconds in
@@ -664,22 +670,23 @@ import QuartzCore
         }
         bar.onFilmstripRequest = { loader.request($0) }
         func spin(_ seconds: Double) { RunLoop.current.run(until: Date().addingTimeInterval(seconds)) }
-        loader.prewarm(times)
+        loader.prewarm(times, paused: paused)
         spin(0.05)
         precondition(images.isEmpty && loader.decodeCount == 0, "Foreground work must defer preparation")
         blocked = false; loader.resume()
         let warmDeadline = Date().addingTimeInterval(3)
-        while images.isEmpty, Date() < warmDeadline { spin(0.01) }
-        spin(0.15)
-        precondition(images == [ready] && loader.decodeCount == 0 && !bar.showsFilmstrip,
-                     "Only prepared frames may fill hidden film; misses must not decode")
+        let expected = paused ? Array(times.prefix(slowNetwork ? 2 : times.count)) : [ready]
+        while images.count < expected.count, Date() < warmDeadline { spin(0.01) }
+        if expected.count < times.count { spin(0.15) }
+        precondition(images == expected && loader.decodeCount == expected.count - 1 && !bar.showsFilmstrip,
+                     "Preparation should fill paused strips, stop after a slow network sample, and only reuse while playing")
         precondition(!bar.prewarmFilmstripTimes(center: 0).contains(ready), "Prepared picture must enter the view cache")
         bar.setFilmRevealed(true); bar.layoutSubtreeIfNeeded()
         let visibleDeadline = Date().addingTimeInterval(3)
         while images.count < times.count, Date() < visibleDeadline { spin(0.01) }
         precondition(images.count == times.count && images.filter { $0 == ready }.count == 1)
         precondition(loader.decodeCount == times.count - 1, "Reveal must reuse the prepared picture and decode only misses")
-        print("prewarm-check\tpassed: blocked/resume, hidden reuse without decode/redraw, reveal reuses and fills misses")
+        print("prewarm-check\tpassed: \(expected.count)/\(times.count) pictures before reveal, foreground gate and no hidden redraw")
         loader.stop(); window.orderOut(nil)
         for (key, value) in saved {
             if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) }

@@ -70,7 +70,8 @@ import Testing
 
     // MARK: PreviewProvider
 
-    @Test func readyOnlyMissNeverOpensTheDecoderOrPoisonsLaterRequests() async throws {
+    @Test(arguments: [true, false])
+    func foldedMissDoesNotPoisonLaterRequests(readyOnly: Bool) async throws {
         let (_, index) = try openIndexed(Fixtures.h264)
         let provider = PreviewProvider(url: Fixtures.url(Fixtures.noDecoder), index: index,
             rotationClockwise: 0, widthPixels: 160)
@@ -79,7 +80,7 @@ import Testing
         let finished = Locked(false), unavailable = Locked(false)
         provider.onRequestFinished = { finished.mutate { $0 = true } }
         provider.onUnavailable = { unavailable.mutate { $0 = true } }
-        provider.request(seconds: 12, readyOnly: true)
+        provider.request(seconds: 12, readyOnly: readyOnly, speculative: !readyOnly)
         #expect(await eventually { finished.value })
         #expect(images.value.isEmpty && !unavailable.value && provider.decodeCount == 0)
         provider.request(seconds: 12)

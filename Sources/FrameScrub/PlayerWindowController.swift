@@ -125,6 +125,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var seekBarHeight: NSLayoutConstraint!
     private var filmstripLoader: FilmstripPreviewLoader?
     private var filmstripPrewarmFrames = Set<Int>()
+    private var pausedFilmstripPrewarmPosition: Int?
     private let backButton = BackButton()
     private let previewView = PreviewView()
     /// The playlist's view; shown in whichever slot holds the playlist.
@@ -1567,6 +1568,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             seekBarHeight.constant = height
         }
         seekBar.onFilmstripRequest = { [weak self] times in self?.filmstripLoader?.request(times) }
+        seekBar.onFilmstripFold = { [weak self] in self?.prewarmFilmstrip() }
         seekBar.onFilmScrubBegan = { [weak self] in self?.core.pause() }
         seekBar.onFilmSeek = { [weak self] seconds in
             guard let self, let index = core.index else { return }
@@ -2814,6 +2816,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if !force, key == previewKey { return }
         previewKey = nil
         filmstripPrewarmFrames.removeAll()
+        pausedFilmstripPrewarmPosition = nil
         filmstripLoader?.stop()
         filmstripLoader = nil
         seekBar.resetFilmstrip()
@@ -2857,10 +2860,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                   window?.occlusionState.contains(.visible) == true else { return false }
             return core.allowsBackgroundPreview
         }
-        loader.mayPrewarm = { [weak self] in
+        loader.mayPrewarm = { [weak self] readyOnly in
             guard let self else { return false }
-            return seekBar.filmstripEnabled && !seekBar.showsFilmstrip && !seekBar.isInteracting
-                && previewFraction == nil && !showsHome && !core.isExporting
+            return (readyOnly || core.isPaused) && seekBar.filmstripEnabled && !seekBar.showsFilmstrip && !seekBar.isInteracting
+                && previewFraction == nil && !showsHome && !core.isExporting && window?.inLiveResize == false
                 && window?.occlusionState.contains(.visible) == true && core.allowsBackgroundPreview
         }
         loader.onImage = { [weak self] image, seconds in self?.seekBar.setFilmstripImage(image, seconds: seconds) }
@@ -2875,8 +2878,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                uprightSize: uprightVideoSize, geometry: videoView.geometry,
                                previewSettle: core.networkPolicy.previewSettle)
         let times = seekBar.prewarmFilmstripTimes(center: core.currentSeconds)
-        filmstripPrewarmFrames = Set(times.map { index.frameNumber(forSeconds: $0) })
-        loader.prewarm(times)
+        pausedFilmstripPrewarmPosition = core.isPaused ? core.position : nil
+        filmstripPrewarmFrames = core.isPaused ? [] : Set(times.map { index.frameNumber(forSeconds: $0) })
+        loader.prewarm(times, paused: core.isPaused)
     }
 
     /// Sorts and filters the folder's last listing (only `url` until the folder has been read).
@@ -4026,6 +4030,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        if core.isPaused != wasPaused || (core.isPaused && pausedFilmstripPrewarmPosition != core.position) {
+            prewarmFilmstrip()
+        }
         filmstripLoader?.resume()
         videoView.diagnosticPlaybackChanged(playing: !core.isPaused)
         refreshLowLatency()
@@ -4152,7 +4159,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let visible = !isTerminating && !showsHome && failureView.isHidden && window?.isVisible == true
             && window?.isMiniaturized == false && window?.occlusionState.contains(.visible) == true
         core.setViewingVisible(visible)
-        if visible { refreshLowLatency() } else { videoView.lowLatency.clear() }
+        if visible {
+            refreshLowLatency()
+            prewarmFilmstrip()
+            filmstripLoader?.resume()
+        } else { videoView.lowLatency.clear() }
     }
     func windowDidBecomeKey(_ notification: Notification) { updatePrecisionWheel(); updateViewingVisibility() }
     func windowDidChangeOcclusionState(_ notification: Notification) { updateStatsTimer(); seekBar.refreshVisibility(); updateViewingVisibility() }
@@ -4173,7 +4184,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         rememberFrame()
         if window?.inLiveResize != true { updatePrecisionWheel() }   // the video's rect (a live resize: at its end)
     }
-    func windowDidEndLiveResize(_ notification: Notification) { updatePrecisionWheel() }
+    func windowDidEndLiveResize(_ notification: Notification) {
+        updatePrecisionWheel()
+        prewarmFilmstrip()
+    }
 
     /// The stats panel's values use their own field editor (⌘C, ⌘A, plain keys to the player). Asked already while
     /// the window is being built, before the panel exists.

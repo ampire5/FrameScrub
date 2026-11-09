@@ -6,6 +6,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     var onSeek: ((Double) -> Void)?
     var onFilmSeek: ((Double) -> Void)?
     var onFilmstripRequest: (([Double]) -> Void)?
+    var onFilmstripFold: (() -> Void)?
     var onHover: ((Double?) -> Void)?
     var onScroll: ((NSEvent) -> Void)?
     var onEnterExit: (() -> Void)?
@@ -167,7 +168,8 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         guard let pointInWindow else { return false }
         let point = convert(pointInWindow, from: nil)
         guard bounds.minX <= point.x, point.x < bounds.maxX, point.y >= -8 else { return false }
-        let revealTop: CGFloat = playbackVisible ? seekArea.maxY : (showsFilmstrip ? film.maxY + 24 : 16)
+        let controlsTop = playbackVisible ? seekArea.maxY : (showsFilmstrip ? film.maxY + 24 : 16)
+        let revealTop = filmAutoRevealSuppressed ? controlsTop : max(controlsTop, stripHeight)
         if point.y < revealTop { return true }
         guard playbackVisible else { return false }
         return point.y < timeline.maxY || isOverControls(point)
@@ -200,7 +202,9 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         filmRevealed = shown
         if !showsFilmstrip {
             stopFilmTransition()
-            cancelFilmstripRequests(); clearHover()
+            clearHover()
+            onFilmstripFold?()
+            cancelFilmstripRequests()
         }
         onHeightChange?(preferredHeight)
         needsLayout = true; needsDisplay = true

@@ -12,9 +12,9 @@ final class FFmpegBackend: DecoderBackend {
     private let converter = SoftwareFrameConverter()
     private var draining = false
 
-    init(stream: UnsafeMutablePointer<AVStream>, hardware: Bool) throws {
+    init(stream: UnsafeMutablePointer<AVStream>, hardware: Bool, softwareThreads: Int32 = 0) throws {
         frame = av_frame_alloc()!
-        try open(stream: stream, hardware: hardware)   // on failure deinit frees what was allocated
+        try open(stream: stream, hardware: hardware, softwareThreads: softwareThreads)
     }
 
     deinit {
@@ -23,7 +23,7 @@ final class FFmpegBackend: DecoderBackend {
         av_frame_free(&f)
     }
 
-    private func open(stream: UnsafeMutablePointer<AVStream>, hardware: Bool) throws {
+    private func open(stream: UnsafeMutablePointer<AVStream>, hardware: Bool, softwareThreads: Int32) throws {
         avcodec_free_context(&codecContext)
         let parameters = stream.pointee.codecpar!
         let id = parameters.pointee.codec_id
@@ -54,12 +54,13 @@ final class FFmpegBackend: DecoderBackend {
             if av_hwdevice_ctx_create(&device, AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nil, nil, 0) == 0 {
                 context.pointee.hw_device_ctx = device   // the context takes ownership
             } else if id == AV_CODEC_ID_AV1 {
-                return try open(stream: stream, hardware: false)    // native av1 cannot decode in software
+                // The native AV1 decoder is used for VideoToolbox. Switch to dav1d on fallback.
+                return try open(stream: stream, hardware: false, softwareThreads: softwareThreads)
             } else {
                 useHardware = false
             }
         }
-        if !useHardware { context.pointee.thread_count = 0 }
+        if !useHardware { context.pointee.thread_count = softwareThreads }
         try check(avcodec_open2(context, codec, nil), "open decoder")
 
         kind = useHardware ? .ffmpegVideoToolbox : .software

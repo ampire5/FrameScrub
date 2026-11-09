@@ -151,6 +151,33 @@ could pump an unrelated auto-hide timer because that standalone content view has
 FrameScrub --bench-timeline --bench-film-prewarm --fixture "$PWD/Tests/Fixtures/h264_cfr_gop250.mp4"
 ```
 
+## Earlier reveal and paused preparation, 2026-11-09
+
+The actual `SeekBarView` opens synchronously at y=47 pt with a folded 48 pt strip. The same input
+failed before the change. The existing input checks still cover the preview margin, seek routing and
+explicit folding.
+
+On an M4 Max (Mac16,6, 14 physical cores, macOS 27.2), the arm64 debug AppKit bench used the local
+1080p H.264 long-GOP fixture with one cached sample and two misses. The first 50 ms of each prewarm run
+blocked background requests to check that foreground work wins.
+
+| Mode | Pictures ready at reveal | Last hidden delivery from submission |
+|---|---:|---:|
+| Previous implementation, local | 1 / 3 | 74.6 ms |
+| Paused, local | 3 / 3 | 91.9 ms |
+| Paused, network policy with fast local reads | 3 / 3 | 89.4 ms |
+| Paused, network policy with an injected low latency budget | 2 / 3 | 83.2 ms |
+
+One utility request runs at a time, with one codec thread on software fallback and no side read-ahead.
+The network decision measures time to deliver a cold thumbnail, including decode, against the existing
+250 ms settle interval. The slow-path test injects a lower budget to check that after the first over-budget
+sample, the third thumbnail waits for reveal. The test does not measure a live SMB connection or an Intel Mac.
+
+`--timeline-input-only` runs the pointer check. Add `--paused-prewarm` to the command above for the
+local case, then `--network` or `--slow-network` for the two network-policy cases.
+The playback bench's synthetic wheel assertion failed once during a parallel build and passed on a
+standalone rerun. Initial visible playback delivered all three samples in 267–281 ms on that rerun.
+
 ## Higher density limit
 
 The density maximum is now 8× (formerly 4×), with one shared limit for layout, slider restoration, programmatic

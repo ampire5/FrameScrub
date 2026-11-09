@@ -16,6 +16,7 @@ public final class VideoDecoder {
     public var isHardware: Bool { backendKind.isHardware }
     public var codecName: String { backend.codecName }
 
+    private let softwareThreads: Int32
     private let packet: UnsafeMutablePointer<AVPacket>
     private var inputEnded = false
     private var seekTarget: Int?
@@ -42,12 +43,14 @@ public final class VideoDecoder {
     }
 
     /// `allowVideoToolboxBackend: false` keeps H.264/HEVC on FFmpeg (tests, measurements).
-    init(source: MediaSource, index: FrameIndex, preferHardware: Bool, allowVideoToolboxBackend: Bool) throws {
+    init(source: MediaSource, index: FrameIndex, preferHardware: Bool, allowVideoToolboxBackend: Bool,
+         softwareThreads: Int32 = 0) throws {
         self.source = source
         self.index = index
+        self.softwareThreads = softwareThreads
         source.selectStreams(video: true, audio: false)
         backend = try Self.makeBackend(source.videoStream, preferHardware: preferHardware,
-                                       allowVideoToolbox: allowVideoToolboxBackend)
+                                       allowVideoToolbox: allowVideoToolboxBackend, softwareThreads: softwareThreads)
         packet = av_packet_alloc()!
     }
 
@@ -57,13 +60,13 @@ public final class VideoDecoder {
     }
 
     private static func makeBackend(_ stream: UnsafeMutablePointer<AVStream>, preferHardware: Bool,
-                                    allowVideoToolbox: Bool) throws -> DecoderBackend {
+                                    allowVideoToolbox: Bool, softwareThreads: Int32) throws -> DecoderBackend {
         if preferHardware && allowVideoToolbox && VTBackend.supports(stream) {
             // FFmpeg's hwaccel would ask the same hardware: a session VideoToolbox refuses means software.
             if let backend = try? VTBackend(stream: stream) { return backend }
-            return try FFmpegBackend(stream: stream, hardware: false)
+            return try FFmpegBackend(stream: stream, hardware: false, softwareThreads: softwareThreads)
         }
-        return try FFmpegBackend(stream: stream, hardware: preferHardware)
+        return try FFmpegBackend(stream: stream, hardware: preferHardware, softwareThreads: softwareThreads)
     }
 
     // MARK: Public
@@ -223,7 +226,7 @@ public final class VideoDecoder {
     private func handleDecodeError(_ code: Int32) throws {
         consecutiveErrors += 1
         if isHardware && (framesSinceOpen == 0 || consecutiveErrors >= 3) {
-            try replaceBackend(with: FFmpegBackend(stream: source.videoStream, hardware: false))
+            try replaceBackend(with: FFmpegBackend(stream: source.videoStream, hardware: false, softwareThreads: softwareThreads))
             return
         }
         if consecutiveErrors > 100 { throw FFmpegError(code, "decode") }
@@ -236,7 +239,7 @@ public final class VideoDecoder {
             recreatedSession = true
             try replaceBackend(with: fresh)
         } else {
-            try replaceBackend(with: FFmpegBackend(stream: source.videoStream, hardware: false))
+            try replaceBackend(with: FFmpegBackend(stream: source.videoStream, hardware: false, softwareThreads: softwareThreads))
         }
     }
 
