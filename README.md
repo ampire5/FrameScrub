@@ -64,19 +64,21 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 <table>
 <tr>
 <td width="50%"><img src="docs/images/stats.webp" alt="Stats panel"></td>
-<td width="50%"><img src="docs/images/home.webp" alt="Start screen with Recent"></td>
+<td width="50%"><img src="docs/images/lens.webp" alt="Seek preview showing nearby keyframes as ticks and offsets"></td>
 </tr>
 <tr>
 <td><b>Stats panel</b> (<code>i</code>). Container, codec, profile, bit depth, the decoder in use (VideoToolbox, FFmpeg, software), exact frame index, sharpness, scene change, scaler, colour.</td>
-<td><b>Home.</b> Recent videos with where you stopped and how far you got, and your folders with thumbnails; resume positions are remembered per file.</td>
-</tr>
-<tr>
-<td colspan="2"><img src="docs/images/cheatsheet.webp" alt="Keys cheat sheet"></td>
+<td><b>Keyframe lens.</b> See nearby keyframes in a preview and use the scroll wheel to step between them.</td>
 </tr>
 <tr>
 <td colspan="2"><b>Two keyboard layouts and every key in one sheet</b> (<code>?</code>). <i>Classic</i> is mpv-style; <i>left-hand</i> keeps everything under the left hand while the right one is on the mouse. <code>input.conf</code> applies on top of either.</td>
 </tr>
 </table>
+
+**Home and File View**
+- Resume recent videos or browse folders and mounted volumes from the sidebar. Video cards show a poster, duration and viewing progress; the visible folder updates as files are added, renamed or removed, including on SMB shares.
+- Open **File Information…** on a video card for codecs, streams, resolution, colour and tags. **Last Viewed** tracks when you actually saw a frame, independently of where the video will resume.
+- **Settings → Performance → Thumbnail storage** controls the format, quality, size and disk limit for cached thumbnails. Clearing the media cache keeps viewing history, positions, marks, loops and colour settings.
 
 **Playback and scrubbing**
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
@@ -88,13 +90,13 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.
 - H.264 and HEVC (incl. 10-bit HDR) on its own VideoToolbox pipeline; AV1 through FFmpeg, in hardware on M3 and later and with libdav1d otherwise; everything else through FFmpeg too. MP4, MOV, MKV, WebM, TS and more.
 
-<p align="center"><img src="docs/images/filmstrip.webp" alt="Current filmstrip layout with playback controls, time lens, and synthetic test thumbnails"></p>
-
-<p align="center"><img src="docs/images/lens.webp" width="70%" alt="Seek-bar preview with the keyframe lens: keyframes as ticks, K −1.50 s / +0.25 s"></p>
+<p align="center"><img src="docs/images/filmstrip.webp" alt="Current filmstrip with playback controls, time lens and synthetic thumbnails"></p>
 
 **Picture**
 - MetalFX upscaling and HDR tone mapping; optional Apple low-latency super resolution and frame interpolation for supported SDR sources.
+- **Temporal Noise Filter** in Display reduces noise at native resolution on supported sources, including 4K and 10-bit HDR. By default it runs once the frame settles after a pause or scrub. If a result is unavailable, the original frame stays visible. While enabled, this filter takes precedence over frame interpolation.
 - **Display cleanup and grain:** debanding, luma-guided chroma cleanup, edge cleanup, and optional SDR grain. Debanding and chroma cleanup run before scaling, and grain runs after scaling and sharpening. Each effect starts off. Press `N` to bypass or restore the filter chain and `⌥N` to open its controls. Split and changed-pixel views show what the filters affect.
+- **Subject Focus** uses person detection to soften, darken or desaturate the background. Press `h` to toggle, `H` to cycle the looks and `⌥H` to open the panel and tune a custom look.
 - Per-scene auto colour and vibrance, remembered per file and per folder.
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
 
@@ -113,7 +115,7 @@ As far as we know, no other Mac app goes this deep into Logitech hardware, and i
 - **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
 - **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
 - **Two mouse profiles**: Editing is the bindings above, marks and their edges under back and forward. Viewing, the default, is the same but leaves the marks alone: back shows the file's info, forward does nothing (yet). Hold the SmartShift button for 0.6 s to switch (a click is felt then, and the OSD says which); a short press still switches the wheel between free spin and ratchet. FrameScrub takes the button over while it sets the wheel itself (the player in front, `wheel-precision=yes`); elsewhere it is the mouse's own. View → Mouse Buttons for Editing and `cycle-mouse-profile` switch too. Your own lines for a profile go to `input-viewing.conf` or `input-editing.conf` next to `input.conf` (`mouse-profile`).
-- **TourBox Lite**: a ready-made preset in `extras/tourbox`.
+- **TourBox Lite**: a keyboard preset in `extras/tourbox` and an opt-in [event mode](docs/reference.md#tourbox-lite) with linear or accelerated knob scrubbing and separate Viewing and Editing controls.
 
 **Icon**
 - A Liquid Glass horse that follows macOS's light, dark, clear and tinted icon styles. Prefer your own? Put a PNG or `.icns` in `~/.config/framescrub/icons` and set `app-icon` to its name.
@@ -139,6 +141,7 @@ The most useful default (classic) keys. `?` shows every key in effect; **[docs/r
 | `I` `O` / `⌘Z` | Cut mark in / out / undo |
 | `s` / `S` / `⇧⌘C` | Save frame / export the A-B range / save the marks as clips |
 | `<` `>` | Previous / next video in the folder |
+| `h` / `H` / `⌥H` | Toggle Subject Focus / next look / open its controls |
 | `f` / `T` | Full screen / float on top |
 | `i` / `?` | Stats panel / all keys |
 
