@@ -301,14 +301,14 @@ import QuartzCore
                 NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 24), modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
             }
-            bar.mouseDown(with: mouse(.leftMouseDown, 600))
-            bar.mouseDragged(with: mouse(.leftMouseDragged, 602))
-            bar.mouseUp(with: mouse(.leftMouseUp, 602))
+            bar.mouseDown(with: mouse(.leftMouseDown, 560))
+            bar.mouseDragged(with: mouse(.leftMouseDragged, 562))
+            bar.mouseUp(with: mouse(.leftMouseUp, 562))
             precondition(seeks.count == 1 && seeks[0] > 10, "Click jitter must seek to the clicked position without starting a centre drag")
-            bar.mouseMoved(with: mouse(.mouseMoved, 600))
+            bar.mouseMoved(with: mouse(.mouseMoved, 560))
             var trackSeeks: [Double] = []
             bar.onSeek = { trackSeeks.append($0) }
-            let marginPoint = NSPoint(x: 600, y: 60)
+            let marginPoint = NSPoint(x: 560, y: 60)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 let marginEvent = NSEvent.mouseEvent(with: type, location: marginPoint, modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
