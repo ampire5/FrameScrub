@@ -17,10 +17,14 @@ import Testing
     }
 
     @Test func fallsBackToTheFileBitRateWhenTheStreamHasNone() throws {
-        // Matroska stores no per-stream bit rate; the file has only video, so its rate is the video's.
+        // This fixture has no stream bit rate or audio. Its overall rate varies with encoder parallelism.
         let av1 = try format(Fixtures.av1)
-        #expect(av1.videoText == "av1 Main L4.0, yuv420p, ≈6.1 Mbit/s")
-        #expect(av1.containerText.hasPrefix("Matroska / WebM, "))
+        #expect(av1.videoBitRate == 0)
+        #expect(av1.audio == nil)
+        #expect(av1.fileBitRate > 0)
+        let rate = MediaFormat.rate(av1.fileBitRate)
+        #expect(av1.videoText == "av1 Main L4.0, yuv420p, ≈\(rate)")
+        #expect(av1.containerText == "Matroska / WebM, \(rate) overall")
     }
 
     @Test func formatsRates() {

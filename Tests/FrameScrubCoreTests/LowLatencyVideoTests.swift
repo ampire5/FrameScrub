@@ -84,7 +84,10 @@ import VideoToolbox
         #expect(output.status.contains("HDR bypass"))
     }
 
-    @Test(.enabled(if: VTLowLatencySuperResolutionScalerConfiguration.isSupported && VTLowLatencyFrameInterpolationConfiguration.isSupported), arguments: [1, 3]) func realSRAndInterpolationProduceOwnedOutputs(_ count: Int) async throws {
+    @Test(.disabled(if: isVirtualMachine, "Paravirtual VideoToolbox reports support but cannot process these frames"),
+          .enabled(if: VTLowLatencySuperResolutionScalerConfiguration.isSupported && VTLowLatencyFrameInterpolationConfiguration.isSupported),
+          arguments: [1, 3])
+    func realSRAndInterpolationProduceOwnedOutputs(_ count: Int) async throws {
         let processor = LowLatencyVideoProcessor()
         var settings = LowLatencyVideoSettings(); settings.scale = .x2; settings.intermediateFrames = count
         let first = try frame(0, luma: 48), second = try frame(1, luma: 192)

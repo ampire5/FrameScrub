@@ -17,13 +17,15 @@ if [[ $(uname -m) == "$DEPS_ARCH" ]]; then
 fi
 report_build "FrameScrub (build)" swift build --build-tests --triple "$DEPS_TRIPLE"
 helper=$(dirname "$(xcrun --find swift)")/../libexec/swift/pm/swiftpm-testing-helper
-bundle=$(swift build --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScrubPackageTests.xctest/Contents/MacOS/FrameScrubPackageTests
+bin_path=$(swift build --triple "$DEPS_TRIPLE" --show-bin-path)
+bundle=$bin_path/FrameScrubPackageTests.xctest/Contents/MacOS/FrameScrubPackageTests
 if [[ -x "$helper" && -f "$bundle" ]]; then
     # The bundle finds swift-testing where swift test would point it; DYLD_* goes through arch's -e, as /usr/bin/arch
     # drops it from its own environment.
     platform=$(xcrun --show-sdk-platform-path)/Developer
     report_tests FrameScrub arch "-$DEPS_ARCH" -e DYLD_FRAMEWORK_PATH="$platform/Library/Frameworks" \
-        -e DYLD_LIBRARY_PATH="$platform/usr/lib" "$helper" --test-bundle-path "$bundle" --testing-library swift-testing "$@"
+        -e DYLD_LIBRARY_PATH="$platform/usr/lib" -e PACKAGE_RESOURCE_BUNDLE_PATH="$bin_path" \
+        "$helper" --test-bundle-path "$bundle" --testing-library swift-testing "$@"
 else
     report_tests FrameScrub arch "-$DEPS_ARCH" swift test --skip-build --triple "$DEPS_TRIPLE" "$@"
 fi

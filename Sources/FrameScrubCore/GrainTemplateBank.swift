@@ -10,7 +10,12 @@ enum GrainTemplateBank {
 
     static func load(_ name: String, device: MTLDevice) throws -> MTLTexture {
         // Match SwiftPM's app/framework/CLI locations, throwing if packaging is incomplete.
-        let roots = [Bundle.main.resourceURL, Bundle(for: Locator.self).resourceURL, Bundle.main.bundleURL]
+        var roots = [Bundle.main.resourceURL, Bundle(for: Locator.self).resourceURL, Bundle.main.bundleURL]
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["PACKAGE_RESOURCE_BUNDLE_PATH"] {
+            roots.insert(URL(fileURLWithPath: path, isDirectory: true), at: 0)
+        }
+        #endif
         let bundle = roots.compactMap { $0 }.lazy.compactMap {
             Bundle(url: $0.appendingPathComponent("FrameScrub_FrameScrubCore.bundle"))
         }.first
