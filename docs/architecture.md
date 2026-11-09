@@ -37,7 +37,9 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   resolved foreground work (cached or terminally undecodable current frame, also the next frame while playing).
   `CacheFiller.onFocusUnavailable` reports the unresolved-to-undecodable focus transition outside its lock;
   PlayerCore checks session/current position and emits a state change even without a displayable frame.
-  Hidden/interaction gating and display/state callbacks defer/resume work without polling. Stop suppresses
+  Visible drag and scroll scrubs replace the pending thumbnail batch as the playhead moves. The batch dwell
+  keeps its deadline and the loader still waits for foreground readiness. Hidden/interaction gating and
+  display/state callbacks defer/resume work without polling. Stop suppresses
   queued delivery/completion; old providers can only populate their old per-file pool.
   The folded strip reveals as soon as the pointer enters its future height. A bounded preparation snapshot runs on
   the same worker and yields to visible requests. During playback it reuses only the shared pool or playback cache.
@@ -317,4 +319,7 @@ begin resets it immediately. Phase-less scrolling re-arms after a 0.25 s gap. Lo
 before button/folder/pan routing; FrameScrub's `GestureRouter` filters before command routing. Pointer right-drag
 zoom and right-button scrolling keep their first owner until release. Button recognition ignores zero deltas;
 middle-button scrolling must cross a wheel step (12 precise points or one notched unit) before cancelling a click.
+Over the video, optional trackpad scrub momentum keeps only the tail of an owned horizontal scrub. The router
+passes native deltas through the existing frame accumulator and seek path. The momentum distance setting scales
+only the released movement before frame rounding, preserving the system's deceleration.
 State is local to the existing input owners; no polling, new queues or dependencies are introduced.

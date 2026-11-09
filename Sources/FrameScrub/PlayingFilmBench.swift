@@ -18,7 +18,9 @@ import FrameScrubCore
         window.orderFrontRegardless()
         bar.setFilmMode(.lens, save: false)
         bar.setFilmRevealed(true)
-        var config = Config(); config.autoplay = true; config.cacheSizeMiB = 400
+        let checksScrub = CommandLine.arguments.contains("--expect-scrub")
+        var config = Config(); config.autoplay = !checksScrub; config.cacheSizeMiB = 400
+        if checksScrub { config.hwdec = .no }
         let core = PlayerCore(config: config, enableAudio: false)
         let observer = FilmBenchObserver()
         core.delegate = observer
@@ -26,13 +28,12 @@ import FrameScrubCore
         let loader = FilmstripPreviewLoader(url: url, index: core.index!, rotation: 0, width: 320,
             cache: core.readCache, policy: .network, frameCache: core.cache)
         loader.mayRead = {
-            guard bar.showsFilmstrip, !bar.isThumbnailInteraction else { return false }
-            return core.allowsBackgroundPreview
+            bar.allowsVisibleFilmstripRequests && core.allowsBackgroundPreview
         }
         var images: [Double] = []
         let start = ProcessInfo.processInfo.systemUptime
         loader.onImage = { image, seconds in
-            precondition(!core.isPaused, "Fixture must fill while still playing")
+            precondition(checksScrub || !core.isPaused, "Fixture must fill while still playing")
             bar.setFilmstripImage(image, seconds: seconds)
             images.append(seconds)
             print(String(format: "playing-film-image\t%.3f s\t%.1f ms", seconds,
@@ -48,6 +49,33 @@ import FrameScrubCore
         observer.onChange = { refresh() }
         core.onIndexReady = { loader.updateIndex($0); refresh() }
         refresh()
+        if checksScrub {
+            bar.onFilmDrag = { time in core.dragFilm(toFrame: core.index!.frameNumber(forSeconds: time)) }
+            let dragStart = core.position
+            func dragEvent(_ type: NSEvent.EventType, x: CGFloat) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: bar.convert(NSPoint(x: x, y: 24), to: nil),
+                    modifierFlags: [.option], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
+                    context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+            }
+            bar.mouseDown(with: dragEvent(.leftMouseDown, x: 450))
+            bar.mouseDragged(with: dragEvent(.leftMouseDragged, x: 430))
+            let firstTarget = core.position
+            bar.mouseDragged(with: dragEvent(.leftMouseDragged, x: 390))
+            let dragDeadline = Date().addingTimeInterval(3)
+            while images.isEmpty, Date() < dragDeadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+            }
+            precondition(firstTarget != dragStart && core.position != firstTarget && bar.isContinuousSeek,
+                         "The held drag must move through successive playhead positions")
+            precondition(core.allowsBackgroundPreview, "The fixture's foreground frame must resolve during the drag")
+            precondition(!images.isEmpty, "The moving filmstrip must receive thumbnails before mouse-up")
+            bar.mouseUp(with: dragEvent(.leftMouseUp, x: 390))
+            print("drag-thumbnail-check\tpassed: thumbnails delivered during a held drag")
+            loader.stop(); core.close(); window.orderOut(nil)
+            if let savedHeight { UserDefaults.standard.set(savedHeight, forKey: "timeline-film-height") }
+            else { UserDefaults.standard.removeObject(forKey: "timeline-film-height") }
+            exit(0)
+        }
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline {
             core.tick()

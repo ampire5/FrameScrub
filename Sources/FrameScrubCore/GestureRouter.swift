@@ -70,6 +70,7 @@ public final class GestureRouter {
     private var scrollModifiers: Modifiers?
     private var lastScrollTime: Double?
     private var lastWasMomentum = false
+    private var ownsScrubMomentum = false
     private var scrollPrecise: Bool?
     private var axis: Axis?
     private var travel = 0.0
@@ -90,6 +91,7 @@ public final class GestureRouter {
         scrollPrecise = nil
         lastScrollTime = nil
         lastWasMomentum = false
+        cancelScrubMomentum()
         axis = nil
         travel = 0
         notchEvents = 0
@@ -97,7 +99,9 @@ public final class GestureRouter {
         scrubber.reset()
     }
 
-    public func route(_ sample: ScrollSample) -> [GestureAction] {
+    public func cancelScrubMomentum() { ownsScrubMomentum = false }
+
+    public func route(_ sample: ScrollSample, allowsScrubMomentum: Bool = true) -> [GestureAction] {
         var s = sample
         let modifiers = (s.rightButton ? s.modifiers.union(.rightButton) : s.modifiers).union(s.heldButtons)
         // Keyboard and button changes begin a new input chord, never inheriting an old coast's axis.
@@ -108,6 +112,7 @@ public final class GestureRouter {
         if newGesture || modifiers != scrollModifiers || scrollPrecise != s.precise {
             scrollAxis.reset()
             scrollModifiers = modifiers
+            cancelScrubMomentum()
             scrubber.reset()
             notchEvents = 0
             notchChord = nil
@@ -133,16 +138,25 @@ public final class GestureRouter {
         guard delta != 0 else { return [] }
         let device = s.precise ? "TRACKPAD" : "WHEEL"
         let eventChord = chord(device, horizontal: horizontal, positive: delta > 0, modifiers: modifiers)
-        guard let command = inputMap.command(for: eventChord) else { return [] }
+        guard let command = inputMap.command(for: eventChord) else { cancelScrubMomentum(); return [] }
+
+        let momentumEligible = allowsScrubMomentum && s.precise && horizontal && modifiers.isEmpty
+        if s.momentum {
+            guard ownsScrubMomentum, momentumEligible, scrubber.settings.trackpadMomentum, case .scrub = command else {
+                cancelScrubMomentum()
+                return []
+            }
+        }
 
         let perNotch = s.precise || horizontal ? 1 : wheelEventsPerNotch
         if case let .scrub(fast, invert) = command {
+            if !s.momentum { ownsScrubMomentum = momentumEligible && s.phased && scrubber.settings.trackpadMomentum }
             return scrub(s, delta: delta, fast: fast, invert: invert, eventsPerNotch: perNotch)
         }
+        cancelScrubMomentum()
         if case let .scrubEdge(edge) = command {
             return scrub(s, delta: delta, fast: false, invert: false, eventsPerNotch: perNotch, edge: edge)
         }
-        guard !s.momentum else { return [] }
         guard s.precise else { return wheelNotch(command, chord: eventChord, perNotch: perNotch) }
 
         let current = Axis(horizontal: horizontal, modifiers: modifiers)

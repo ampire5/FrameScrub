@@ -1,9 +1,14 @@
+import FrameScrubCore
 import SettingsKit
 
 extension SettingsPanel {
     /// Scrubbing with the trackpad and the wheel, and the Logitech wheel's modes.
     static var scrolling: SettingsPage {
-        SettingsPage("scrolling", "Scrolling", symbol: "scroll", sections: [
+        let distanceRange = ScrubSettings.trackpadMomentumDistanceRange
+        let distanceMarks = stride(from: distanceRange.lowerBound, through: distanceRange.upperBound, by: 0.1).map {
+            (value: $0, title: "\(SettingsRow.sliderText($0))×")
+        }
+        return SettingsPage("scrolling", "Scrolling", symbol: "scroll", sections: [
             SettingsSection("Trackpad and wheel", rows: [
                 .number("scrub-px-per-frame", "Points per frame", unit: "pt", step: 0.5, symbol: "ruler",
                         description: "How far a scroll goes for one frame. 0.5–500, default 8."),
@@ -19,6 +24,12 @@ extension SettingsPanel {
                         description: "How many times faster the fast scrub binding goes. 1–100, default 10."),
                 .toggle("scrub-invert", "Invert scrub direction", symbol: "arrow.left.arrow.right",
                         description: "Default off."),
+                .toggle("scrub-trackpad-momentum", "Trackpad Scrub Momentum", symbol: "hand.draw",
+                        description: "Continue stepping frames after a horizontal two-finger swipe over the video. Default off.",
+                        nested: [
+                            .slider("scrub-trackpad-momentum-distance", "Momentum Distance", range: distanceRange,
+                                    marks: distanceMarks, description: "Scale the distance traveled after release. Default 1×."),
+                        ]),
             ]),
             SettingsSection("Logitech wheel", rows: [
                 .toggle("wheel-precision", "Free spin and Precision Scroll in the player", symbol: "dial.medium",

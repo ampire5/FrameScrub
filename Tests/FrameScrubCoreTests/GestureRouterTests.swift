@@ -3,8 +3,9 @@ import Testing
 
 @Suite struct GestureRouterTests {
     private func sample(_ dx: Double, _ dy: Double, precise: Bool = true, momentum: Bool = false,
-                        began: Bool = false, t: Double = 0, mods: Modifiers = []) -> ScrollSample {
-        ScrollSample(deltaX: dx, deltaY: dy, precise: precise, momentum: momentum, began: began, time: t, modifiers: mods)
+                        began: Bool = false, t: Double = 0, mods: Modifiers = [], phased: Bool = false) -> ScrollSample {
+        ScrollSample(deltaX: dx, deltaY: dy, precise: precise, momentum: momentum, began: began, time: t,
+                     modifiers: mods, phased: phased)
     }
 
     private func frames(_ actions: [GestureAction]) -> Int {
@@ -78,6 +79,44 @@ import Testing
 
     @Test func momentumNeverFiresDiscreteCommands() {
         #expect(router().route(sample(0, 100, momentum: true)) == [])
+    }
+
+    @Test func horizontalTrackpadScrubContinuesOnlyWhenMomentumIsEnabled() {
+        let r = router()
+        r.scrubber.settings.accelerate = false
+        let start = sample(-12, 0, began: true, t: 1, phased: true)
+        let tail = sample(-4, -20, momentum: true, t: 1.02)
+        #expect(r.route(start) == [.scrubFrames(1, ticks: false)])
+        #expect(r.route(tail).isEmpty)
+        r.scrubber.settings.trackpadMomentum = true
+        #expect(r.route(start) == [.scrubFrames(1, ticks: false)])
+        #expect(r.route(tail) == [.scrubFrames(1, ticks: false)])
+    }
+
+    @Test func momentumRequiresAnOwnedVideoScrub() {
+        let r = router()
+        r.scrubber.settings.trackpadMomentum = true
+        let start = sample(-8, 0, began: true, t: 1, phased: true)
+        let tail = sample(-8, 0, momentum: true, t: 1.02)
+        #expect(r.route(tail).isEmpty)
+        #expect(frames(r.route(start, allowsScrubMomentum: false)) == 1)
+        #expect(r.route(tail).isEmpty)
+        #expect(frames(r.route(start)) == 1)
+        #expect(r.route(tail, allowsScrubMomentum: false).isEmpty)
+        #expect(r.route(tail).isEmpty)
+        #expect(frames(r.route(start)) == 1)
+        r.cancelScrubMomentum()
+        #expect(r.route(tail).isEmpty)
+        #expect(frames(r.route(start)) == 1)
+        #expect(frames(r.route(sample(8, 0, began: true, t: 2, phased: true))) == -1)
+        #expect(frames(r.route(sample(8, 0, momentum: true, t: 2.02))) == -1)
+    }
+
+    @Test func modifiedTrackpadScrubDoesNotCoast() {
+        let r = router()
+        r.scrubber.settings.trackpadMomentum = true
+        #expect(frames(r.route(sample(-8, 0, began: true, t: 1, mods: .shift, phased: true))) == 10)
+        #expect(r.route(sample(-16, 0, momentum: true, t: 1.02, mods: .shift)).isEmpty)
     }
 
     @Test func mouseWheelFiresOncePerNotch() {

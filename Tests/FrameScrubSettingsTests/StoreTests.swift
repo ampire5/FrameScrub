@@ -62,6 +62,30 @@ import Testing
         #expect(store.validate("%{video-name}", forKey: "frame-template") == nil)
     }
 
+    @Test func trackpadScrubMomentumIsOffByDefaultAndPersistsWhenEnabled() throws {
+        let url = try conf("# My scrolling settings\nscrub-accel=no\n")
+        let (config, warnings) = Config.load(from: url)
+        #expect(warnings.isEmpty)
+        let preferences = PreferencesStore(config: config, url: url)
+        let store = FrameScrubSettingsStore(preferences: preferences, defaults: defaults())
+        let key = "scrub-trackpad-momentum"
+        let distanceKey = "scrub-trackpad-momentum-distance"
+        #expect(store.value(forKey: key) == "no")
+        #expect(store.defaultValue(forKey: key) == "no")
+        #expect(store.defaultValue(forKey: distanceKey) == "1")
+        #expect(store.validate("0.49", forKey: distanceKey) != nil)
+        #expect(store.validate("2.01", forKey: distanceKey) != nil)
+
+        try store.setValue("yes", forKey: key)
+        try store.setValue("1.5", forKey: distanceKey)
+        let (reloaded, reloadWarnings) = Config.load(from: url)
+        #expect(reloadWarnings.isEmpty)
+        #expect(reloaded.scrub.trackpadMomentum)
+        #expect(reloaded.text(forKey: distanceKey) == "1.5")
+        #expect(!reloaded.scrub.accelerate)
+        #expect(try String(contentsOf: url, encoding: .utf8).hasPrefix("# My scrolling settings\n"))
+    }
+
     @Test func onlyChangedKeysAreAnnounced() throws {
         let preferences = PreferencesStore(config: Config(), url: try conf())
         let store = FrameScrubSettingsStore(preferences: preferences, defaults: defaults())

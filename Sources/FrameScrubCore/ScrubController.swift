@@ -15,6 +15,9 @@ public struct ScrubSettings: Equatable, Sendable {
     /// `scrub-accel-max`: frames/s acceleration takes the scrub to at most (a faster plain scrub stays as fast).
     public var accelMax = 240.0
     public var invert = false
+    public var trackpadMomentum = false
+    public static let trackpadMomentumDistanceRange = 0.5...2.0
+    public var trackpadMomentumDistance = 1.0
     /// Step multiplier of the fast scrub action (`scrub fast`).
     public var fastMultiplier = 10.0
     /// `scrub-accel`: faster movement takes bigger steps; off, every frame is visited (one per notch / `pxPerFrame`).
@@ -38,7 +41,7 @@ public struct ScrubSettings: Equatable, Sendable {
 
 /// Turns horizontal scroll input into frame steps (positive = forward).
 /// Slow movement steps exactly one frame per `pxPerFrame` points (a wheel: per notch); faster movement multiplies
-/// the step (`multiplier(forFramesPerSecond:)`); trackpad momentum is ignored so scrubbing stops when the fingers lift.
+/// the step (`multiplier(forFramesPerSecond:)`). Optional momentum uses the trackpad's own deceleration.
 public final class ScrubController {
     public var settings: ScrubSettings
     /// Frame rate of the open video, for `wheel-precision-mode=fps`.
@@ -81,7 +84,7 @@ public final class ScrubController {
     /// `invert` flips the direction on top of `settings.invert`.
     public func preciseDelta(_ deltaX: Double, at time: Double, isMomentum: Bool,
                              boost: Double = 1, invert: Bool = false) -> Int {
-        guard !isMomentum, deltaX != 0 else { return 0 }
+        guard deltaX != 0, !isMomentum || settings.trackpadMomentum else { return 0 }
         let signed = settings.invert != invert ? deltaX : -deltaX
         let sign = signed > 0 ? 1 : -1
         if sign != lastSign {
@@ -89,10 +92,16 @@ public final class ScrubController {
             samples.removeAll()
             lastSign = sign
         }
-        samples.append((time, abs(deltaX)))
-        samples.removeAll { $0.time <= time - Self.velocityWindow }
-        let velocity = samples.reduce(0) { $0 + $1.distance } / Self.velocityWindow
-        accumulator += signed * multiplier(forFramesPerSecond: velocity / settings.pxPerFrame) * boost
+        let multiplier: Double
+        if isMomentum {
+            multiplier = settings.trackpadMomentumDistance
+        } else {
+            samples.append((time, abs(deltaX)))
+            samples.removeAll { $0.time <= time - Self.velocityWindow }
+            let velocity = samples.reduce(0) { $0 + $1.distance } / Self.velocityWindow
+            multiplier = self.multiplier(forFramesPerSecond: velocity / settings.pxPerFrame)
+        }
+        accumulator += signed * multiplier * boost
         let frames = Int(accumulator / settings.pxPerFrame)
         accumulator -= Double(frames) * settings.pxPerFrame
         return frames

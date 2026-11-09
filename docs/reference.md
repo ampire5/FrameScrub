@@ -38,6 +38,10 @@ The mouse and trackpad work the same in both.
 
 The Logitech rows need an MX Master and are described below; the rest of the table works with any mouse.
 
+**Trackpad Scrub Momentum** (Settings → Scrolling) lets an unmodified horizontal two-finger swipe over the video
+keep stepping frames after you lift your fingers, using macOS trackpad momentum. It is off by default.
+**Momentum Distance** scales the movement after release from 0.5× to 2×. The default is 1×.
+
 ### Left-hand layout (`key-layout=left-hand`)
 
 What each action does in detail is in the classic table below.
@@ -548,6 +552,8 @@ scrub-accel-max=240             # 30…2000 frames/s: acceleration takes the scr
 scrub-invert=no                 # yes: swipe the other way to go forward
 scrub-fast-multiplier=10        # 1…100: fast scrubbing (Shift, or Shift+⌥+wheel) moves this many times faster
 scrub-accel=yes                 # no: no acceleration — one frame per wheel notch / scrub-px-per-frame, however fast
+scrub-trackpad-momentum=no     # yes: let a horizontal two-finger scrub over the video continue after release
+scrub-trackpad-momentum-distance=1  # 0.5…2: distance multiplier after release
 wheel-precision=no              # yes: Logitech mice get free spin and Precision Scroll (or the ratchet, by SmartShift) in the player
 wheel-precision-mode=frames     # frames | fps — Precision Scroll scrubs wheel-precision-frames a notch, or wheel-precision-time of video
 wheel-precision-frames=6        # 0.5…6: frames a notch of Precision Scroll moves a plain scrub (6 = a frame per wheel event)

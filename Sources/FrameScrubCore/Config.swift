@@ -282,7 +282,8 @@ public struct Config: Equatable, Sendable {
     public static let keys = [
         "tourbox", "tourbox-frames-per-pulse", "tourbox-accel", "tourbox-accel-start", "tourbox-scroll-points",
         "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
-        "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
+        "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel",
+        "scrub-trackpad-momentum", "scrub-trackpad-momentum-distance", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strong-strength", "mx-side-buttons",
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
         "export-mode", "export-every", "export-fps", "export-scale", "export-sharp", "export-skip-blurry", "export-sharp-threshold", "export-sharp-neighbours",
@@ -343,6 +344,8 @@ public struct Config: Equatable, Sendable {
         case "scrub-accel-max": return formatNumber(scrub.accelMax)
         case "scrub-invert": return yesNo(scrub.invert)
         case "scrub-accel": return yesNo(scrub.accelerate)
+        case "scrub-trackpad-momentum": return yesNo(scrub.trackpadMomentum)
+        case "scrub-trackpad-momentum-distance": return formatNumber(scrub.trackpadMomentumDistance)
         case "wheel-precision": return yesNo(wheelPrecision)
         case "wheel-precision-mode": return scrub.precisionMode.rawValue
         case "wheel-precision-frames": return formatNumber(scrub.precisionFramesPerNotch)
@@ -493,6 +496,10 @@ public struct Config: Equatable, Sendable {
         case "scrub-accel-max": guard let v = double(30...2000) else { return false }; scrub.accelMax = v
         case "scrub-invert": guard let v = bool() else { return false }; scrub.invert = v
         case "scrub-accel": guard let v = bool() else { return false }; scrub.accelerate = v
+        case "scrub-trackpad-momentum": guard let v = bool() else { return false }; scrub.trackpadMomentum = v
+        case "scrub-trackpad-momentum-distance":
+            guard let v = double(ScrubSettings.trackpadMomentumDistanceRange) else { return false }
+            scrub.trackpadMomentumDistance = v
         case "wheel-precision": guard let v = bool() else { return false }; wheelPrecision = v
         case "wheel-precision-mode": guard let v = WheelPrecisionMode(rawValue: value.lowercased()) else { return false }; scrub.precisionMode = v
         case "wheel-precision-frames": guard let v = double(0.5...6) else { return false }; scrub.precisionFramesPerNotch = v

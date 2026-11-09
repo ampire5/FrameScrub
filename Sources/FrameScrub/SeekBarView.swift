@@ -82,7 +82,6 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var pointerInside = false
     private var hideControls: DispatchWorkItem?
     private var thumbnailDwell: DispatchWorkItem?
-    private var desiredTimes: [Double] = []
     private var requestedTimes: [Double] = []
     private var images: [Double: (picture: NSImage, source: CGImage)] = [:]
     private var imageOrder: [Double] = []
@@ -122,8 +121,15 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var wantsFilm: Bool { showsFilmstrip }
     private var visibleFilmHeight: CGFloat { showsFilmstrip ? stripHeight : 0 }
     var isThumbnailInteraction: Bool {
-        cutEdgeGesture != nil || drag != nil || markDrag != nil || overviewDrag || scrolling ||
+        blocksVisibleFilmstripRequests || drag != nil || overviewDrag || scrolling
+    }
+    private var blocksVisibleFilmstripRequests: Bool {
+        cutEdgeGesture != nil || drag?.hasMoved == false || markDrag != nil || (scrolling && !scrollHasSought) ||
             contextMenuOpen || transport.holding || isAnimatingFilmClick
+    }
+    var allowsVisibleFilmstripRequests: Bool {
+        wantsFilm && !isHidden && !blocksVisibleFilmstripRequests && alphaValue > 0.01 &&
+            window?.occlusionState.contains(.visible) == true
     }
     var isInteracting: Bool { isThumbnailInteraction || lensPopover.isShown }
     var isAnimatingFilm: Bool { filmTransition != nil }
@@ -456,12 +462,11 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         return index.seconds(forFrame: index.keyframe(atOrBefore: index.frameNumber(forSeconds: seconds)))
     }
     private func updateDesiredImages() {
-        // The flying layout is only a visual effect. Do not schedule thumbnail reads for intermediate positions.
-        guard !isAnimatingFilmClick, !horizontalFilmScroll else { cancelFilmstripRequests(); return }
-        guard wantsFilm, film.width > 0, virtualTime != nil || (index?.frameCount ?? 0) > 0 else {
-            cancelFilmstripRequests(); desiredTimes = []; return
+        guard allowsVisibleFilmstripRequests, film.width > 0, virtualTime != nil || (index?.frameCount ?? 0) > 0 else {
+            cancelFilmstripRequests(); return
         }
-        let layout = filmLayout
+        // Wheel transitions can animate toward an already selected sample. Read around its destination.
+        let layout = presentedFilmTime == nil ? filmLayout : makeFilmLayout(center: currentSeconds)
         var times: [Double] = []
         // Centre first; requesting the same keyframe twice costs nothing and is removed here.
         for cell in layout.cells.sorted(by: { abs($0.offset - layout.playheadOffset) < abs($1.offset - layout.playheadOffset) }) {
@@ -469,20 +474,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             let key = imageTime(seconds)
             if !times.contains(key) { times.append(key) }
         }
-        desiredTimes = times
-        guard !isThumbnailInteraction, alphaValue > 0.01, window?.occlusionState.contains(.visible) == true else {
-            cancelFilmstripRequests(); return
-        }
         let missing = times.filter { images[$0] == nil }
         guard missing != requestedTimes else { return }
         requestedTimes = missing
-        // Playback keeps moving the far samples. Update the batch without postponing its deadline on every frame.
+        // Keep the latest batch without postponing its deadline during playback or scrubbing.
         guard thumbnailDwell == nil else { return }
+        // A moving playhead supersedes queued samples. A read already in flight may finish and enter the cache.
+        if isContinuousSeek { onFilmstripRequest?([]) }
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             thumbnailDwell = nil
-            guard wantsFilm, !isThumbnailInteraction, alphaValue > 0.01,
-                  window?.occlusionState.contains(.visible) == true else {
+            guard allowsVisibleFilmstripRequests else {
                 requestedTimes = []; return
             }
             onFilmstripRequest?(requestedTimes)
@@ -528,7 +530,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         cancelMarkDrag()
         stopFilmTransition()
         thumbnailDwell?.cancel(); thumbnailDwell = nil
-        images.removeAll(); imageOrder.removeAll(); requestedTimes = []; desiredTimes = []
+        images.removeAll(); imageOrder.removeAll(); requestedTimes = []
         cutPosters.removeAll(); cutPosterOrder.removeAll()
         drag = nil; overviewDrag = false
         clearHover()
@@ -1152,6 +1154,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             filmStretch = allowsFilmDragMotion ? drag.stretch : 0
             let seek = cutTimeline == nil ? onFilmDrag ?? onFilmSeek : onFilmSeek
             seek?(drag.seconds)
+            if !wasMoving { updateDesiredImages() }
             needsDisplay = true
         } else if overviewDrag {
             overviewMoved = true

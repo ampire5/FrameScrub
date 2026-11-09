@@ -54,6 +54,18 @@ import Testing
         #expect(scrub.preciseDelta(-100, at: 0, isMomentum: true) == 0)
     }
 
+    @Test(arguments: [("0.5", 2), ("1", 4), ("2", 8)])
+    func momentumDistanceScalesOnlyReleasedMovement(distance: String, frames: Int) {
+        var config = Config()
+        config.scrub.accelerate = false
+        config.scrub.trackpadMomentum = true
+        let accepted = config.set("scrub-trackpad-momentum-distance", distance)
+        #expect(accepted)
+        let scrub = ScrubController(settings: config.scrub)
+        #expect(scrub.preciseDelta(-16, at: 0, isMomentum: false) == 2)
+        #expect(scrub.preciseDelta(-32, at: 0.016, isMomentum: true) == frames)
+    }
+
     /// Acceleration in frames/s of the plain scrub: none up to `scrub-accel-from` (20), then the step grows with the
     /// speed (twice as fast, twice the steps) until the scrub reaches `scrub-accel-max` (240); never slower.
     @Test func multiplierFollowsScrubSpeed() {

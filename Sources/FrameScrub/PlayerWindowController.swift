@@ -413,6 +413,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                           contextVersion: String? = nil,
                           warmed: PreparedOpen? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         guard !isTerminating else { warmed?.discard(); done?(.superseded); return }
+        gestures.cancelScrubMomentum()
         seekBar.setCutEdges(nil)
         if virtualSource == nil {
             if contextVersion == nil { virtualCutReturn = nil }
@@ -662,6 +663,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// ⌘W / the back button: leaves the file and shows where it came from; with no file, closes the window.
     func closeFile() {
         guard hasOpenFile || virtualCut != nil else { window?.performClose(nil); return }
+        gestures.cancelScrubMomentum()
         rememberVirtualCut()
         defer { leaveVirtualCut() }
         abandonOpening()
@@ -1714,7 +1716,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.videoView.cancelFilmSeekPreview()
             self?.prewarmFilmstrip()
         }
-        seekBar.onFilmPress = { [weak self] in self?.videoView.cancelFilmSeekPreview() }
+        seekBar.onFilmPress = { [weak self] in
+            self?.gestures.cancelScrubMomentum()
+            self?.videoView.cancelFilmSeekPreview()
+        }
         seekBar.onMarkDragBegin = { [weak self] handle in
             guard let self, virtualCut == nil else { return false }
             if tourBoxEditsEdge { cancelTourBoxInput() }
@@ -2093,6 +2098,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
         if command == .holdSpeed {
             guard holdKeyCode == nil, !tourBoxHoldsSpeed, stillDown, !showsHome else { return }
+            gestures.cancelScrubMomentum()
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
             hud.show(.speed(core.speed * Double(core.direction)), hold: true)
@@ -2135,6 +2141,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
         if showsHome, !command.worksWithoutPlayer { return }   // the video behind Home is paused and stays so
+        gestures.cancelScrubMomentum()
         videoView.cancelFilmSeekPreview()
         seekBar.cancelFilmDragMotion()
         seekBar.cancelMarkDrag()
@@ -2423,9 +2430,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     /// A seek outside `run(_:)` (go-to field, seek bar, trackpad scrub): ends the wait and lets its frame line show.
-    private func positionWillMove(keepingFilmScroll: Bool = false) {
+    private func positionWillMove(keepingFilmScroll: Bool = false, keepingTrackpadScrub: Bool = false) {
         videoView.cancelFilmSeekPreview()
         if !keepingFilmScroll { seekBar.cancelFilmScroll() }
+        if !keepingTrackpadScrub { gestures.cancelScrubMomentum() }
         sceneFrameOSDToDrop = nil
         cancelSceneSearch()
     }
@@ -2576,7 +2584,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let owner = MouseButton.allCases.first { $0.modifier.map(sample.heldButtons.contains) ?? false }
         let fresh = EndBump.isFreshNotch(at: sample.time, previous: lastWheelTime)
         lastWheelTime = sample.time
-        let actions = gestures.route(sample)
+        if event.phase.contains(.cancelled) || !event.momentumPhase.isDisjoint(with: [.ended, .cancelled]) {
+            gestures.resetScroll()
+            return
+        }
+        let overVideo = source == nil && !showsHome && openingURL == nil && core.index != nil
+        let motionAllowed = !sample.momentum || (core.config.scrub.trackpadMomentum &&
+            !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        let actions = gestures.route(sample, allowsScrubMomentum: overVideo && motionAllowed)
         if actions.contains(where: {
             switch $0 {
             case .scrubFrames, .scrubEdge: true
@@ -2587,6 +2602,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func handleMagnify(_ event: NSEvent) {
+        gestures.cancelScrubMomentum()
         if gestures.pinchZooms(modifiers: Modifiers(event.modifierFlags)) {
             if videoView.zoomAllowed() { videoView.zoomMagnify(event) }
             return
@@ -2605,7 +2621,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             case .scrubFrames where showsHome, .scrubEdge where showsHome:
                 continue   // the wheel over Home scrolls Home
             case let .scrubFrames(frames, ticks):
-                positionWillMove()
+                positionWillMove(keepingTrackpadScrub: true)
                 core.inputIsFresh = fresh
                 haptics.from(source) { if !scrubVirtualCut(frames) { core.scrub(by: frames, ticks: ticks) } }
             case let .command(command): runInput(command, from: source, fresh: fresh)
@@ -3125,9 +3141,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                             imagePool: imagePool, frameCache: core.cache, exactSample: virtualCut != nil)
         loader.mayRead = { [weak self] in
             guard let self else { return false }
-            guard seekBar.showsFilmstrip, seekBar.alphaValue > 0.01, !seekBar.isThumbnailInteraction, !showsHome,
-                  window?.occlusionState.contains(.visible) == true else { return false }
-            return core.allowsBackgroundPreview && virtualCut?.warm?.preview == nil
+            guard seekBar.allowsVisibleFilmstripRequests, !showsHome else { return false }
+            return core.allowsBackgroundPreview && virtualCut?.playback.pending == nil && virtualCut?.warm?.preview == nil
         }
         loader.mayPrewarm = { [weak self] readyOnly in
             guard let self else { return false }
