@@ -80,6 +80,8 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Open **File Information…** on a video card for codecs, streams, resolution, colour and tags. **Last Viewed** tracks when you actually saw a frame, independently of where the video will resume.
 - **Settings → Performance → Thumbnail storage** controls the format, quality, size and disk limit for cached thumbnails. Clearing the media cache keeps viewing history, positions, marks, loops and colour settings.
 
+<p align="center"><img src="docs/images/file-view.webp" width="72%" alt="File View with sample clips, duration badges, progress bars and an orange outline marking the last opened clip"></p>
+
 **Playback and scrubbing**
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
@@ -100,7 +102,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Per-scene auto colour and vibrance, remembered per file and per folder.
 - Aspect overrides (16:9, 4:3, 2.35:1, square pixels, …).
 
-<p align="center"><img src="docs/images/settings-display.webp" width="72%" alt="Display settings showing low-latency super resolution, frame interpolation and temporal noise reduction"></p>
+<p align="center"><img src="docs/images/settings-display.webp" width="63%" alt="Display settings showing low-latency super resolution, frame interpolation and temporal noise reduction"> <img src="docs/images/subject-focus.webp" width="29%" alt="Subject Focus panel with preset looks, background and edge sliders, and person-mask settings"></p>
 
 **Saving**
 - `s` saves the frame; `⇧S` exports an A-B range — every frame, every N-th, N per second, or only the sharpest of every N. The export can skip blurred stretches and frames too like the last one it saved.
