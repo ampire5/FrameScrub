@@ -4,6 +4,14 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct ScrubTapeTests {
+    private static func testTone() -> [Float] {
+        let radiansPerSample: Double = 2 * Double.pi * 440 / 48_000
+        return (0..<96_000).map { index in
+            let angle = Double(index) * radiansPerSample
+            return Float(sin(angle)) * 0.5
+        }
+    }
+
     /// Renders `seconds` of the tape offline and returns the left channel.
     private func render(_ tape: ScrubTape, format: AVAudioFormat, seconds: Double) throws -> [Float] {
         let engine = AVAudioEngine()
@@ -43,7 +51,7 @@ import Testing
             }
         }
         try render(4)
-        let tone = (0..<96000).map { Float(sin(Double($0) * 2 * .pi * 440 / 48000)) * 0.5 }
+        let tone = Self.testTone()
         tape.setTapeSnapshot(TapeSnapshot(startSeconds: 0, sampleRate: 48000, samples: StereoSamples(left: tone, right: tone)))
         try render(4)
         let steps = zip(out.dropFirst(), out).map { abs($0 - $1) }
@@ -54,7 +62,7 @@ import Testing
     @Test func rendersTheSnapshotAndFallsSilentWhenStopped() throws {
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
         let tape = ScrubTape(format: format)
-        let tone = (0..<96000).map { Float(sin(Double($0) * 2 * .pi * 440 / 48000)) * 0.5 }
+        let tone = Self.testTone()
         tape.setTapeSnapshot(TapeSnapshot(startSeconds: 0, sampleRate: 48000, samples: StereoSamples(left: tone, right: tone)))
         tape.setTapeControl(TapeControl(target: 1, shownAt: CACurrentMediaTime(), frameVelocity: 1, running: true))
         let playing = try render(tape, format: format, seconds: 0.05)
@@ -77,7 +85,7 @@ import Testing
         init(pitch: ScrubPitch) throws {
             let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2))
             tape = ScrubTape(format: format)
-            let tone = (0..<96000).map { Float(sin(Double($0) * 2 * .pi * 440 / 48000)) * 0.5 }
+            let tone = ScrubTapeTests.testTone()
             tape.setTapeSnapshot(TapeSnapshot(startSeconds: 0, sampleRate: 48000, samples: StereoSamples(left: tone, right: tone)))
             engine.attach(tape.node)
             engine.connect(tape.node, to: engine.mainMixerNode, format: format)
