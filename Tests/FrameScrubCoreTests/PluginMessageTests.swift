@@ -3,6 +3,59 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct PluginMessageTests {
+    @Test func analysisSnapshotsAreScopedAndRefuseInvalidRanges() {
+        let fragment: [String: Any] = ["id": "finding-1", "start": 3, "end": 5, "refined": false]
+        let snapshot: [String: Any] = ["jobID": "job", "running": true, "covered": [[0, 8]], "fragments": [fragment]]
+        let update: [String: Any] = ["cmd": "analysisTimeline", "sourceID": "opened-file", "snapshot": snapshot]
+        guard case let .analysisTimeline(sourceID, result) = message(update), let result else {
+            Issue.record("valid analysis snapshot was rejected")
+            return
+        }
+        #expect(sourceID == "opened-file")
+        #expect(result.jobID == "job")
+        #expect(result.running)
+        #expect(result.covered == [0...8])
+        #expect(result.fragments.first?.id == "finding-1")
+        #expect(result.fragments.first?.range == 3...5)
+        #expect(result.fragments.first?.refined == false)
+        #expect(message(["cmd": "analysisTimeline", "sourceID": "opened-file", "snapshot": NSNull()])
+                == .analysisTimeline(sourceID: "opened-file", snapshot: nil))
+        #expect(message(["cmd": "analysisTimeline", "snapshot": snapshot]) == nil)
+        #expect(message(["cmd": "analysisTimeline", "sourceID": "opened-file"]) == nil)
+        for bad in [
+            snapshot.merging(["covered": [[8, 0]]]) { _, new in new },
+            snapshot.merging(["running": 1]) { _, new in new },
+            snapshot.merging(["fragments": [fragment, fragment]]) { _, new in new },
+            snapshot.merging(["fragments": [fragment.merging(["start": true]) { _, new in new }]]) { _, new in new },
+            snapshot.merging(["fragments": [fragment.merging(["refined": 1]) { _, new in new }]]) { _, new in new },
+            snapshot.merging(["covered": Array(repeating: [0, 1], count: 2_001)]) { _, new in new }
+        ] {
+            #expect(message(update.merging(["snapshot": bad]) { _, new in new }) == nil)
+        }
+    }
+
+    @Test func analysisVersionAndSelectionUseTheSourceContract() {
+        #expect(message(["cmd": "analysisSourceVersion", "sourceID": "open-id"])
+                == .analysisSourceVersion(sourceID: "open-id"))
+        #expect(message(["cmd": "analysisSourceVersion", "sourceID": ""]) == nil)
+        let opened = PluginEvent.fileOpened(path: "/a.mp4", url: nil, scene: nil, source: .file, sourceID: "open-id")
+        #expect(opened.detail == #"{"path":"/a.mp4","scene":null,"source":"file","sourceID":"open-id","url":null}"#)
+        let selected = PluginEvent.analysisFragment(id: "finding-1", refined: false, start: 3)
+        #expect(selected.name == "analysisfragment")
+        #expect(selected.detail == #"{"id":"finding-1","refined":false,"start":3}"#)
+        let refresh = PluginEvent.analysisRefresh(sourceID: "open-id")
+        #expect(refresh.name == "analysisrefresh")
+        #expect(refresh.detail == #"{"sourceID":"open-id"}"#)
+    }
+
+    @Test func cutContextCommandsCarryAnOptionalRangeOrRevision() {
+        #expect(PluginMessage(json: ["cmd": "openOriginalFragment", "rangeID": "a"]) ==
+                .openOriginalFragment(rangeID: "a"))
+        #expect(PluginMessage(json: ["cmd": "returnToVirtualCut", "revision": "r2"]) ==
+                .returnToVirtualCut(revision: "r2"))
+        #expect(PluginMessage(json: ["cmd": "returnToVirtualCut"]) == .returnToVirtualCut(revision: nil))
+        #expect(PluginMessage(json: ["cmd": "openOriginalFragment", "rangeID": 12]) == nil)
+    }
     private func message(_ json: [String: Any]) -> PluginMessage? { PluginMessage(json: json) }
 
     @Test func simpleCommands() {
@@ -328,7 +381,8 @@ import Testing
 
     @Test func roundTrips() {
         let state = PluginState(ready: true, path: "/a.mp4", name: "a.mp4", scene: "7", t: 2.25, frame: 54, fps: 24,
-                                duration: 100, durationFrames: 2400, playing: true, loop: 1.5...3, visible: true)
+                                duration: 100, durationFrames: 2400, playing: true, loop: 1.5...3, visible: true,
+                                sourceID: "open-id")
         #expect(state.json.flatMap(PluginState.init(json:)) == state)
         let bare = PluginState()
         #expect(bare.json.flatMap(PluginState.init(json:)) == bare)

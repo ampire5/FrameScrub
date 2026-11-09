@@ -242,6 +242,25 @@ import Testing
         #expect(image.image.width == 200)
         #expect(abs(image.requestedSeconds - 12.0) < 1e-9)
         #expect(abs(image.frameSeconds - 250.0 / 30) < 0.05)
+        #expect(image.sourceFrame == nil)
+    }
+
+    @Test func preparedCutPreviewKeepsTheExactNonKeyframeForLanding() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let prepared = PreparedOpen(url: source.url, policy: .local,
+                                    readCache: try ReadCache(url: source.url, budgetBytes: 8 << 20),
+                                    source: source, identity: nil)
+        let provider = prepared.makeCutPreview(widthPixels: 160, landingIndex: index)
+        defer { provider.stop(); prepared.discard() }
+        let images = collect(provider)
+        let target = 360
+        provider.request(seconds: index.seconds(forFrame: target), speculative: true)
+        #expect(await eventually { !images.value.isEmpty })
+        let image = try #require(images.value.last)
+        let frame = try #require(image.sourceFrame)
+        #expect(frame.number == target)
+        #expect(frame.pts == index.pts(forFrame: target))
+        #expect(image.image.width == 160)
     }
 
     @Test func theSameKeyframeIsServedFromTheCache() async throws {

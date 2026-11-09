@@ -45,7 +45,8 @@ public struct VirtualCutPlayback: Sendable {
     }
 
     public mutating func failed(_ request: Request) -> Bool {
-        guard pending == request else { return false }
+        guard pending == request ||
+            (pending == nil && request.generation == generation && activeSpan == request.location.spanIndex) else { return false }
         pending = nil
         failure = request
         activeSpan = nil

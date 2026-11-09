@@ -24,6 +24,130 @@ import Testing
         #expect(a.cells.map(\.width) == b.cells.map(\.width))
         #expect(a.playheadOffset != b.playheadOffset)
     }
+    @Test func nearbyClickCoastsToTheCurrentPlayhead() {
+        let destination = layout(.segment, center: 722).lens
+        let motion = TimelineClickMotion(from: 720, arrival: destination)
+        let start = motion.sample(elapsed: 0, target: 722)
+        let middle = motion.sample(elapsed: motion.duration / 2, target: 722)
+        let end = motion.sample(elapsed: motion.duration, target: 723)
+        #expect(start.center == 720)
+        #expect(start.outgoingOpacity == 0)
+        #expect(middle.center > 721.5 && middle.center < 722)
+        #expect(end.center == 723)
+        #expect(motion.duration < TimelineClickMotion(from: 0, arrival: destination).duration)
+    }
+
+    @Test func aFlickCoastsButHoldingBeforeReleaseStopsOnTheSelectedFrame() throws {
+        let projection = layout(.segment).lens
+        var drag = TimelineFilmDrag(lens: projection, lastFrameSeconds: 2399, pointer: 400, timestamp: 0)
+        drag.move(to: 390, at: 0.02)
+        drag.move(to: 380, at: 0.04)
+        drag.move(to: 370, at: 0.06)
+        let coast = try #require(drag.release(at: 0.07))
+        #expect(abs(coast.seconds(at: 0) - drag.seconds) < 1e-8)
+        let middle = coast.seconds(at: coast.duration / 2)
+        let end = coast.seconds(at: coast.duration)
+        #expect(drag.seconds < middle && middle < end)
+        #expect(middle - drag.seconds > end - middle)
+        #expect(drag.release(at: 0.12) == nil)
+    }
+
+    @Test func anEdgeStretchesVisuallyAndTheFirstReverseMovementLeavesIt() {
+        let projection = layout(.segment, center: 0).lens
+        var drag = TimelineFilmDrag(lens: projection, lastFrameSeconds: 2399, pointer: 400, timestamp: 0)
+        drag.move(to: 440, at: 0.02)
+        #expect(drag.seconds == 0)
+        #expect(drag.stretch > 0 && drag.stretch < 10)
+        drag.move(to: 439, at: 0.04)
+        #expect(drag.seconds > 0)
+        #expect(drag.stretch == 0)
+
+        let caught = TimelineFilmDrag(lens: projection, lastFrameSeconds: 2399, pointer: 400, timestamp: 0, caught: true)
+        #expect(caught.hasMoved)
+        #expect(caught.release(at: 0) == nil)
+    }
+
+    @Test func slowDragCanFindAMarkAndReversingLeavesItImmediately() {
+        let lens = layout(.segment).lens
+        let mark = lens.time(at: 3.5)
+        var slow = TimelineFilmDrag(lens: lens, lastFrameSeconds: 2399, pointer: 400, timestamp: 0,
+                                    markSeconds: [mark])
+        var fast = slow
+        slow.move(to: 390, at: 0.2)
+        slow.move(to: 388, at: 0.24)
+        fast.move(to: 390, at: 0.01)
+        #expect(slow.seconds == mark)
+        #expect(slow.stretch < 0)
+        #expect(fast.seconds > mark)
+        slow.move(to: 389, at: 0.26)
+        #expect(slow.seconds < mark)
+    }
+
+    @Test func fineDraggingRemainsPreciseOnTheWholeFile() {
+        let lens = layout(.overview).lens
+        var drag = TimelineFilmDrag(lens: lens, lastFrameSeconds: 2399, pointer: 400, timestamp: 0,
+                                    frameSeconds: 1.0 / 30)
+        drag.move(to: 391, at: 0.2)
+        #expect(abs(drag.seconds - lens.center - 0.1) < 0.001)
+    }
+
+    @Test func sparsePreviewKeepsConsecutiveArrivalFramesInBothDirections() {
+        let forward = [2, 4, 6, 13, 17, 18, 19]
+        let reverse = [27, 25, 23, 16, 13, 12, 11]
+        let budget = FilmSeekRenderBudget(available: 7, thumbnails: false,
+                                          refreshInterval: 1.0 / 60, renderCost: 0.004,
+                                          settings: .init(milliseconds: 100))
+        #expect(budget.selectFrames(forward, target: 20) == [2, 4, 13, 17, 18, 19])
+        #expect(Array(budget.selectFrames(reverse, target: 10).suffix(3)) == [13, 12, 11])
+    }
+
+    @Test func smootherSettingsUseMoreReadyFramesWithoutOverrunningTheDeadline() {
+        let ready = Array((1..<100).reversed())
+        let light = FilmSeekRenderBudget(available: ready.count, thumbnails: false,
+                                         refreshInterval: 1.0 / 120, renderCost: 0.004,
+                                         settings: .init(milliseconds: 180, rateIndex: 0))
+        let smooth = FilmSeekRenderBudget(available: ready.count, thumbnails: false,
+                                           refreshInterval: 1.0 / 120, renderCost: 0.004,
+                                           settings: .init(milliseconds: 240, rateIndex: 2))
+        let frames = smooth.select(ready)
+        #expect(frames.count > light.count)
+        #expect(frames.first == ready.first && frames.last == ready.last)
+        #expect(zip(frames, frames.dropFirst()).allSatisfy { $0 > $1 })
+        #expect(smooth.duration <= 0.24)
+    }
+
+    @Test func seekPreviewYieldsToRenderCostRefreshRateAndCacheMisses() {
+        let ready = [9, 7, 6, 4, 3, 1]
+        let quick = FilmSeekPreviewSettings(milliseconds: 100)
+        let fast = FilmSeekRenderBudget(available: ready.count, thumbnails: false,
+                                        refreshInterval: 1.0 / 120, renderCost: 0.005, settings: quick)
+        let busy = FilmSeekRenderBudget(available: ready.count, thumbnails: false,
+                                        refreshInterval: 1.0 / 60, renderCost: 0.030, settings: quick)
+        let slowDisplay = FilmSeekRenderBudget(available: ready.count, thumbnails: false,
+                                               refreshInterval: 1.0 / 25, renderCost: 0.005, settings: quick)
+        #expect(fast.select(ready).count > busy.select(ready).count)
+        #expect(busy.select(ready) == [9, 1])
+        #expect(slowDisplay.select(ready) == [9, 1])
+        #expect(fast.duration <= 0.10 && busy.duration <= 0.10)
+        #expect(FilmSeekRenderBudget(available: 1, thumbnails: false,
+                                     refreshInterval: 1.0 / 120, renderCost: 0.005).count == 0)
+        #expect(FilmSeekRenderBudget(available: 3, thumbnails: true,
+                                     refreshInterval: 1.0 / 60, renderCost: 0.050, settings: quick).count == 0)
+    }
+
+    @Test func distantClickCoastsOnlyThroughTheArrivalNeighborhood() {
+        for (origin, target) in [(0.0, 2400.0), (2400.0, 0.0)] {
+            let destination = layout(.segment, center: target).lens
+            let motion = TimelineClickMotion(from: origin, arrival: destination)
+            let start = motion.sample(elapsed: 0, target: target)
+            let middle = motion.sample(elapsed: motion.duration / 2, target: target)
+            #expect(start.outgoingOpacity == 1)
+            #expect(abs(start.center - target) < 20)
+            #expect(middle.outgoingOpacity == 0)
+            #expect(abs(middle.center - target) < abs(start.center - target))
+            #expect(motion.sample(elapsed: 1, target: target).center == target)
+        }
+    }
     @Test func segmentMovesExistingPicturesInsteadOfChangingTheirTimes() {
         let a = layout(.segment), b = layout(.segment, center: 720.1)
         let shared = a.cells.filter { cell in b.cells.contains { $0.id == cell.id } }

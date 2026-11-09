@@ -11,6 +11,15 @@ struct EdgeDragTests {
         #expect(EdgeDrag(edge: .end, marks: marks, position: 350, frameCount: 1000).allowed == 301...999)
     }
 
+    @Test func directHandleDistinguishesAnOpenStartFromAClosedBoundaryAtTheSameFrame() throws {
+        let original = CutMarks(segments: marks.segments, open: 100)
+        let open = try #require(EdgeDrag(handle: .open(frame: 100), marks: original, frameCount: 1000))
+        let closed = try #require(EdgeDrag(handle: .segment(frame: 100, edge: .start), marks: original, frameCount: 1000))
+        #expect(open.marks(at: 120) == CutMarks(segments: marks.segments, open: 120))
+        #expect(closed.marks(at: 120).segments.first?.start == 120 && closed.marks(at: 120).open == 100)
+        #expect(EdgeDrag(handle: .segment(frame: 100, edge: .end), marks: original, frameCount: 1000) == nil)
+    }
+
     @Test func theEdgeFollowsTheFrameWithinTheBounds() {
         let start = EdgeDrag(edge: .start, marks: marks, position: 150, frameCount: 1000)
         #expect(start.original == marks)

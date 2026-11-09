@@ -1,5 +1,17 @@
 import Foundation
 
+/// A painted boundary in source-frame coordinates. Open starts have their own identity.
+public enum MarkEdgeHandle: Equatable, Sendable {
+    case segment(frame: Int, edge: MarkEdge)
+    case open(frame: Int)
+
+    public var frame: Int {
+        switch self {
+        case .segment(let frame, _), .open(let frame): frame
+        }
+    }
+}
+
 /// `scrub-edge` (mouse spec §5.4): the start or end of the mark under the playhead follows the frame while the wheel
 /// scrubs. Bounded by its pair and the neighbouring segment (a frame short of it, since touching segments merge), so
 /// the live marks never merge or reorder; the edge is set directly, never through `markIn` / `markOut`.
@@ -11,6 +23,7 @@ public struct EdgeDrag: Equatable, Sendable {
     }
 
     public let edge: MarkEdge
+    public let directHandle: MarkEdgeHandle?
     /// The marks when the drag began: what cancel puts back and what ⌘Z returns to.
     public let original: CutMarks
     private let target: Target
@@ -19,6 +32,7 @@ public struct EdgeDrag: Equatable, Sendable {
     /// Starts on the segment containing `position` (or the open start, for .start); nil segment = plain scrub.
     public init(edge: MarkEdge, marks: CutMarks, position: Int, frameCount: Int) {
         self.edge = edge
+        directHandle = nil
         original = marks
         self.frameCount = frameCount
         if let i = marks.segmentIndex(containing: position) {
@@ -27,6 +41,25 @@ public struct EdgeDrag: Equatable, Sendable {
             target = .open
         } else {
             target = .none
+        }
+    }
+
+    public init?(handle: MarkEdgeHandle, marks: CutMarks, frameCount: Int) {
+        guard handle.frame >= 0, handle.frame < frameCount else { return nil }
+        directHandle = handle
+        original = marks
+        self.frameCount = frameCount
+        switch handle {
+        case let .segment(frame, edge):
+            guard let index = marks.segmentIndex(containing: frame) else { return nil }
+            let segment = marks.segments[index]
+            guard (edge == .start ? segment.start : segment.end) == frame else { return nil }
+            self.edge = edge
+            target = .segment(index)
+        case let .open(frame):
+            guard marks.open == frame else { return nil }
+            edge = .start
+            target = .open
         }
     }
 

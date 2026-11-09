@@ -9,16 +9,18 @@ import CoreGraphics
     var onImage: ((CGImage, Double) -> Void)?
     private let provider: PreviewProvider
     private var pending: [Double] = []
+    private var visibleReadyOnly = false
     private var warming: [Double] = []
     private var warmReadyOnly = true
     private let networkWarmBudget: TimeInterval?
     private var coldWarmStartedAt: TimeInterval?
     private var coldWarmDelivered = false
     private var inFlight = false
+    var isReading: Bool { inFlight }
     var decodeCount: Int { provider.decodeCount }
 
     init(url: URL, index: FrameIndex, rotation: Int, width: Int, cache: ReadCache?, policy: NetworkPolicy,
-         imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil) {
+         imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil, exactSample: Bool = false) {
         networkWarmBudget = policy.isNetwork ? policy.previewSettle : nil
         // SeekBarView already waits once for the whole visible batch. Paying the pointer dwell again
         // for each serial cell adds 250 ms per image on network volumes (see timeline bench).
@@ -27,7 +29,7 @@ import CoreGraphics
         settledPolicy.sideReadAhead = false
         provider = PreviewProvider(url: url, index: index, rotationClockwise: rotation, widthPixels: width,
                                    readCache: cache, policy: settledPolicy, qos: .utility,
-                                   imagePool: imagePool, frameCache: frameCache)
+                                   imagePool: imagePool, frameCache: frameCache, exactSample: exactSample)
         provider.onImage = { [weak self] result in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -56,9 +58,10 @@ import CoreGraphics
         }
         provider.onUnavailable = { [weak self] in MainActor.assumeIsolated { self?.stop() } }
     }
-    func request(_ times: [Double]) {
+    func request(_ times: [Double], readyOnly: Bool = false) {
         // One adaptive screenful; narrowing cells increases density, never decode concurrency.
         pending = Array(times.prefix(TimelineFilmLayout.maximumCells))
+        visibleReadyOnly = readyOnly
         advance()
     }
     /// Replace the previous snapshot. While paused, prepare misses one by one as long as reads remain responsive.
@@ -86,9 +89,11 @@ import CoreGraphics
         }
         guard mayRead?() == true else { return }
         // Reuse a ready picture/frame before a disk seek. The remaining misses retain centre-first order.
-        let ready = pending.firstIndex { provider.canReuse(seconds: $0) } ?? pending.startIndex
+        let reusable = pending.firstIndex { provider.canReuse(seconds: $0) }
+        if visibleReadyOnly && reusable == nil { return }
+        let ready = reusable ?? pending.startIndex
         let seconds = pending.remove(at: ready)
         inFlight = true
-        provider.request(seconds: seconds)
+        provider.request(seconds: seconds, readyOnly: visibleReadyOnly)
     }
 }

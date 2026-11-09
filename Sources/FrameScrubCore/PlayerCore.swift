@@ -5,7 +5,7 @@ import QuartzCore
 
 /// Where the frame index came from (spec §5).
 public enum IndexStatus: Equatable, Sendable {
-    case approximate, scanning(Double), scanned(seconds: Double), container(seconds: Double), failed
+    case approximate, scanning(Double), scanned(seconds: Double), container(seconds: Double), reused, failed
 
     public var text: String {
         switch self {
@@ -13,6 +13,7 @@ public enum IndexStatus: Equatable, Sendable {
         case let .scanning(f): return "Index: scanning \(Int(f * 100))%"
         case let .scanned(s): return String(format: "Index: scan (%.1f s)", s)
         case let .container(s): return String(format: "Index: container (%.2f s)", s)
+        case .reused: return "Index: reused"
         case .failed: return "Index: approximate (scan failed)"
         }
     }
@@ -236,6 +237,8 @@ public final class PlayerCore {
     public var frameCount: Int { index?.frameCount ?? 0 }
     /// A cut segment owns these bounds while its underlying file is playing.
     public var virtualPlaybackBounds: Range<Double>? { didSet { syncCacheRegions() } }
+    private var virtualFrameBounds: ClosedRange<Int>?
+    public var onVirtualPictureUnavailable: (() -> Void)?
     public var onVirtualPlaybackBoundary: ((Int) -> Void)?
 
     public var currentSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
@@ -276,7 +279,8 @@ public final class PlayerCore {
     }
 
     /// Opens a file `preparation(for:)` read; the file open until now is left. `landingTime` as for `open(_:)`.
-    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil, virtualBounds: Range<Double>? = nil) {
+    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil,
+                     virtualBounds: Range<Double>? = nil, virtualIndex: FrameIndex? = nil) {
         let url = prepared.url, readCache = prepared.readCache, source = prepared.source
         networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
@@ -288,13 +292,18 @@ public final class PlayerCore {
         virtualPlaybackBounds = virtualBounds
         session += 1
         let current = session
-        let approximate = source.approximateIndex()
+        let initialIndex: FrameIndex
+        if let virtualIndex, virtualBounds != nil, virtualIndex.isExact,
+           virtualIndex.timeBase == source.timeBase, virtualIndex.zeroPTS == source.startPTS {
+            initialIndex = virtualIndex
+            indexStatus = .reused
+        } else { initialIndex = source.approximateIndex() }
         self.url = url
         sourceIdentity = prepared.identity
         lastViewedAt = nil
         self.readCache = readCache
         info = source
-        index = approximate
+        index = initialIndex
         if let pendingSegments {
             segmentsSource = pendingSegments.seconds
             segmentAdvance = pendingSegments.advance
@@ -305,7 +314,7 @@ public final class PlayerCore {
         lastSeekAt = -.infinity
         endBump = EndBump()
 
-        let filler = CacheFiller(url: url, index: approximate, cache: cache,
+        let filler = CacheFiller(url: url, index: initialIndex, cache: cache,
                                  estimatedFrameBytes: source.estimatedFrameBytes,
                                  playbackLookahead: max(8, Int(source.frameRate * 2)),
                                  preferHardware: config.hwdec.prefersHardware, readCache: readCache,
@@ -340,8 +349,9 @@ public final class PlayerCore {
         shuttleSpeed = false
         clock.rate = speed   // the sound takes it when it comes in (`attachAudio`)
         clock.followsAudio = true
-        buildIndexInBackground(url, readCache: readCache, session: current)
-        seek(toFrame: 0)
+        if !initialIndex.isExact { buildIndexInBackground(url, readCache: readCache, session: current) }
+        let initialFrame = virtualBounds.flatMap { _ in landingTime }.map { initialIndex.frameNumber(forSeconds: $0) } ?? 0
+        seek(toFrame: initialFrame)
         resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
         if config.autoplay, virtualBounds == nil { play() }
         // Start in the final playback/pause mode and at the restored position, never in the
@@ -469,6 +479,7 @@ public final class PlayerCore {
         // A keyframe outside the locked segments: the seek stays on its target, held inside them (exactness inside the
         // segments beats the keyframe).
         if let segments = lockedSegments, segments.index(containing: frame) == nil { return }
+        if let bounds = virtualFrameBounds, !bounds.contains(frame) { return }
         position = frame
         refocus(direction: 0)
         if !isPaused { restartClock() }
@@ -564,6 +575,9 @@ public final class PlayerCore {
     private func indexFailed(session current: Int) {
         guard current == session else { return }
         indexStatus = .failed
+        if virtualPlaybackBounds != nil, cache.isUndecodable(position), displayedFrame != position {
+            onVirtualPictureUnavailable?()
+        }
     }
 
     /// The cache follows the A–B loop, else the locked segments (segment lock spec §3): frames outside them are wasted
@@ -571,10 +585,14 @@ public final class PlayerCore {
     private func syncCacheRegions() {
         if let bounds = virtualPlaybackBounds, let index {
             let first = index.frameNumber(forSeconds: bounds.lowerBound)
-            filler?.setRegions([first...max(first, index.frameNumber(before: bounds.upperBound))], advance: .repeating)
+            let range = first...max(first, index.frameNumber(before: bounds.upperBound))
+            virtualFrameBounds = range
+            filler?.setRegions([range], advance: .repeating)
         } else if let a = loopA, let b = loopB {
+            virtualFrameBounds = nil
             filler?.setRegions([min(a, b)...max(a, b)], advance: .repeating)
         } else {
+            virtualFrameBounds = nil
             filler?.setRegions(lockedSegments?.ranges ?? [], advance: segmentAdvance)
         }
     }
@@ -582,10 +600,11 @@ public final class PlayerCore {
     func indexReady(_ exact: FrameIndex, session current: Int, status: IndexStatus) {
         // A scan that found no frames (odd container) is useless: keep the approximate index.
         guard current == session else { return }
-        guard exact.frameCount > 0, let old = index, let filler else { indexStatus = .failed; return }
+        guard exact.frameCount > 0, let old = index, let filler else { indexFailed(session: current); return }
         indexStatus = status
         let unchanged = old.agrees(with: exact)
         if !unchanged {
+            if let drag = edgeDrag, drag.directHandle != nil { marks = drag.original }
             let remap = { (n: Int) in exact.nearestFrameNumber(forPTS: old.pts(forFrame: n)) }
             position = remap(position)
             loopA = loopA.map(remap)
@@ -666,6 +685,30 @@ public final class PlayerCore {
         seek(toFrame: n, direction: direction, hold: .glued)
     }
 
+    public func dragFilm(toFrame target: Int) {
+        let origin = position
+        guard target != origin else { return }
+        seek(toFrame: target)
+        if let tick = scrubTicks.crossed(from: origin, to: position, keyframes: [], marks: tickMarks, at: now()) {
+            haptic(tick)
+        }
+    }
+
+    /// Released motion may advance only while the next requested picture is already ready.
+    public func coastFilm(toFrame target: Int) -> Bool {
+        guard isPaused, held(target, hold: .glued) == target else { return false }
+        guard cache.contains(target) else {
+            // A short cache gap can end a coast, but use any ready travel before it.
+            if let ready = cache.readyFilmSeekFrames(from: position, to: target).last,
+               held(ready, hold: .glued) == ready {
+                seek(toFrame: ready)
+            }
+            return false
+        }
+        if target != position { seek(toFrame: target) }
+        return true
+    }
+
     private func seek(toFrame n: Int, direction: Int, hold: SegmentHold) {
         landingID += 1
         readCache?.cancelReadAhead()   // blocks queued for the old position would delay this one
@@ -675,10 +718,8 @@ public final class PlayerCore {
     /// Every seek, step and scrub ends here, so each is held inside the locked segments.
     private func move(toFrame n: Int, direction: Int, hold: SegmentHold = .glued) {
         guard let index else { return }
-        if let bounds = virtualPlaybackBounds {
-            let first = index.frameNumber(forSeconds: bounds.lowerBound)
-            let last = max(first, index.frameNumber(before: bounds.upperBound))
-            position = min(max(n, first), last)
+        if let bounds = virtualFrameBounds {
+            position = min(max(n, bounds.lowerBound), bounds.upperBound)
         } else {
             position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: hold)
         }
@@ -744,7 +785,7 @@ public final class PlayerCore {
             }
             diagnosticLastTick = (host, seconds)
         }
-        let n = index.frameNumber(forSeconds: max(seconds, 0))
+        var n = index.frameNumber(forSeconds: max(seconds, 0))
         let last = index.frameCount - 1
         let atEnd = direction > 0 && n >= last && seconds >= index.seconds(forFrame: last) + 1 / (info?.frameRate ?? 30)
         let atStart = direction < 0 && seconds < index.seconds(forFrame: 0)
@@ -761,6 +802,8 @@ public final class PlayerCore {
                 onVirtualPlaybackBoundary?(-1)
                 return
             }
+            // Rounding to an index tick can select the first excluded frame just before the join.
+            if let frames = virtualFrameBounds { n = min(max(n, frames.lowerBound), frames.upperBound) }
         }
         // Locked segments without an A–B loop: `next` plays them as marks, round and round; `repeat` loops the current
         // one (`playbackLoop`). Play-marks-only waits while they are locked.
@@ -1074,8 +1117,9 @@ public final class PlayerCore {
 
     private func showCurrent() {
         checkPendingScreenshot()
-        let standIn = cache.nearestAvailable(to: position).flatMap {
-            abs($0.number - position) <= Self.standInDistance ? $0 : nil
+        let standIn: DecodedFrame? = cache.nearestAvailable(to: position).flatMap {
+            if let bounds = virtualFrameBounds, !bounds.contains($0.number) { return nil }
+            return abs($0.number - position) <= Self.standInDistance ? $0 : nil
         }
         if let frame = cache.frame(position) ?? standIn, frame.number != displayedFrame {
             display(frame)
@@ -1113,6 +1157,7 @@ public final class PlayerCore {
 
     private func focusUnavailable(_ n: Int, session current: Int) {
         guard current == session, n == position, cache.isUndecodable(n) else { return }
+        if virtualPlaybackBounds != nil, displayedFrame != n { onVirtualPictureUnavailable?() }
         showCurrent() // wakes deferred side work even when there is no new display-frame callback
     }
 
@@ -1635,6 +1680,32 @@ public final class PlayerCore {
 
     // MARK: Edge drag
 
+    /// Direct manipulation selects the painted boundary even when the playhead is in another segment.
+    @discardableResult
+    public func beginMarkEdgeDrag(_ handle: MarkEdgeHandle) -> Bool {
+        guard edgeDrag == nil, let index,
+              let drag = EdgeDrag(handle: handle, marks: marks, frameCount: index.frameCount) else { return false }
+        edgeDrag = drag
+        edgeAtLimit = false
+        pause()
+        return true
+    }
+
+    public func moveMarkEdge(toFrame target: Int) {
+        guard let drag = edgeDrag, drag.directHandle != nil else { return }
+        let bounded = min(drag.allowed.upperBound, max(drag.allowed.lowerBound, target))
+        let frame = held(bounded, hold: .nearest)
+        guard drag.allowed.contains(frame) else { return }
+        let moved = drag.marks(at: frame)
+        let changed = moved != marks
+        marks = moved
+        if position != frame {
+            seek(toFrame: frame, direction: frame < position ? -1 : 1, hold: .nearest)
+        } else if changed {
+            delegate?.playerStateDidChange(self)
+        }
+    }
+
     /// `scrub-edge` wheel step: begins a drag if none (keeping its edge until it ends), scrubs by `frames` within
     /// the drag's bounds, and puts the edge on the frame reached.
     public func scrubEdge(_ edge: MarkEdge, by frames: Int) {
@@ -2034,4 +2105,17 @@ public struct PreparedOpen: @unchecked Sendable {
 
     /// Releases what was read, for an open that was abandoned.
     public func discard() { readCache.close() }
+
+    /// One representative frame from a prepared cut source, using its already verified byte cache.
+    public func makeCutPreview(widthPixels: Int, landingIndex: FrameIndex? = nil) -> PreviewProvider {
+        var previewPolicy = policy
+        previewPolicy.previewSettle = 0
+        previewPolicy.sideReadAhead = false
+        let index = landingIndex.flatMap { index in
+            index.isExact && index.timeBase == source.timeBase && index.zeroPTS == source.startPTS ? index : nil
+        }
+        return PreviewProvider(url: url, index: index ?? source.approximateIndex(), rotationClockwise: source.rotationClockwise,
+                               widthPixels: widthPixels, readCache: readCache, policy: previewPolicy,
+                               qos: .utility, exactSample: true, retainsSourceFrame: index != nil)
+    }
 }

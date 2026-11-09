@@ -48,8 +48,11 @@ public enum PluginMessage: Equatable, Sendable {
     /// `items` go at the end of the playlist.
     case enqueue([PlaylistItem])
     case cutCatalog(PluginCutCatalog?)
-    case openOriginalFragment
-    case returnToVirtualCut
+    case openOriginalFragment(rangeID: String?)
+    case returnToVirtualCut(revision: String?)
+    case cutEditRange(VirtualCutFragmentEdges?)
+    case analysisSourceVersion(sourceID: String)
+    case analysisTimeline(sourceID: String, snapshot: PluginAnalysisTimeline?)
 
     /// Why a message was refused; the text reaches the page (a rejected promise, or an `error` event).
     public struct Failure: Error, Equatable, Sendable, CustomStringConvertible {
@@ -82,8 +85,20 @@ public enum PluginMessage: Equatable, Sendable {
                   let url = URL(string: value), let catalog = PluginCutCatalog(id: id, title: title, endpoint: url)
             else { throw Failure("invalid catalog descriptor") }
             return .cutCatalog(catalog)
-        case "openOriginalFragment": return .openOriginalFragment
-        case "returnToVirtualCut": return .returnToVirtualCut
+        case "openOriginalFragment": return .openOriginalFragment(rangeID: try args.optionalCutToken("rangeID"))
+        case "returnToVirtualCut": return .returnToVirtualCut(revision: try args.optionalCutToken("revision"))
+        case "cutEditRange":
+            guard let id = try args.optionalCutToken("rangeID") else { return .cutEditRange(nil) }
+            guard let edges = VirtualCutFragmentEdges(rangeID: id, start: try args.time("start"), end: try args.time("end"))
+            else { throw Failure("end must be above start") }
+            return .cutEditRange(edges)
+        case "analysisSourceVersion":
+            return .analysisSourceVersion(sourceID: try args.cutToken("sourceID"))
+        case "analysisTimeline":
+            let sourceID = try args.cutToken("sourceID")
+            if json["snapshot"] is NSNull { return .analysisTimeline(sourceID: sourceID, snapshot: nil) }
+            guard let object = json["snapshot"] as? [String: Any] else { throw Failure("snapshot must be an object or null") }
+            return .analysisTimeline(sourceID: sourceID, snapshot: try PluginAnalysisTimeline(Arguments(object)))
         case "seek":
             return .seek(try args.time("t"))
         case "play":
@@ -158,10 +173,23 @@ struct Arguments {
     func given(_ key: String) -> Bool { json[key].map { !($0 is NSNull) } ?? false }
 
     /// `a...b` from a JSON pair of numbers (booleans are not numbers); nil when it is not one.
-    private static func pair(_ value: Any) -> ClosedRange<Double>? {
+    static func pair(_ value: Any) -> ClosedRange<Double>? {
         guard let pair = value as? [NSNumber], pair.count == 2,
               pair.allSatisfy({ CFGetTypeID($0) != CFBooleanGetTypeID() }) else { return nil }
         return LinkTarget.segment(pair[0].doubleValue, pair[1].doubleValue)
+    }
+
+    func optionalCutToken(_ key: String) throws(Failure) -> String? {
+        guard let value = json[key], !(value is NSNull) else { return nil }
+        guard let token = value as? String, !token.isEmpty, token.utf8.count <= 128 else {
+            throw Failure("\(key) must be a short, non-empty string")
+        }
+        return token
+    }
+
+    func cutToken(_ key: String) throws(Failure) -> String {
+        guard let token = try optionalCutToken(key) else { throw Failure("\(key) is missing") }
+        return token
     }
 
     /// A finite number; nil when absent.
@@ -397,7 +425,7 @@ public enum PluginEvent: Equatable, Sendable {
     case blur
     /// A file is open (after an `open`, a link, or the user's own choice); `source` says whether it is read from a
     /// file (`path`) or from a stream, Stash's or a page's (`url`).
-    case fileOpened(path: String?, url: String?, scene: String?, source: PluginSource)
+    case fileOpened(path: String?, url: String?, scene: String?, source: PluginSource, sourceID: String? = nil)
     /// A command sent without an id failed.
     case error(String)
     /// The current segment or the lock changed (also by playback); `current` is nil outside any segment.
@@ -406,7 +434,10 @@ public enum PluginEvent: Equatable, Sendable {
     case action(name: String, t: Double, frame: Int)
     /// The page's slot changed: where it is, how it lies over the video, shown or not, keyboard or not.
     case panel(PanelInfo)
-    case editVirtualCut(id: String)
+    case editVirtualCut(id: String, rangeID: String? = nil)
+    case cutEdgeCommit(rangeID: String, edge: MarkEdge, frame: Int, time: Double)
+    case analysisFragment(id: String, refined: Bool, start: Double)
+    case analysisRefresh(sourceID: String)
 
     public var name: String {
         switch self {
@@ -418,6 +449,9 @@ public enum PluginEvent: Equatable, Sendable {
         case .action: "action"
         case .panel: "panel"
         case .editVirtualCut: "editvirtualcut"
+        case .cutEdgeCommit: "cutedgecommit"
+        case .analysisFragment: "analysisfragment"
+        case .analysisRefresh: "analysisrefresh"
         }
     }
 
@@ -426,8 +460,8 @@ public enum PluginEvent: Equatable, Sendable {
         switch self {
         case .focus, .blur:
             return nil
-        case let .fileOpened(path, url, scene, source):
-            return PluginJSON.encode(FileOpened(path: path, url: url, scene: scene, source: source))
+        case let .fileOpened(path, url, scene, source, sourceID):
+            return PluginJSON.encode(FileOpened(path: path, url: url, scene: scene, source: source, sourceID: sourceID))
         case let .error(reason):
             return PluginJSON.encode(reason)
         case let .segment(current, locked):
@@ -436,8 +470,17 @@ public enum PluginEvent: Equatable, Sendable {
             return PluginJSON.encode(ActionPressed(name: name, t: t, frame: frame))
         case let .panel(info):
             return info.json
-        case let .editVirtualCut(id):
-            return PluginJSON.encode(["id": id])
+        case let .editVirtualCut(id, rangeID):
+            var detail = ["id": id]
+            detail["rangeID"] = rangeID
+            return PluginJSON.encode(detail)
+        case let .cutEdgeCommit(rangeID, edge, frame, time):
+            return PluginJSON.encode(CutEdgeCommit(rangeID: rangeID, edge: edge == .start ? "start" : "end",
+                                                   frame: frame, time: time))
+        case let .analysisFragment(id, refined, start):
+            return PluginJSON.encode(AnalysisFragment(id: id, refined: refined, start: start))
+        case let .analysisRefresh(sourceID):
+            return PluginJSON.encode(["sourceID": sourceID])
         }
     }
 
@@ -445,6 +488,17 @@ public enum PluginEvent: Equatable, Sendable {
         var name: String
         var t: Double
         var frame: Int
+    }
+    private struct CutEdgeCommit: Encodable {
+        var rangeID: String
+        var edge: String
+        var frame: Int
+        var time: Double
+    }
+    private struct AnalysisFragment: Encodable {
+        var id: String
+        var refined: Bool
+        var start: Double
     }
 
     private struct SegmentChanged: Encodable {
@@ -465,8 +519,9 @@ public enum PluginEvent: Equatable, Sendable {
         var url: String?
         var scene: String?
         var source: PluginSource
+        var sourceID: String?
 
-        enum CodingKeys: String, CodingKey { case path, url, scene, source }
+        enum CodingKeys: String, CodingKey { case path, url, scene, source, sourceID }
 
         func encode(to encoder: Encoder) throws {
             var c = encoder.container(keyedBy: CodingKeys.self)
@@ -474,6 +529,7 @@ public enum PluginEvent: Equatable, Sendable {
             try c.encode(url, forKey: .url)
             try c.encode(scene, forKey: .scene)
             try c.encode(source, forKey: .source)
+            try c.encodeIfPresent(sourceID, forKey: .sourceID)
         }
     }
 }

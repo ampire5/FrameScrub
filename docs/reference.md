@@ -319,6 +319,29 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   recentering/resampling jump.
   The overview follows `seek-mode`; clicking a film cell selects its displayed time precisely. Small pointer jitter
   remains a click; dragging starts after 6 pt. Scrolling the overview steps the hover preview's keyframes.
+  A film click seeks immediately while the strip coasts for 80–160 ms at the default setting, depending on distance.
+  Distant clicks briefly dissolve from the previous view and finish the coast near the destination.
+  Uncheck Inertial Filmstrip Motion in the Filmstrip sliders panel or context menu to turn it off.
+  macOS Reduce Motion also skips the effect.
+  Drag the film to scrub directly. A fast release can coast through ready frames for up to 220 ms by default.
+  A horizontal two-finger scroll follows the trackpad's momentum while the requested frames are ready.
+  Grab the moving strip to stop on its current frame, or release slowly to stay on the selected frame.
+  Pulling past a file edge stretches the strip slightly while the picture holds at the edge.
+  Crossing a mark while dragging gives a tick on supported haptic mice.
+  Drag a green handle at the bottom of the filmstrip to move that edit boundary. The video follows the
+  edited frame, and an Original inset appears when the starting frame is cached. Release to commit one undo
+  step, or press Esc to restore the original boundary.
+  Slow dragging gives finer control, including in Whole File view, and briefly catches on nearby editing marks.
+  Keep dragging to pass the mark, or reverse to leave it immediately. Hold Option while dragging for direct
+  movement without the precision curve or mark catch.
+  Enable Show Frames During Filmstrip Seeks in the Filmstrip sliders panel to preview a paused jump when the
+  destination is ready. Transition duration (100–300 ms, default 180 ms) sets the preview budget and scales
+  the strip animation. Light, Balanced and Smooth cap preview density at 30, 60 and 120 fps respectively.
+  Jumps of up to 240 frames can use any ready video frames in between, and other jumps can show cached
+  filmstrip thumbnails. A preview needs at least two intermediate pictures.
+  When the budget and cache allow it, the preview keeps consecutive frames immediately before the destination.
+  The player lowers the number of preview pictures when rendering is busy or the display refreshes more slowly.
+  Clicking again, dragging, or issuing an editing command ends the preview.
   Thumbnails keep the picture's proportions, rotation and current aspect/crop. Hovering highlights a cell and
   enlarges its cached picture over the film without changing its height or reading the file again.
   The sliders button beside the three view icons opens a live dropdown directly from the film; Right-click ›
@@ -344,8 +367,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   leaves the zone. Pinning the film does not force the playback chrome to remain visible.
   Mouse-wheel scrolling selects adjacent loaded thumbnails already displayed in the film (vertical mouse direction
   is inverted). Vertical trackpad scrolling also steps displayed samples; horizontal trackpad gestures seek continuously.
-  Sample steps animate only the film geometry for 140 ms, reuse cached pictures and stop at the visible sample ends. Starting a film scroll or drag pauses playback and enables scrub filling;
-  Option-scroll changes this view's outside density/step. Scroll momentum does not cause further seeking.
+  Sample steps animate the film geometry for 180 ms at the default setting, reuse cached pictures and stop
+  at the visible sample ends. Starting a film scroll or drag pauses playback and enables scrub filling.
+  Option-scroll changes this view's outside density or step.
   Right-click the timeline for thumbnail sizes, Hide Filmstrip and Always Show Playback Controls. Existing editing
   commands and the mouse's viewing/editing profiles remain available; this stage adds no editing toolbar.
 - Film thumbnails load through one utility decoder while the film is revealed and visible, during playback too.
@@ -897,10 +921,23 @@ radius32 and texture protection1. Mild uses Window .5/9/24. Both disable colour 
 
 A configured plugin can list cuts in File View. Open a card to play its
 ranges on one timeline. Use the seek bar or ⌘G for a time in the cut.
+The filmstrip opens in overview mode, with a divider at each join and
+the current fragment number next to the cut time. Hover over the strip
+to see the fragment number, cut time and original time range. A source editor can
+mark ranges on the original's own filmstrip with unlocked segments.
 Previous and Next move between ranges. The A–B action toggles looping
 the whole cut. On a missing source, Return retries and Next skips.
 The cut remembers its own position. The card's **Edit Cut** action
 returns to the plugin editor.
+
+Click a fragment number on the filmstrip to select its row in the
+editor. **Edit This Fragment** in the timeline's context menu works
+where numbers are too close to display. With a supporting editor,
+**Show original context** opens the source at the selected frame.
+Drag either amber handle at the bottom of the filmstrip to adjust
+the selected fragment. The picture follows the handle. Escape cancels
+the drag. **Save cut** saves the draft, and **Return to cut** loads
+that revision and keeps the frame when it still belongs to the fragment.
 
 ### Provider contract
 
@@ -932,3 +969,30 @@ open. The plugin can still issue explicit player commands.
 - **Edit Cut** emits `editvirtualcut` with `{id}` to the registering page.
   `framescrub.openOriginalFragment()` opens the source at the current
   frame. `framescrub.returnToVirtualCut()` returns to the cut.
+- In original context, `framescrub.cutEditRange(rangeID, start, end)`
+  shows handles for one authored range. Call `framescrub.cutEditRange()`
+  to clear them. A completed drag emits `cutedgecommit` to the owning
+  editor with `{rangeID, edge, frame, time}` in source coordinates.
+  The editor applies it to its draft and decides when to save.
+
+### Live analysis providers
+
+For an opened original file, `fileopened` and player state include an opaque
+`sourceID`. A configured plugin can call
+`await framescrub.analysisSourceVersion(sourceID)` to get the open file's
+OpenSubtitles fingerprint and match it to the provider's result.
+
+`framescrub.analysisTimeline(sourceID, snapshot)` updates the analysis
+layer. A snapshot contains `{jobID, covered, fragments}`. Set the optional
+`running` boolean while a job is pending. While the video window is visible,
+the host sends `analysisrefresh` with `{sourceID}` to the owning page. The page
+can poll the provider in response, even when its panel is hidden. Coverage is a list
+of `[start, end]` pairs. Findings are `{id, start, end, refined}` objects
+with stable IDs. Times are seconds on the original, and each list can hold
+up to 2,000 entries. Pass `null` to clear the layer. A source change also
+clears it and retires the source ID.
+
+A click on a finding emits `analysisfragment` with
+`{id, refined, start}` to the page that published the layer. The plugin
+can select its row and seek. The layer and the existing segment playback
+commands are independent, so coverage can advance while the user watches.

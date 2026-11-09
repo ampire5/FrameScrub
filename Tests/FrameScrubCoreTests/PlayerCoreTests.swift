@@ -1335,6 +1335,30 @@ final class HapticLog {
 
     // MARK: Edge drag
 
+    @Test func directEdgeDragSelectsAnotherSegmentAndCommitsOnce() async throws {
+        let (player, _, _) = try makePlayer()
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true })
+        setMark(player, 100, 200)
+        setMark(player, 300, 400)
+        let original = player.marks
+        player.seek(toFrame: 150)
+        #expect(player.beginMarkEdgeDrag(.segment(frame: 300, edge: .start)))
+        player.moveMarkEdge(toFrame: 100)
+        #expect(player.position == 202)
+        #expect(player.marks.segments == [CutSegment(start: 100, end: 200), CutSegment(start: 202, end: 400)])
+        player.cancelEdgeDrag()
+        #expect(player.marks == original)
+
+        #expect(player.beginMarkEdgeDrag(.segment(frame: 300, edge: .start)))
+        player.moveMarkEdge(toFrame: 280)
+        player.moveMarkEdge(toFrame: 260)
+        player.endEdgeDrag()
+        #expect(player.marks.segments.last?.start == 260)
+        player.undoMarks()
+        #expect(player.marks == original)
+    }
+
     @Test func edgeDragMovesTheStartWithThePlayheadAndCommitsAsOneUndo() async throws {
         let (player, delegate, _) = try makePlayer()
         defer { player.close() }

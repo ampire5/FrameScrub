@@ -19,6 +19,14 @@ public struct OpenFailure: Equatable, Sendable {
     }
 
     public init(_ error: Error) {
+        if error is VirtualCutMediaVersion.Changed {
+            self.init(reason: "The source file changed since the cut was saved.", detail: "")
+            return
+        }
+        self.init(classifying: error)
+    }
+
+    private init(classifying error: Error) {
         ownReason = nil
         detail = String(describing: error)
         if let ffmpeg = error as? FFmpegError {

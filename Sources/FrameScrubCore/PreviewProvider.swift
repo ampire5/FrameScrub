@@ -7,6 +7,7 @@ public struct PreviewImage: @unchecked Sendable {
     public let frameSeconds: Double
     public let requestedAt: Double
     public let readyAt: Double
+    public let sourceFrame: DecodedFrame?
 }
 
 /// Thumbnails for the seek bar (spec §7.3): a background decoder with its own demuxer returns the keyframe
@@ -46,16 +47,21 @@ public final class PreviewProvider: @unchecked Sendable {
         let at: Double
     }
     private var worker: LatestOnlyWorker<Request>!
+    private let exactSample: Bool
+    private let retainsSourceFrame: Bool
 
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
                 policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated,
-                imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil) {
+                imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil, exactSample: Bool = false,
+                retainsSourceFrame: Bool = false) {
         self.url = url
         self.readCache = readCache
         self.index = index
         self.imagePool = imagePool.flatMap { $0.matches(url: url, rotationClockwise: rotationClockwise) ? $0 : nil }
             ?? PreviewImagePool(url: url, rotationClockwise: rotationClockwise)
         self.frameCache = frameCache
+        self.exactSample = exactSample
+        self.retainsSourceFrame = retainsSourceFrame
         rotation = rotationClockwise
         self.widthPixels = max(1, widthPixels)
         readThrottle = PreviewReadThrottle(interval: policy.previewSettle)
@@ -76,7 +82,7 @@ public final class PreviewProvider: @unchecked Sendable {
                               generation: generation, at: PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0)
         // Shared ready images bypass a worker waiting on a cold-read deadline or decoding.
         if current.isExact {
-            let key = current.pts(forFrame: current.keyframe(atOrBefore: current.frameNumber(forSeconds: seconds)))
+            let key = current.pts(forFrame: sampleFrame(seconds, index: current))
             if let image = imagePool.image(pts: key, widthPixels: widthPixels) {
                 if PlaybackDiagnostics.enabled { PlaybackDiagnostics.shared.record("cache_hit", 1, group: diagnosticGroup) }
                 deliver(image, request: request, frameSeconds: current.seconds(forPTS: key))
@@ -94,9 +100,14 @@ public final class PreviewProvider: @unchecked Sendable {
     public func canReuse(seconds: Double) -> Bool {
         let current = lock.withLock { index }
         guard current.isExact else { return false }
-        let n = current.keyframe(atOrBefore: current.frameNumber(forSeconds: seconds))
+        let n = sampleFrame(seconds, index: current)
         let pts = current.pts(forFrame: n)
         return imagePool.contains(pts: pts, widthPixels: widthPixels) || frameCache?.frame(n)?.pts == pts
+    }
+
+    private func sampleFrame(_ seconds: Double, index: FrameIndex) -> Int {
+        let frame = index.frameNumber(forSeconds: seconds)
+        return exactSample ? frame : index.keyframe(atOrBefore: frame)
     }
 
     public func stop() {
@@ -117,15 +128,15 @@ public final class PreviewProvider: @unchecked Sendable {
         let (current, skip) = lock.withLock { (index, stopped || failed) }
         guard !skip else { return }
         let n = current.frameNumber(forSeconds: seconds)
-        let key: Int64? = current.isExact ? current.pts(forFrame: current.keyframe(atOrBefore: n)) : nil
+        let sample = sampleFrame(seconds, index: current)
+        let key: Int64? = current.isExact ? current.pts(forFrame: sample) : nil
         if let key, let hit = imagePool.image(pts: key, widthPixels: widthPixels) {
             if PlaybackDiagnostics.enabled { report.record("cache_hit", 1, group: diagnosticGroup) }
             deliver(hit, request: request, frameSeconds: current.seconds(forPTS: key))
             return
         }
         if let key {
-            let keyframe = current.keyframe(atOrBefore: n)
-            if let frame = frameCache?.frame(keyframe), frame.pts == key,
+            if let frame = frameCache?.frame(sample), frame.pts == key,
                let image = renderer.thumbnail(for: frame, rotationClockwise: rotation, width: widthPixels) {
                 imagePool.set(image, pts: frame.pts, widthPixels: widthPixels)
                 deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts))
@@ -168,7 +179,8 @@ public final class PreviewProvider: @unchecked Sendable {
             decoder.diagnosticRole = "preview"
             decoder.index = current
             let seekStart = PlaybackDiagnostics.now()
-            try decoder.seekToKeyframe(near: n)
+            if exactSample { try decoder.seek(toFrame: n) }
+            else { try decoder.seekToKeyframe(near: n) }
             guard let frame = try decoder.nextFrame() else { return }
             measure("seek_decode_ms", since: seekStart)
             let renderStart = PlaybackDiagnostics.now()
@@ -176,7 +188,8 @@ public final class PreviewProvider: @unchecked Sendable {
             measure("thumbnail_render_ms", since: renderStart)
             lock.withLock { decodes += 1 }
             imagePool.set(image, pts: frame.pts, widthPixels: widthPixels)
-            deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts))
+            deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts),
+                    sourceFrame: retainsSourceFrame ? frame : nil)
         } catch {
             decoder = nil      // a transient seek/decode error drops this request; the next one reopens the file
         }
@@ -189,10 +202,10 @@ public final class PreviewProvider: @unchecked Sendable {
         }
     }
 
-    private func deliver(_ image: CGImage, request: Request, frameSeconds: Double) {
+    private func deliver(_ image: CGImage, request: Request, frameSeconds: Double, sourceFrame: DecodedFrame? = nil) {
         let ready = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
         let result = PreviewImage(image: image, requestedSeconds: request.seconds, frameSeconds: frameSeconds,
-                                  requestedAt: request.at, readyAt: ready)
+                                  requestedAt: request.at, readyAt: ready, sourceFrame: sourceFrame)
         let group = diagnosticGroup
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }

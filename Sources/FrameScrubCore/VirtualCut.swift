@@ -64,6 +64,44 @@ public struct VirtualCut: Codable, Equatable, Sendable {
     }
 }
 
+/// The authored row currently editable on the original filmstrip. Its end is exclusive.
+public struct VirtualCutFragmentEdges: Equatable, Sendable {
+    public let rangeID: String
+    public let start: Double
+    public let end: Double
+
+    public init?(rangeID: String, start: Double, end: Double) {
+        guard !rangeID.isEmpty, rangeID.utf8.count <= 128, start.isFinite, end.isFinite,
+              start >= 0, end > start, end <= Double(Int32.max) else { return nil }
+        self.rangeID = rangeID
+        self.start = start
+        self.end = end
+    }
+
+    public func time(for edge: MarkEdge) -> Double { edge == .start ? start : end }
+
+    public func landing(edge: MarkEdge, at target: Double, index: FrameIndex,
+                        duration: Double) -> (frame: Int, time: Double)? {
+        guard index.isExact, index.frameCount > 0, target.isFinite, duration.isFinite, duration > 0 else { return nil }
+        let last = index.frameCount - 1
+        let target = min(max(target, 0), duration)
+        let frame = index.frameNumber(forSeconds: target)
+        switch edge {
+        case .start:
+            let candidate = min(frame, index.frameNumber(before: min(end, duration)))
+            let time = max(0, index.seconds(forFrame: candidate))
+            return time < min(end, duration) ? (candidate, time) : nil
+        case .end:
+            if target == duration, duration > start { return (index.frameNumber(before: duration), duration) }
+            let firstLater = index.frameNumber(before: start.nextUp) + 1
+            let candidate = min(last, max(frame, firstLater))
+            let time = index.seconds(forFrame: candidate)
+            if time > start, time < duration { return (candidate, time) }
+            return duration > start ? (index.frameNumber(before: duration), duration) : nil
+        }
+    }
+}
+
 /// Time is in seconds, and each span's end is exclusive.
 public struct VirtualCutTimeline: Equatable, Sendable {
     public struct Span: Equatable, Sendable {
@@ -168,8 +206,26 @@ public struct VirtualCutTimeline: Equatable, Sendable {
         return Anchor(rangeID: ranges[member].id, sourceTime: location.sourceTime)
     }
 
-    public func resume(at anchor: Anchor) -> Double {
-        guard let index = authoredIndex[anchor.rangeID], anchor.sourceTime.isFinite else { return 0 }
+    /// Picks the authored row under the playhead, or the row at the selected span's start.
+    public func editAnchor(span: Int, currentTime: Double) -> Anchor? {
+        guard spans.indices.contains(span) else { return nil }
+        return anchor(at: location(at: currentTime)?.spanIndex == span ? currentTime : spans[span].cutStart)
+    }
+
+    public func editAnchor(rangeID: String, currentTime: Double) -> Anchor? {
+        guard let row = authoredIndex[rangeID] else { return nil }
+        let range = ranges[row]
+        if let current = location(at: currentTime), current.spanIndex == spanForRange[row],
+           range.start <= current.sourceTime, current.sourceTime < range.end {
+            return Anchor(rangeID: rangeID, sourceTime: current.sourceTime)
+        }
+        return Anchor(rangeID: rangeID, sourceTime: range.start)
+    }
+
+    public func resume(at anchor: Anchor, fallback: Double = 0) -> Double {
+        guard let index = authoredIndex[anchor.rangeID], anchor.sourceTime.isFinite else {
+            return fallback.isFinite ? min(max(0, fallback), duration) : 0
+        }
         let range = ranges[index]
         let span = spans[spanForRange[index]]
         let sourceTime = max(range.start, min(anchor.sourceTime, range.end.nextDown))

@@ -81,8 +81,11 @@ public enum PluginBridgeScript {
           focusPlayer() { this.send("focusPlayer"); },
           hide() { this.send("hide"); },
           cutCatalog(catalog) { return this.request("cutCatalog", {catalog}); },
-          openOriginalFragment() { this.send("openOriginalFragment"); },
-          returnToVirtualCut() { this.send("returnToVirtualCut"); },
+          openOriginalFragment(rangeID = null) { return this.request("openOriginalFragment", {rangeID}); },
+          returnToVirtualCut(revision = null) { return this.request("returnToVirtualCut", {revision}); },
+          cutEditRange(rangeID = null, start, end) { this.send("cutEditRange", {rangeID, start, end}); },
+          analysisSourceVersion(sourceID) { return this.request("analysisSourceVersion", {sourceID}); },
+          analysisTimeline(sourceID, snapshot) { this.send("analysisTimeline", {sourceID, snapshot}); },
           playlist(items, opts) {
             const args = {items};
             if (opts && opts.index !== undefined) args.index = opts.index;

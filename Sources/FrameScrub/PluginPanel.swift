@@ -157,6 +157,7 @@ import WebKit
     }
 
     private let webView: PanelWebView
+    private let preferences: WKPreferences
     private let content = WKUserContentController()
     private let handler = MessageProxy()
     private let keyHandler = MessageProxy()
@@ -209,6 +210,7 @@ import WebKit
 
     override init(frame: NSRect) {
         let config = WKWebViewConfiguration()
+        preferences = config.preferences
         content.add(handler, name: "framescrub")
         config.userContentController = content
         content.add(keyHandler, name: "framescrubKeys")
@@ -401,6 +403,12 @@ import WebKit
     }
 
     /// Tells the page something happened.
+    /// Keep a hidden analysis page eligible to poll while its timeline is visible.
+    func setAnalysisPollingAllowed(_ allowed: Bool) {
+        let policy: WKPreferences.InactiveSchedulingPolicy = allowed ? .throttle : .suspend
+        if preferences.inactiveSchedulingPolicy != policy { preferences.inactiveSchedulingPolicy = policy }
+    }
+
     func dispatch(_ event: PluginEvent) {
         call("if (window.framescrub) window.framescrub._event(name, detail == null ? undefined : JSON.parse(detail))",
              ["name": event.name, "detail": event.detail as Any? ?? NSNull()])

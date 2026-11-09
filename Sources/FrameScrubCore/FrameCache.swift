@@ -41,6 +41,14 @@ public final class FrameCache {
 
     public func frame(_ n: Int) -> DecodedFrame? { lock.withLock { frames[n] } }
     public func contains(_ n: Int) -> Bool { lock.withLock { frames[n] != nil } }
+
+    /// Inspect a bounded seek corridor in one lock acquisition, in travel order.
+    public func readyFilmSeekFrames(from origin: Int, to target: Int) -> [Int] {
+        guard origin >= 0, target >= 0, (2...TimelineClickMotion.maximumFramePreviewDistance).contains(abs(target - origin))
+        else { return [] }
+        let step = target > origin ? 1 : -1
+        return lock.withLock { stride(from: origin + step, to: target, by: step).filter { frames[$0] != nil } }
+    }
     public func isUndecodable(_ n: Int) -> Bool { lock.withLock { undecodable.contains(n) } }
 
     /// Cached or known to be undecodable: either way there is nothing left to decode.

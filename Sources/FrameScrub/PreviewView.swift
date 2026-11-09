@@ -21,6 +21,7 @@ final class PreviewView: NSView {
         imageView.layer?.masksToBounds = true
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         label.textColor = .white
+        label.maximumNumberOfLines = 0
         stack.orientation = .vertical
         stack.spacing = 4
         stack.edgeInsets = NSEdgeInsets(top: 4, left: 4, bottom: 4, right: 4)

@@ -49,6 +49,29 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   sample can trigger planning, with no per-frame replan for all-intra media. Folded delivery caches without
   invalidation. Active hover preview, export, interactions, Home and occlusion gate preparation. It uses the same
   reader and introduces no full-file scan or timer.
+- Filmstrip clicks seek immediately through the normal player path. `SeekBarView` owns the presentation-only
+  coast on its finite main-run-loop transition timer. Distant clicks briefly blend the old geometry with the
+  destination neighborhood. Thumbnail requests resume for the settled view; intermediate positions never
+  reach the decoder. File changes, other position input and hiding cancel the coast.
+  The optional frame preview uses `VideoView`'s existing display link while paused. It checks for every ready
+  intermediate frame in a corridor of up to 240 frames under one cache lock, or uses up to three existing
+  filmstrip thumbnails. It performs no media reads and keeps the normal seek authoritative for edits,
+  exports and playback. New input, a new player frame or hiding ends the preview.
+  VideoView limits preview density using cached availability, the display link interval and recent CPU
+  encoding and GPU execution times. It retains at most one sampled command buffer and reads its
+  status without waiting. A pending sample can skip an intermediate picture. The destination draws normally.
+  A direct drag uses its mouse-down projection and moves the real playhead, with throttled mark haptics.
+  Slow drag gains use the local frame interval, with an optional detent on a nearby editing mark. Reversing
+  releases the detent on the first movement. The preview sampler reserves a short consecutive arrival run
+  when it is already in cache and fits the display budget.
+  Painted mark handles identify a specific source-frame boundary and share `EdgeDrag` bounds, undo and
+  cancellation with the wheel editor. The view holds its pointer-down projection during the edit.
+  A latest-only utility worker can make one original reference thumbnail from the decoded cache.
+  A fast release advances at roughly 30 samples per second on the same finite timer and interpolates the
+  film geometry between those updates. It lasts up to 220 ms at the default transition setting.
+  The horizontal trackpad gesture accepts native momentum only for its owned scroll sequence.
+  Each sample must be ready in the playback cache and inside the current segment lock. The first miss,
+  a fresh grab, a command or hiding cancels the coast. Edge resistance shifts only the film cells.
 - `LowLatencyDisplay` (App) owns display-only Apple LL SR, temporal-only LL interpolation and Temporal Noise Filter.
   For TNF the controller retains at most one previous and two next cached originals with index timestamps; LL FI needs
   one consecutive next frame. `PlayerCore.onDisplayReferencesChange` wakes only the current TNF neighborhood when
@@ -169,8 +192,40 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   owns analysis, shared draft persistence, revisions and previews, outside the player process.
   An open cut is an immutable provider snapshot. The catalog builds and validates its timeline once off the
   main actor. Native playback does not query the provider to seek or to advance.
+  File View stays visible until the first target picture has been queued for rendering. Source changes keep the last
+  picture and window frame, then apply the new source's fitted geometry with its first frame. Cut failures
+  distinguish resolution, file open and first-picture errors. Source opens within a cut do not send the plugin
+  an original-scene event; plugin state and seeks use cut seconds until the user opens an original.
+  A first target missing on the approximate index can advance to a decodable frame within the same span,
+  or retry the requested source time when the exact index arrives. A new target supersedes that retry.
+  A cut retains exact indexes for up to four recently used, fingerprinted sources and caps timestamp storage
+  at approximately 8 MiB. Reopening a source still verifies the file; an index hit avoids scanning it again.
+  The cut filmstrip marks joins in cut time and retains bounded in-range samples across source opens.
+  It can reuse the upcoming source's verified byte cache for one representative frame. The active filmstrip
+  reader and upcoming preview share a utility read slot, gated by foreground readiness and visibility.
+  For a source with a retained exact index, the upcoming preview can also retain one decoded landing frame
+  up to 32 MiB. The player seeds its cache only if the live seek resolves to that same frame and timestamp.
+  Playback requests at most one cold visible sample per span; further cold detail is filled while paused.
+  A source editor can publish unlocked segments to show its ranges and dim the rest of the source timeline.
+  A numbered filmstrip marker sends an explicit edit event to the owning catalog page with the authored row ID.
+  Original context verifies the source fingerprint and opens at the row's source time. The owning editor can
+  publish the selected authored row's bounds separately from the merged guides. The player previews a dragged
+  edge on the exact source frame index and emits one commit to that editor on release. The editor owns the draft
+  and saves it. On return, the host can read the requested revision from the same catalog and remap the row ID
+  and source time onto its timeline.
+  An unrelated media open invalidates the context, so a late reply cannot replace that media.
+  Live analysis is provider-owned too. A configured page can request the current original file's fingerprint
+  on demand. The host reuses the open read cache, reads only the fingerprint blocks on a utility worker, and
+  invalidates the open token on source changes. The page matches the fingerprint to the provider's job before
+  publishing checked intervals and provisional or refined findings. The timeline renders those snapshots in a
+  separate layer. A marker click goes to the page that supplied it. Updating the layer does not change transport
+  state or the ordinary segment lock. While a job runs and the video window is visible, the host periodically
+  signals the owning page to refresh. The page polls with at most one request in flight. Completion, source
+  change or window occlusion stops refresh signals and restores the default WebKit scheduling.
   A continuous gesture keeps one replaceable cross-source seek. Same-source targets and explicit moves execute at
   once; pointer-up flushes a queued seek, and a paused Home retains the target without starting an open.
+  Dragging the cut filmstrip keeps its pointer-down projection in cut time. Source-file inertia and its cached
+  frame previews stay on the original file timeline, where a cached frame has an unambiguous source index.
 
 ## Concurrency and cancellation
 

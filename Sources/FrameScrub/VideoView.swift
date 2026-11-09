@@ -114,6 +114,22 @@ final class VideoView: NSView {
     private var panPress = false
     private var imageIsHDR = false
     private var currentFrame: DecodedFrame?
+    private enum FilmSeekPictures {
+        case frames([Int], FrameCache)
+        case thumbnails([CGImage])
+
+        var count: Int {
+            switch self {
+            case .frames(let numbers, _): numbers.count
+            case .thumbnails(let images): images.count
+            }
+        }
+    }
+    private var filmSeekPreview: (began: CFTimeInterval, target: Int, pictures: FilmSeekPictures, duration: Double, slot: Int)?
+    private var filmSeekRefreshInterval = 1.0 / 60
+    private var filmSeekRenderCost = 0.0
+    private var lastFilmSeekSample = -Double.infinity
+    private var filmSeekRenderSample: (buffer: MTLCommandBuffer, encodeCost: Double)?
     private var headroom = 1.0
     private var headroomCheck = 0
     private var needsRender = false
@@ -184,6 +200,8 @@ final class VideoView: NSView {
 
     /// Stops the display link (it retains its target) so the view can be released.
     func stop() {
+        cancelFilmSeekPreview()
+        filmSeekRenderSample = nil
         artifactPreparation?.cancel(); artifactPreparation = nil
         lowLatency.clear()
         frameLink?.invalidate()
@@ -216,22 +234,29 @@ final class VideoView: NSView {
 
     /// Drops the displayed frame (used when a new file is opened). The old picture stays on screen until the next
     /// one is drawn, unless `blank` paints the view black now (nothing will follow: an error, no file left).
-    func clear(blank: Bool = false) {
+    func clear(blank: Bool = false, keepingPicture: Bool = false) {
+        cancelFilmSeekPreview()
+        filmSeekRenderSample = nil
+        filmSeekRenderCost = 0
+        lastFilmSeekSample = -.infinity
         lowLatency.clear()
-        image = nil
+        if !keepingPicture {
+            image = nil
+            imageIsHDR = false
+            zoomPan.reset()
+        }
         currentFrame = nil
-        imageIsHDR = false
         focusMask = nil
         masker.reset()
         skipCounter.reset()
         presentationLedger.reset(); presentationTicket = nil; lastPresentationAt = nil
         lastArrivalNumber = nil; diagnosticEpoch = UUID()
-        zoomPan.reset()
         needsRender = blank
     }
 
     /// `playing`: false while paused, so a frame stepped or scrubbed to gets a finer mask.
     func show(_ frame: DecodedFrame, playing: Bool = true) {
+        cancelFilmSeekPreview()
         if PlaybackDiagnostics.enabled {
             let replaced = presentationLedger.replacedBeforeSubmission
             presentationTicket = presentationLedger.arrive(at: PlaybackDiagnostics.now(), playing: playing)
@@ -253,6 +278,72 @@ final class VideoView: NSView {
         needsRender = true
         framePlaying = playing
         if subjectFocus != nil { requestMask(for: frame, accurate: false) }
+    }
+
+    func previewFilmSeek(from origin: Int, to target: Int, cache: FrameCache, settings: FilmSeekPreviewSettings) -> Bool {
+        guard currentFrame?.number == target, canPreviewFilmSeek else { return false }
+        let numbers = cache.readyFilmSeekFrames(from: origin, to: target)
+        let budget = filmSeekBudget(available: numbers.count, thumbnails: false, settings: settings)
+        guard budget.count >= 2 else { return false }
+        filmSeekPreview = (CACurrentMediaTime(), target, .frames(budget.selectFrames(numbers, target: target), cache),
+                           budget.duration, 0)
+        needsRender = true
+        return true
+    }
+
+    func previewFilmSeek(thumbnails: [CGImage], target: Int, settings: FilmSeekPreviewSettings) {
+        guard currentFrame?.number == target, canPreviewFilmSeek else { return }
+        let budget = filmSeekBudget(available: thumbnails.count, thumbnails: true, settings: settings)
+        guard budget.count >= 2 else { return }
+        filmSeekPreview = (CACurrentMediaTime(), target, .thumbnails(budget.select(thumbnails)), budget.duration, 0)
+        needsRender = true
+    }
+
+    private func filmSeekBudget(available: Int, thumbnails: Bool, settings: FilmSeekPreviewSettings) -> FilmSeekRenderBudget {
+        FilmSeekRenderBudget(available: available, thumbnails: thumbnails,
+                             refreshInterval: filmSeekRefreshInterval, renderCost: filmSeekRenderCost, settings: settings)
+    }
+
+    func cancelFilmSeekPreview() {
+        guard filmSeekPreview != nil else { return }
+        filmSeekPreview = nil
+        needsRender = true
+    }
+
+    func updateFilmSeekPreview(position: Int, paused: Bool) {
+        if let preview = filmSeekPreview, !paused || preview.target != position { cancelFilmSeekPreview() }
+    }
+
+    private var canPreviewFilmSeek: Bool {
+        subjectFocus == nil && focusDrawn == nil && llImage == nil
+            && window?.occlusionState.contains(.visible) == true
+    }
+
+    private func advanceFilmSeekPreview() {
+        guard let preview = filmSeekPreview else { return }
+        let progress = (CACurrentMediaTime() - preview.began) / preview.duration
+        guard progress < 1, canPreviewFilmSeek else { cancelFilmSeekPreview(); return }
+        let slot = min(preview.pictures.count - 1, Int(progress * Double(preview.pictures.count)))
+        if slot != preview.slot {
+            filmSeekPreview?.slot = slot
+            needsRender = true
+        }
+    }
+
+    private func updateFilmSeekRenderBudget(_ link: CADisplayLink) {
+        let refreshInterval = link.targetTimestamp - link.timestamp
+        if refreshInterval > 0 { filmSeekRefreshInterval = refreshInterval }
+        guard let sample = filmSeekRenderSample else { return }
+        switch sample.buffer.status {
+        case .completed:
+            let gpuCost = max(0, sample.buffer.gpuEndTime - sample.buffer.gpuStartTime)
+            let cost = min(0.10, sample.encodeCost + gpuCost)
+            // Back off on the first expensive frame, recover gradually across successful renders.
+            filmSeekRenderCost = max(cost, 0.75 * filmSeekRenderCost + 0.25 * cost)
+        case .error: filmSeekRenderCost = 0.10
+        default: return
+        }
+        filmSeekRenderSample = nil
     }
 
     /// Diagnostic interval boundaries must follow pause/resume even without another decoded frame.
@@ -469,8 +560,10 @@ final class VideoView: NSView {
     }
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
+        updateFilmSeekRenderBudget(link)
         onTick?()
         if let effectClock { lowLatency.tick(at: effectClock()) }
+        advanceFilmSeekPreview()
         zoomPan.tick(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         headroomCheck += 1
         if headroomCheck % 30 == 0 { refreshHeadroom() }   // about twice a second at 60 Hz
@@ -481,9 +574,35 @@ final class VideoView: NSView {
         guard needsRender else { return }
         guard let image else { renderBlack(); return }
         if window?.occlusionState.contains(.visible) == false { return }
+        var previewFrame: DecodedFrame?
+        var previewThumbnail: CGImage?
+        if let preview = filmSeekPreview {
+            if canPreviewFilmSeek {
+                switch preview.pictures {
+                case .frames(let numbers, let cache): previewFrame = cache.frame(numbers[preview.slot])
+                case .thumbnails(let images): previewThumbnail = images[preview.slot]
+                }
+            }
+            if previewFrame == nil, previewThumbnail == nil { cancelFilmSeekPreview() }
+        }
+        let isPreview = previewFrame != nil || previewThumbnail != nil
+        // An intermediate picture can miss a refresh. The destination still uses the normal render path.
+        if isPreview, filmSeekRenderSample != nil { return }
+        let renderStarted = CACurrentMediaTime()
+        let sourceImage: CIImage
+        let hdr: Bool
+        if let previewFrame {
+            let plan = ToneMapPlan.resolve(range: previewFrame.dynamicRange, displayHeadroom: headroom)
+            sourceImage = FrameImageRenderer.displayImage(for: previewFrame, rotationClockwise: rotationClockwise, plan: plan)
+            hdr = plan != .none && plan != .toSDR
+        } else {
+            sourceImage = image
+            hdr = imageIsHDR
+        }
+        let frameNumber = previewFrame?.number ?? currentFrame?.number ?? 0
         let size = metalLayer.drawableSize
         guard size.width > 0, size.height > 0 else { return }
-        let aspect = geometry.aspect(of: image.extent.size)   // of the shown picture: cropped, in square pixels
+        let aspect = geometry.aspect(of: sourceImage.extent.size)   // of the shown picture: cropped, in square pixels
         let fittedSize = size.width / size.height > aspect
             ? CGSize(width: (size.height * aspect).rounded(), height: size.height)
             : CGSize(width: size.width, height: (size.width / aspect).rounded())
@@ -501,8 +620,8 @@ final class VideoView: NSView {
               let drawable = metalLayer.nextDrawable(),
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         needsRender = false
-        let fit = fittedSize.height / geometry.cropRect(in: image.extent.size).height
-        if abs(fit - displayRatio) > 0.001 {
+        let fit = fittedSize.height / geometry.cropRect(in: sourceImage.extent.size).height
+        if !isPreview, abs(fit - displayRatio) > 0.001 {
             displayRatio = fit
             DispatchQueue.main.async { [weak self] in self?.onDisplayRatioChange?() }
         }
@@ -545,17 +664,34 @@ final class VideoView: NSView {
         let atFit = zoomPan.isAtFit, refine = !zoomPan.isMoving
         func place(_ full: CIImage, using scaler: DisplayScaler, zoomScaler: DisplayScaler) -> CIImage {
             if !atFit {
-                return placeZoomed(focused(full), using: zoomScaler, refine: refine, colored: colored, commandBuffer: commandBuffer)
+                return placeZoomed(focused(full), using: zoomScaler, refine: refine, hdr: hdr, frameNumber: frameNumber,
+                                   colored: colored, commandBuffer: commandBuffer)
             }
             let source = geometry.cropped(focused(full))
-            let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: imageIsHDR, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: currentFrame?.number ?? 0),
+            let fitted = scaler.scaled(colored(source), to: fittedSize, mode: scaleMode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: hdr, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: frameNumber),
                                        commandBuffer: commandBuffer)
             return fitted.transformed(by: CGAffineTransform(
                 translationX: ((size.width - fitted.extent.width) / 2).rounded(),
                 y: ((size.height - fitted.extent.height) / 2).rounded()))
         }
-        let placed = place(llImage ?? image, using: llImage == nil ? scaler : llScaler, zoomScaler: llImage == nil ? zoomScaler : llZoomScaler)
-        let composed = placed.composited(over: CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size)))
+        let placed = place(llImage ?? sourceImage, using: llImage == nil ? scaler : llScaler, zoomScaler: llImage == nil ? zoomScaler : llZoomScaler)
+        let canvas = CGRect(origin: .zero, size: size)
+        var composed = placed.composited(over: CIImage(color: .black).cropped(to: canvas))
+        if let previewThumbnail {
+            let source = CIImage(cgImage: previewThumbnail)
+            let thumbnail = geometry.cropped(source)
+            let display = geometry.displaySize(of: source.extent.size)
+            if display.width > 0, display.height > 0 {
+                let scale = min(2.5, min(canvas.width / display.width, canvas.height / display.height) * 0.34)
+                let sx = display.width * scale / thumbnail.extent.width
+                let sy = display.height * scale / thumbnail.extent.height
+                let centered = thumbnail.transformed(by: CGAffineTransform(
+                    a: sx, b: 0, c: 0, d: sy,
+                    tx: canvas.midX - thumbnail.extent.midX * sx, ty: canvas.midY - thumbnail.extent.midY * sy))
+                let veil = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.30)).cropped(to: canvas)
+                composed = centered.composited(over: veil.composited(over: composed))
+            }
+        }
         let destination = CIRenderDestination(width: Int(size.width), height: Int(size.height),
                                               pixelFormat: metalLayer.pixelFormat, commandBuffer: commandBuffer) {
             drawable.texture
@@ -572,7 +708,7 @@ final class VideoView: NSView {
             }
             logFocusStats()
         }
-        if PlaybackDiagnostics.enabled, let ticket = presentationTicket {
+        if !isPreview, PlaybackDiagnostics.enabled, let ticket = presentationTicket {
             let group = diagnosticGroup, epoch = diagnosticEpoch
             let report = PlaybackDiagnostics.shared
             report.record("render_encode_wall_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: group)
@@ -649,6 +785,12 @@ final class VideoView: NSView {
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        // Sample the existing command buffer. Keep at most one and collect it on the existing display tick.
+        if filmSeekRenderSample == nil, isPreview || renderStarted - lastFilmSeekSample >= 0.25 {
+            filmSeekRenderSample = (commandBuffer, CACurrentMediaTime() - renderStarted)
+            lastFilmSeekSample = renderStarted
+        }
+        guard !isPreview else { return }
         StartupTrace.markOnce("first picture on screen")
         if let onNextPicture {
             self.onNextPicture = nil
@@ -661,7 +803,7 @@ final class VideoView: NSView {
     /// see real neighbours at the cut), coloured and scaled to where it lands on screen. In motion it is drawn the cheap
     /// way (one bilinear transform, exact to the sub-pixel); at rest it is refined with the scaler, whose MetalFX cache
     /// then holds while the video plays at that zoom.
-    private func placeZoomed(_ full: CIImage, using scaler: DisplayScaler, refine: Bool,
+    private func placeZoomed(_ full: CIImage, using scaler: DisplayScaler, refine: Bool, hdr: Bool, frameNumber: Int,
                              colored colorCorrected: (CIImage) -> CIImage, commandBuffer: MTLCommandBuffer) -> CIImage {
         let empty = CIImage.empty()
         let t = zoomPan.transform
@@ -685,7 +827,7 @@ final class VideoView: NSView {
         let out = CGSize(width: max(1, (cut.width * sx).rounded()), height: max(1, (cut.height * sy).rounded()))
         // MetalFX only up to 4×: past it the scaler may not be made, which would turn MetalFX off for the zoom.
         let mode = sx > 4 && (scaleMode == .auto || scaleMode == .metalfx) ? ScaleMode.lanczos : scaleMode
-        let scaled = scaler.scaled(colored, to: out, mode: mode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: imageIsHDR, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: currentFrame?.number ?? 0),
+        let scaled = scaler.scaled(colored, to: out, mode: mode, sharpen: lowLatency.didUpscale ? 0 : sharpen, hdr: hdr, artifactSettings: artifactSettings, artifactPipelines: artifactPipelines, grainSeed: UInt32(truncatingIfNeeded: frameNumber),
                                    commandBuffer: commandBuffer)
         return scaled.transformed(by: CGAffineTransform(translationX: x.rounded(), y: y.rounded()))
     }

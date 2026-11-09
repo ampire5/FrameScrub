@@ -1,12 +1,12 @@
 import Foundation
 
 /// OpenSubtitles fingerprint, also used by the analysis cache. Only two small reads are needed.
-enum VirtualCutMediaVersion {
+public enum VirtualCutMediaVersion {
     struct Changed: LocalizedError {
         var errorDescription: String? { "This source differs from the file used to make the cut." }
     }
 
-    static func read(from cache: ReadCache) throws -> String {
+    public static func read(from cache: ReadCache) throws -> String {
         guard cache.fileSize > 0 else { throw Changed() }
         let chunk = Int(min(64 * 1024, cache.fileSize / 8 * 8))
         var bytes = [UInt8](repeating: 0, count: chunk)

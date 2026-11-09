@@ -110,6 +110,28 @@ import QuartzCore
         precondition(trackSeekWasContinuous == [false, false, true] && scrubEnds == 1,
                      "An overview drag must flag its move and flush only on release")
         geometryBar.onSeek = nil
+        geometryBar.setFilmRevealed(true, force: true)
+        let handleIndex = FrameIndex(pts: (0..<480).map(Int64.init), keyframePTS: [0], timeBase: 1.0 / 24)
+        geometryBar.updateTimeline(index: handleIndex, duration: 20, paused: true)
+        geometryBar.update(frameCount: 480, position: 48, cached: [], loopA: nil, loopB: nil,
+                           marks: [48...96], text: "coincident handles")
+        geometryBar.setCutEdges(VirtualCutFragmentEdges(rangeID: "fixture", start: 2, end: 4))
+        var nativeCommits = 0
+        var cutCommits = 0
+        geometryBar.onMarkDragBegin = { _ in true }
+        geometryBar.onMarkDragEnd = { if $0 { nativeCommits += 1 } }
+        geometryBar.onCutEdgeCommit = { _, _, _, _ in cutCommits += 1 }
+        guard let native = geometryBar.markHandlePoint(for: .segment(frame: 48, edge: .start)),
+              let authored = geometryBar.cutEdgePoint(for: .start) else {
+            preconditionFailure("Expected both editing handles")
+        }
+        for start in [native, authored] {
+            let end = NSPoint(x: start.x + 30, y: start.y)
+            sendPointer(.leftMouseDown, at: start)
+            sendPointer(.leftMouseDragged, at: end)
+            sendPointer(.leftMouseUp, at: end)
+        }
+        precondition(nativeCommits == 1 && cutCommits == 1, "Coincident handles must route independently")
         geometryBar.removeFromSuperview()
         print("timeline-hover-routing-check\tpassed: compact controls, continuous film preview, matching click, larger folded-track target")
         if CommandLine.arguments.contains("--timeline-input-only") { exit(EXIT_SUCCESS) }
@@ -581,6 +603,31 @@ import QuartzCore
                 precondition(!bar.isInteracting, "Closing the dropdown must release the timeline")
             }
             print("stable-view-checks\tpassed: on-film selection, no seek, mode capsule holds reveal, motion shots")
+
+            bar.setFilmMode(.overview, save: false)
+            bar.setFilmRevealed(true)
+            refresh(bar, 24000)
+            bar.update(frameCount: 72000, position: 24000, cached: [], loopA: nil, loopB: nil,
+                       marks: [36000...45000], text: "edge drag")
+            var grabbed: MarkEdgeHandle?
+            var movedTo: Double?
+            var committed: Bool?
+            bar.onMarkDragBegin = { grabbed = $0; return true }
+            bar.onMarkDragMove = { movedTo = $0 }
+            bar.onMarkDragEnd = { committed = $0 }
+            func handleEvent(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
+                let location = bar.convert(NSPoint(x: x, y: 5), to: nil)
+                return NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
+                    windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            }
+            let handleX = bar.bounds.midX - 3
+            bar.mouseDown(with: handleEvent(.leftMouseDown, handleX))
+            bar.mouseDragged(with: handleEvent(.leftMouseDragged, handleX + 40))
+            bar.mouseUp(with: handleEvent(.leftMouseUp, handleX + 40))
+            precondition(grabbed == .segment(frame: 36000, edge: .start) &&
+                         movedTo.map { $0 > 1500 } == true && committed == true && !bar.isDraggingMark,
+                         "Dragging the green handle must edit that boundary and commit on release")
+            print("mark-handle-check\tpassed: exact boundary selected, pointer move, release commits")
         }
         for (key, value) in [("timeline-film-height", savedHeight), ("timeline-controls-always", savedControls),
                              ("timeline-film-pinned", savedPinned), savedMode] + savedLens {

@@ -49,6 +49,39 @@ import Testing
         #expect(removed.resume(at: anchor) == 0)
     }
 
+    @Test func contextSelectionUsesTheRowCoveringTheCurrentFrameInAMergedSpan() throws {
+        let timeline = try #require(VirtualCutTimeline(ranges: [
+            range("first", a, 10, 14), range("second", a, 13, 17), range("next", b, 25, 28)
+        ]))
+        #expect(timeline.editAnchor(span: 0, currentTime: 5)?.rangeID == "second")
+        #expect(timeline.editAnchor(span: 0, currentTime: 5)?.sourceTime == 15)
+        #expect(timeline.editAnchor(span: 1, currentTime: 5)?.sourceTime == 25)
+        #expect(timeline.editAnchor(rangeID: "second", currentTime: 1)?.sourceTime == 13)
+    }
+
+    @Test func contextReturnClampsATrimAndKeepsANearbyPositionAfterRemoval() throws {
+        let timeline = try #require(VirtualCutTimeline(ranges: [
+            range("other", b, 0, 4), range("selected", a, 14, 20)
+        ]))
+        #expect(timeline.resume(at: .init(rangeID: "selected", sourceTime: 12), fallback: 7) == 4)
+        #expect(timeline.resume(at: .init(rangeID: "selected", sourceTime: 16), fallback: 7) == 6)
+        #expect(timeline.resume(at: .init(rangeID: "removed", sourceTime: 16), fallback: 7) == 7)
+    }
+
+    @Test func sourceEdgeSnapsToVFRFramesWithoutCrossingItsOwnOppositeEdge() throws {
+        let index = FrameIndex(pts: [0, 2, 5, 9], keyframePTS: [0], timeBase: 0.1)
+        let edges = try #require(VirtualCutFragmentEdges(rangeID: "chosen", start: 0.2, end: 0.9))
+        let start = try #require(edges.landing(edge: .start, at: 1, index: index, duration: 1.1))
+        #expect(start.frame == 2)
+        #expect(start.time == 0.5)
+        let end = try #require(edges.landing(edge: .end, at: 0, index: index, duration: 1.1))
+        #expect(end.frame == 2)
+        #expect(end.time == 0.5)
+        let tail = try #require(edges.landing(edge: .end, at: 1.1, index: index, duration: 1.1))
+        #expect(tail.frame == 3)
+        #expect(tail.time == 1.1)
+    }
+
     @Test func rejectsInvalidAndAmbiguousPayloads() {
         #expect(VirtualCutTimeline(ranges: []) == nil)
         #expect(VirtualCutTimeline(ranges: [range("a", a, .nan, 2)]) == nil)
@@ -61,6 +94,22 @@ import Testing
 }
 
 extension VirtualCutTests {
+    @Test func firstPictureFailureCanRetryButAnOlderPictureCannotFailANewerSeek() throws {
+        let timeline = try #require(VirtualCutTimeline(ranges: [range("a", a, 1, 3), range("b", b, 10, 14)]))
+        var state = VirtualCutPlayback(timeline: timeline)
+        let firstRequest = state.seek(0, playing: true)
+        let first = try #require(firstRequest)
+        #expect(stateResult(state.opened(first)))
+        #expect(stateResult(state.failed(first)))
+        let retryRequest = state.retry()
+        let retry = try #require(retryRequest)
+        #expect(stateResult(state.opened(retry)))
+        let secondRequest = state.advance(1)
+        let second = try #require(secondRequest)
+        #expect(!stateResult(state.failed(retry)))
+        #expect(state.pending == second)
+    }
+
     @Test func ignoresAnOpenThatWasReplacedByAnotherSeek() throws {
         let timeline = try #require(VirtualCutTimeline(ranges: [
             range("a", a, 1, 3), range("b", b, 10, 14), range("c", a, 6, 9)

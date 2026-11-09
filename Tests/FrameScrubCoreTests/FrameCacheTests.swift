@@ -25,6 +25,14 @@ import Testing
         #expect(cache.averageFrameBytes == 100)
     }
 
+    @Test func seekPreviewFindsSparseReadyFramesBeyondTheOldShortJump() {
+        let cache = FrameCache(budgetBytes: 10_000)
+        for number in [0, 3, 36, 79, 80] { cache.insert(frame(number)) }
+        #expect(cache.readyFilmSeekFrames(from: 0, to: 80) == [3, 36, 79])
+        #expect(cache.readyFilmSeekFrames(from: 80, to: 0) == [79, 36, 3])
+        #expect(cache.readyFilmSeekFrames(from: 0, to: 500).isEmpty)
+    }
+
     @Test func averageFrameBytesReflectsCurrentContents() {
         let cache = FrameCache(budgetBytes: 1_000_000)
         #expect(cache.averageFrameBytes == nil)

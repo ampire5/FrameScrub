@@ -1,7 +1,7 @@
 import Foundation
 
 /// The player's state as a plugin page sees it (`framescrub.state`, `framescrub.onstate`): the open file, the
-/// position, playback, the loop and the segments. Its JSON always has every key, in a fixed order, with `null` where nothing applies.
+/// position, playback, the loop and the segments. The original state keys retain their nulls and fixed order.
 public struct PluginState: Equatable, Sendable, Codable {
     /// A file is open; false on the start screen or after a failed open, when the numbers below are zeros.
     public var ready: Bool
@@ -10,6 +10,8 @@ public struct PluginState: Equatable, Sendable, Codable {
     public var name: String?
     /// The Stash scene's id when the file came from Stash.
     public var scene: String?
+    /// Opaque token for the current original file open, when available.
+    public var sourceID: String?
     /// The position in seconds and in frames.
     public var t: Double
     public var frame: Int
@@ -69,11 +71,12 @@ public struct PluginState: Equatable, Sendable, Codable {
     public init(ready: Bool = false, path: String? = nil, name: String? = nil, scene: String? = nil, t: Double = 0,
                 frame: Int = 0, fps: Double = 0, duration: Double = 0, durationFrames: Int = 0, playing: Bool = false,
                 loop: ClosedRange<Double>? = nil, segments: Segments? = nil, visible: Bool = true,
-                panel: PanelInfo? = nil) {
+                panel: PanelInfo? = nil, sourceID: String? = nil) {
         self.ready = ready
         self.path = path
         self.name = name
         self.scene = scene
+        self.sourceID = sourceID
         self.t = t
         self.frame = frame
         self.fps = fps
@@ -87,7 +90,7 @@ public struct PluginState: Equatable, Sendable, Codable {
     }
 
     private enum Key: String, CodingKey {
-        case ready, path, name, scene, t, frame, fps, duration, durationFrames, playing, loop, segments, visible, panel
+        case ready, path, name, scene, sourceID, t, frame, fps, duration, durationFrames, playing, loop, segments, visible, panel
     }
 
     public init(from decoder: Decoder) throws {
@@ -96,6 +99,7 @@ public struct PluginState: Equatable, Sendable, Codable {
         path = try c.decodeIfPresent(String.self, forKey: .path)
         name = try c.decodeIfPresent(String.self, forKey: .name)
         scene = try c.decodeIfPresent(String.self, forKey: .scene)
+        sourceID = try c.decodeIfPresent(String.self, forKey: .sourceID)
         t = try c.decode(Double.self, forKey: .t)
         frame = try c.decode(Int.self, forKey: .frame)
         fps = try c.decode(Double.self, forKey: .fps)
@@ -121,6 +125,7 @@ public struct PluginState: Equatable, Sendable, Codable {
         try c.encode(path, forKey: .path)   // an Optional encodes nil as null, not as an absent key
         try c.encode(name, forKey: .name)
         try c.encode(scene, forKey: .scene)
+        try c.encodeIfPresent(sourceID, forKey: .sourceID)
         try c.encode(t, forKey: .t)
         try c.encode(frame, forKey: .frame)
         try c.encode(fps, forKey: .fps)
