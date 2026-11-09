@@ -20,6 +20,8 @@ import FrameScrubCore
     var openTicket: UUID?
     var loadedSource: VirtualCutSource?
     var direction = 1
+    var scrubOpen: DispatchWorkItem?
+    var deferredScrub: VirtualCutPlayback.Request?
     var warm: Warm?
     var warmedForSpan: Int?
     var filmSamples: [Double: [Double]] = [:]

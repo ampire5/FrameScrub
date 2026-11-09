@@ -53,9 +53,15 @@ import QuartzCore
         geometryBar.updateTimeline(index: nil, duration: 20, paused: true)
         var hoveredFractions: [Double?] = []
         var trackSeeks: [Double] = []
+        var trackSeekWasContinuous: [Bool] = []
+        var scrubEnds = 0
         var filmSeeks: [Double] = []
         geometryBar.onHover = { hoveredFractions.append($0) }
-        geometryBar.onSeek = { trackSeeks.append($0) }
+        geometryBar.onSeek = { fraction in
+            trackSeeks.append(fraction)
+            trackSeekWasContinuous.append(geometryBar.isContinuousSeek)
+        }
+        geometryBar.onScrubEnded = { scrubEnds += 1 }
         geometryBar.onFilmSeek = { filmSeeks.append($0) }
         func sendPointer(_ type: NSEvent.EventType, at point: NSPoint) {
             let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
@@ -63,6 +69,7 @@ import QuartzCore
             switch type {
             case .mouseMoved: geometryBar.mouseMoved(with: event)
             case .leftMouseDown: geometryBar.mouseDown(with: event)
+            case .leftMouseDragged: geometryBar.mouseDragged(with: event)
             default: geometryBar.mouseUp(with: event)
             }
         }
@@ -95,6 +102,14 @@ import QuartzCore
         sendPointer(.leftMouseDown, at: foldedMargin)
         precondition(trackSeeks == [0.5], "The folded track must seek throughout its hover band")
         sendPointer(.leftMouseUp, at: foldedMargin)
+        precondition(trackSeekWasContinuous == [false] && scrubEnds == 0, "A click must remain immediate")
+        sendPointer(.leftMouseDown, at: foldedMargin)
+        let dragTarget = NSPoint(x: foldedMargin.x + 100, y: foldedMargin.y)
+        sendPointer(.leftMouseDragged, at: dragTarget)
+        sendPointer(.leftMouseUp, at: dragTarget)
+        precondition(trackSeekWasContinuous == [false, false, true] && scrubEnds == 1,
+                     "An overview drag must flag its move and flush only on release")
+        geometryBar.onSeek = nil
         geometryBar.removeFromSuperview()
         print("timeline-hover-routing-check\tpassed: compact controls, continuous film preview, matching click, larger folded-track target")
         if CommandLine.arguments.contains("--timeline-input-only") { exit(EXIT_SUCCESS) }

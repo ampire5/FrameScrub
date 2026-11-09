@@ -12,6 +12,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     var onEnterExit: (() -> Void)?
     var onHeightChange: ((CGFloat) -> Void)?
     var onFilmScrubBegan: (() -> Void)?
+    var onScrubEnded: (() -> Void)?
     let transport = TransportControls()
     let modeControl = TimelineModeControl()
     private(set) var filmMode = TimelineFilmMode(rawValue: UserDefaults.standard.integer(forKey: "timeline-film-mode")) ?? .lens
@@ -70,6 +71,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var imageOrder: [Double] = []
     private var drag: (layout: TimelineFilmLayout, x: CGFloat, moved: Bool)?
     private var overviewDrag = false
+    private var overviewMoved = false
+    var isContinuousSeek: Bool {
+        if let drag { return drag.moved }
+        if overviewDrag { return overviewMoved }
+        return scrolling
+    }
     private var stripHeight: CGFloat = UserDefaults.standard.object(forKey: "timeline-film-height") == nil ? 48
         : min(96, max(0, CGFloat(UserDefaults.standard.double(forKey: "timeline-film-height"))))
     private var alwaysControls = UserDefaults.standard.bool(forKey: "timeline-controls-always")
@@ -605,7 +612,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             dragStartX = point.x
             clearHover()
         } else {
-            overviewDrag = true; onSeek?(fraction(point.x))
+            overviewDrag = true; overviewMoved = false; onSeek?(fraction(point.x))
         }
     }
     private var dragStartX: CGFloat = 0
@@ -621,11 +628,16 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             if !wasMoving { onFilmScrubBegan?() }
             onFilmSeek?(drag.layout.lens.time(at: drag.layout.playheadOffset - Double(drag.x)))
             needsDisplay = true
-        } else if overviewDrag { onSeek?(fraction(point.x)) }
+        } else if overviewDrag {
+            overviewMoved = true
+            onSeek?(fraction(point.x))
+        }
     }
     override func mouseUp(with event: NSEvent) {
+        let completedDrag = drag?.moved == true || (overviewDrag && overviewMoved)
         if let drag, !drag.moved { onFilmSeek?(pressedFilmTime) }
         drag = nil; overviewDrag = false; requestedTimes = []
+        if completedDrag { onScrubEnded?() }
         updateDesiredImages(); needsDisplay = true; scheduleControlHide()
         updateFilmPointer(event.locationInWindow)
         onEnterExit?()

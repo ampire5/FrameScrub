@@ -127,3 +127,23 @@ extension VirtualCutTests {
         #expect(index.frameNumber(before: 0.55) == 3)
     }
 }
+
+extension VirtualCutTests {
+    @Test func onlyAContinuousSeekNeedingANewSourceWaits() throws {
+        let timeline = try #require(VirtualCutTimeline(ranges: [
+            range("a", a, 1, 3), range("b", b, 10, 14)
+        ]))
+        var state = VirtualCutPlayback(timeline: timeline)
+        let across = state.seek(2.5, playing: false)
+        let target = try #require(across)
+        #expect(state.shouldDeferOpen(target, continuous: true, loaded: a, opening: nil))
+        #expect(!state.shouldDeferOpen(target, continuous: false, loaded: a, opening: nil))
+        #expect(!state.shouldDeferOpen(target, continuous: true, loaded: a, opening: b))
+
+        let back = state.seek(0.5, playing: false)
+        let latest = try #require(back)
+        #expect(!state.shouldDeferOpen(latest, continuous: true, loaded: a, opening: nil))
+        #expect(!stateResult(state.opened(target)))
+        #expect(stateResult(state.opened(latest)))
+    }
+}

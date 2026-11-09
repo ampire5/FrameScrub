@@ -52,11 +52,9 @@ import ImageIO
         }
     }
 
-    func cut(_ id: String) async throws -> VirtualCut {
+    func cut(_ id: String) async throws -> (VirtualCut, VirtualCutTimeline) {
         guard cards[id] != nil else { throw CatalogHTTP.Failure.invalid }
-        let cut: VirtualCut = try await CatalogHTTP.decode(descriptor.endpoint.appendingPathComponent(id), limit: 2_097_152)
-        guard cut.id == id, cut.timeline != nil else { throw CatalogHTTP.Failure.invalid }
-        return cut
+        return try await CatalogHTTP.cut(descriptor.endpoint.appendingPathComponent(id), id: id)
     }
 
     func want(_ ids: [String], publish: @escaping (String, CGImage) -> Void) {
@@ -109,6 +107,13 @@ private enum CatalogHTTP {
     static func decode<T: Decodable & Sendable>(_ url: URL, limit: Int) async throws -> T {
         let data = try await data(url, limit: limit)
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    @concurrent static func cut(_ url: URL, id: String) async throws -> (VirtualCut, VirtualCutTimeline) {
+        let cut: VirtualCut = try await decode(url, limit: 2_097_152)
+        try Task.checkCancellation()
+        guard cut.id == id, let timeline = cut.timeline else { throw Failure.invalid }
+        return (cut, timeline)
     }
 
     static func image(_ url: URL) async throws -> CGImage? {

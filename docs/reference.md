@@ -908,7 +908,12 @@ A page loaded from a configured plugin slot calls
 `framescrub.cutCatalog({id, title, endpoint})`. The endpoint is an HTTP(S)
 URL on the page's own origin. A page can unregister with
 `framescrub.cutCatalog(null)`. FrameScrub does not follow redirects. The
-provider keeps its own authorization, catalog and revision data.
+provider keeps its own authorization, analysis jobs, drafts, catalog
+and revisions. Opening a card hands the player one snapshot of the
+cut. FrameScrub resolves and validates the sources, owns the timeline,
+caches and transport, and plays the snapshot even if the plugin
+catalog becomes unavailable. A saved edit takes effect on the next
+open. The plugin can still issue explicit player commands.
 
 - `GET <endpoint>` returns up to 2,000 cards as an array of
   `{id, title, revision, duration}`. Card IDs contain only ASCII

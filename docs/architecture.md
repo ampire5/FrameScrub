@@ -167,6 +167,10 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   bounds, and suppresses source resume writes. One upcoming source may be prepared on a utility queue
   when foreground reads are ready. Closing or changing target cancels obsolete preparation. The provider
   owns analysis, shared draft persistence, revisions and previews, outside the player process.
+  An open cut is an immutable provider snapshot. The catalog builds and validates its timeline once off the
+  main actor. Native playback does not query the provider to seek or to advance.
+  A continuous gesture keeps one replaceable cross-source seek. Same-source targets and explicit moves execute at
+  once; pointer-up flushes a queued seek, and a paused Home retains the target without starting an open.
 
 ## Concurrency and cancellation
 

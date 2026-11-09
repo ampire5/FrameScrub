@@ -29,6 +29,14 @@ public struct VirtualCutPlayback: Sendable {
         return request
     }
 
+    /// A continuous gesture only waits when its current destination needs a different open.
+    public func shouldDeferOpen(_ request: Request, continuous: Bool,
+                                loaded: VirtualCutSource?, opening: VirtualCutSource?) -> Bool {
+        guard continuous, request == pending else { return false }
+        let target = timeline.spans[request.location.spanIndex].source
+        return target != loaded && target != opening
+    }
+
     public mutating func opened(_ request: Request) -> Bool {
         guard pending == request else { return false }
         pending = nil

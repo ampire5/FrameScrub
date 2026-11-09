@@ -68,3 +68,27 @@ while the most recent batch gave 32/32. The current 64-image limit
 clears the entire image map when a new image arrives at capacity.
 This result exercises the thumbnail loader directly, independent of
 grid scroll timing, and confirms that the earlier images were evicted.
+
+### Coalescing a continuous cross-source scrub
+
+The playback mode now drives two bursts, at 12 ms between requests.
+One ends on the already open source. The other ends on the alternate
+source and flushes on simulated pointer release. The delay between
+pulses in this test is smaller than the 33 ms idle wait. The idle
+wait covers two 60 Hz display periods, and pointer release, direct
+seeks and automatic joins do not wait for it.
+
+On the M4 Max, both the real library cut and the synthetic 4K25/4K60
+SMB cut went from 20 opens in the original alternating burst to zero
+opens when the final target was on the loaded source. The alternate
+ending started one open and displayed the requested target. The
+scope is continuous moves. An overview mouse-down is still an
+immediate seek, even if the pointer subsequently starts dragging.
+
+Both cuts crossed the automatic join and presented the next frame
+after their plugin catalog was unregistered. They also accepted
+native seeks across the join while the catalog remained unregistered.
+The player received the cut once at card open. In the repeated 4K run,
+the automatic join presented in 81 ms, the same-source burst's final
+frame in 34 ms, and the alternate source presented in 191 ms from
+release. The last case includes preparing and decoding the new source.
