@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 — 2026-11-10
+
+- Open virtual cuts from plugin catalogs in File View and play ranges from multiple sources on a single timeline.
+- Seek across fragments in the filmstrip, inspect their original context and adjust their boundaries with a compatible plugin editor.
+- Show analysis progress and detected fragments on the original video's timeline when a plugin supplies them.
+- Add optional trackpad scrub momentum with an adjustable distance.
+- Improve filmstrip seeking and stabilize the playback clock for 4K video.
+
 ## 0.4.2 — 2026-11-09
 
 - Reveal the filmstrip as soon as the pointer enters its area.
