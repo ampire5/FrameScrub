@@ -37,7 +37,7 @@ final class TransportControls: NSView, NSPopoverDelegate {
 
     init() {
         super.init(frame: .zero)
-        appearance = NSAppearance(named: .darkAqua)
+        Chrome.Palette.overMedia.apply(to: self)
         for view in [left, right] { addSubview(view) }
         for button in [back, play, forward] { left.addSubview(button) }
         for button in [mute, volume, speed, full] { right.addSubview(button) }
@@ -46,11 +46,12 @@ final class TransportControls: NSView, NSPopoverDelegate {
             (speed, #selector(speedClicked)), (full, #selector(fullClicked))]
         for (button, action) in actions { button.target = self; button.action = action; button.refusesFirstResponder = true }
         play.wantsLayer = true
-        play.layer?.cornerRadius = 14
+        play.layer?.cornerRadius = Chrome.Radius.photo
+        play.layer?.cornerCurve = .continuous
         play.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
         speed.isBordered = false
         speed.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium)
-        speed.contentTintColor = .white
+        speed.contentTintColor = Chrome.Palette.overMedia.text
         speed.toolTip = "Playback speed"
         speed.setAccessibilityLabel("Playback speed")
         slider.target = self; slider.action = #selector(sliderMoved)
@@ -72,9 +73,9 @@ final class TransportControls: NSView, NSPopoverDelegate {
         right.frame = NSRect(x: max(104, bounds.width - 130), y: 0, width: 130, height: 34)
         for (i, button) in [back, play, forward].enumerated() { button.frame = NSRect(x: 5 + i * 30, y: 3, width: 28, height: 28) }
         mute.frame = NSRect(x: 4, y: 3, width: 28, height: 28)
-        volume.frame = NSRect(x: 30, y: 3, width: 18, height: 28)
-        speed.frame = NSRect(x: 49, y: 3, width: 43, height: 28)
-        full.frame = NSRect(x: 94, y: 3, width: 30, height: 28)
+        volume.frame = NSRect(x: 32, y: 3, width: 20, height: 28)
+        speed.frame = NSRect(x: 52, y: 3, width: 40, height: 28)
+        full.frame = NSRect(x: 96, y: 3, width: 28, height: 28)
     }
     func update(volume value: Double, muted: Bool, paused: Bool, speed: Double) {
         if self.paused != paused {
@@ -95,8 +96,10 @@ final class TransportControls: NSView, NSPopoverDelegate {
     private static func plate() -> NSView {
         let glass = NSVisualEffectView()
         glass.material = .hudWindow; glass.blendingMode = .withinWindow; glass.state = .active
-        glass.wantsLayer = true; glass.layer?.cornerRadius = 17; glass.layer?.masksToBounds = true
-        let veil = NSView(); veil.wantsLayer = true
+        glass.wantsLayer = true; glass.layer?.cornerRadius = Chrome.Radius.panel
+        glass.layer?.cornerCurve = .continuous
+        glass.layer?.masksToBounds = true
+        let veil = NSView(frame: glass.bounds); veil.wantsLayer = true
         veil.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
         veil.autoresizingMask = [.width, .height]
         glass.addSubview(veil)
@@ -107,7 +110,7 @@ final class TransportControls: NSView, NSPopoverDelegate {
     }
     private static func button(_ symbol: String, _ label: String) -> NSButton {
         let button = NSButton(image: image(symbol, label), target: nil, action: nil)
-        button.isBordered = false; button.contentTintColor = NSColor(white: 1, alpha: 0.88)
+        button.isBordered = false; button.contentTintColor = Chrome.Palette.overMedia.text
         button.toolTip = label; button.setAccessibilityLabel(label)
         return button
     }

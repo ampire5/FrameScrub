@@ -4,6 +4,7 @@ import FrameScrubCore
 /// The thumbnail, the keyframe lens and the timecode above the seek bar. Never takes clicks.
 final class PreviewView: NSView {
     private let imageView = NSImageView()
+    private var displayedImage: CGImage?
     private let lensView = KeyframeLensView()
     private let label = NSTextField(labelWithString: "")
     private let stack = NSStackView()
@@ -49,10 +50,14 @@ final class PreviewView: NSView {
     func show(image: CGImage?, scale: CGFloat, time: String, lens: KeyframeLens?, playhead: Int) {
         if let image {
             let size = NSSize(width: CGFloat(image.width) / scale, height: CGFloat(image.height) / scale)
-            imageView.image = NSImage(cgImage: image, size: size)
+            if displayedImage !== image || imageView.image?.size != size {
+                displayedImage = image
+                imageView.image = NSImage(cgImage: image, size: size)
+            }
             imageView.isHidden = false
             lensWidth.constant = size.width
         } else {
+            displayedImage = nil
             imageView.image = nil
             imageView.isHidden = true
             lensWidth.constant = Self.lensWidthWithoutImage

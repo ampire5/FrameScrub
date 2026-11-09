@@ -13,9 +13,9 @@ import QuartzCore
         let app = NSApplication.shared
         app.setActivationPolicy(.regular); app.finishLaunching()
         let thumbnailBox = NSRect(x: 10, y: 20, width: 160, height: 90)
-        let portrait = FilmstripThumbnailView.fittedRect(aspect: 9.0 / 16, in: thumbnailBox)
+        let portrait = FilmstripThumbnail.fittedRect(aspect: 9.0 / 16, in: thumbnailBox)
         precondition(abs(portrait.width / portrait.height - 9.0 / 16) < 0.00001 && portrait.height == 90)
-        let wide = FilmstripThumbnailView.fittedRect(aspect: 2.35, in: thumbnailBox)
+        let wide = FilmstripThumbnail.fittedRect(aspect: 2.35, in: thumbnailBox)
         precondition(abs(wide.width / wide.height - 2.35) < 0.00001 && wide.width == 160)
         let savedHeight = UserDefaults.standard.object(forKey: "timeline-film-height")
         let savedControls = UserDefaults.standard.object(forKey: "timeline-controls-always")
@@ -37,6 +37,66 @@ import QuartzCore
         host.wantsLayer = true; host.layer?.backgroundColor = NSColor.darkGray.cgColor
         window.makeKeyAndOrderFront(nil)
         app.activate()
+        let geometryBar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 130))
+        host.addSubview(geometryBar)
+        let filmPoint = NSPoint(x: 450, y: 8), filmMargin = NSPoint(x: 450, y: 60)
+        geometryBar.setPlaybackControlsVisible(false)
+        geometryBar.updateFilmPointer(NSPoint(x: 450, y: 120))
+        precondition(!geometryBar.showsFilmstrip, "Movement over the video must not reveal film")
+        geometryBar.updateFilmPointer(filmPoint)
+        geometryBar.setPlaybackControlsVisible(true)
+        precondition(geometryBar.showsFilmstrip && geometryBar.hitTest(filmPoint) === geometryBar &&
+                     geometryBar.hitTest(filmMargin) === geometryBar, "The edge opens the film and its hover margin")
+        precondition(geometryBar.transport.frame.minY == 52 && geometryBar.modeControl.frame.midY == geometryBar.transport.frame.midY &&
+                     geometryBar.preferredHeight == 93, "Wide controls and preview must stay close to the film")
+        geometryBar.updateTimeline(index: nil, duration: 20, paused: true)
+        var hoveredFractions: [Double?] = []
+        var trackSeeks: [Double] = []
+        var filmSeeks: [Double] = []
+        geometryBar.onHover = { hoveredFractions.append($0) }
+        geometryBar.onSeek = { trackSeeks.append($0) }
+        geometryBar.onFilmSeek = { filmSeeks.append($0) }
+        func sendPointer(_ type: NSEvent.EventType, at point: NSPoint) {
+            let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            switch type {
+            case .mouseMoved: geometryBar.mouseMoved(with: event)
+            case .leftMouseDown: geometryBar.mouseDown(with: event)
+            default: geometryBar.mouseUp(with: event)
+            }
+        }
+        let aboveFilm = NSPoint(x: filmPoint.x, y: 76)
+        for point in [filmPoint, filmMargin, aboveFilm] { sendPointer(.mouseMoved, at: point) }
+        let targets = hoveredFractions.compactMap { $0 }
+        precondition(targets.count == 3 && targets.allSatisfy { $0 == targets.first },
+                     "The film and the margin above it must share one continuous hover target")
+        let nearby = NSPoint(x: aboveFilm.x + 1, y: aboveFilm.y)
+        sendPointer(.mouseMoved, at: nearby)
+        precondition((hoveredFractions.last.flatMap { $0 } ?? 0) > targets[0], "Hover time must advance within the same thumbnail cell")
+        sendPointer(.mouseMoved, at: aboveFilm)
+        sendPointer(.leftMouseDown, at: aboveFilm)
+        sendPointer(.leftMouseUp, at: aboveFilm)
+        precondition(trackSeeks.isEmpty && filmSeeks.count == 1 && filmSeeks[0] == targets[0] * 20,
+                     "Clicking in the film margin must seek to the time shown by the preview")
+        sendPointer(.mouseMoved, at: NSPoint(x: 450, y: 125))
+        precondition(hoveredFractions.last == .some(nil), "Leaving the film must dismiss its preview")
+        geometryBar.setPlaybackControlsVisible(false)
+        precondition(geometryBar.hitTest(filmPoint) === geometryBar && geometryBar.hitTest(filmMargin) == nil,
+                     "Hiding playback controls must leave the film in place")
+        geometryBar.toggleFilmVisibility()
+        geometryBar.updateFilmPointer(filmPoint)
+        precondition(geometryBar.isInRevealZone(filmPoint) && !geometryBar.showsFilmstrip,
+                     "The edge must reveal only the timeline after the strip was explicitly folded")
+        geometryBar.setPlaybackControlsVisible(true)
+        let foldedMargin = NSPoint(x: 450, y: 26)
+        sendPointer(.mouseMoved, at: foldedMargin)
+        precondition(hoveredFractions.last == .some(0.5), "The folded track must accept hover above its visible line")
+        sendPointer(.leftMouseDown, at: foldedMargin)
+        precondition(trackSeeks == [0.5], "The folded track must seek throughout its hover band")
+        sendPointer(.leftMouseUp, at: foldedMargin)
+        geometryBar.removeFromSuperview()
+        print("timeline-hover-routing-check\tpassed: compact controls, continuous film preview, matching click, larger folded-track target")
+        if CommandLine.arguments.contains("--timeline-input-only") { exit(EXIT_SUCCESS) }
         let index = FrameIndex(pts: (0..<72000).map(Int64.init), keyframePTS: Set(stride(from: 0, to: 72000, by: 48).map(Int64.init)),
                                timeBase: 1.0 / 24)
         func now() -> Double { var time = timespec(); clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time); return Double(time.tv_sec) + Double(time.tv_nsec) / 1e9 }
@@ -63,7 +123,7 @@ import QuartzCore
         for round in 1...5 {
             var bar: SeekBarView!
             let created = measure {
-                bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 124))
+                bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 130))
                 precondition(!bar.showsFilmstrip)
                 bar.setPlaybackControlsVisible(true)
                 precondition(!bar.showsFilmstrip, "Mouse playback chrome must not reveal film")
@@ -74,8 +134,8 @@ import QuartzCore
             var updates: [Double] = [], narrow: [Double] = [], returns: [Double] = [], reveals: [Double] = []
             for step in 0..<50 {
                 updates.append(measure { refresh(bar, 24000 + step) })
-                narrow.append(measure { bar.setFrameSize(NSSize(width: 320, height: 124)); refresh(bar, step.isMultiple(of: 2) ? 0 : 71999) })
-                returns.append(measure { bar.setFrameSize(NSSize(width: 900, height: 124)); refresh(bar, 24000) })
+                narrow.append(measure { bar.setFrameSize(NSSize(width: 320, height: bar.preferredHeight)); refresh(bar, step.isMultiple(of: 2) ? 0 : 71999) })
+                returns.append(measure { bar.setFrameSize(NSSize(width: 900, height: bar.preferredHeight)); refresh(bar, 24000) })
                 if let event = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 50, y: 10), modifierFlags: [],
                                                  timestamp: 0, windowNumber: window.windowNumber, context: nil,
                                                  eventNumber: 0, clickCount: 0, pressure: 0) {
@@ -90,7 +150,9 @@ import QuartzCore
             let directory = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
             try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             for (name, width, position) in [("start", 900, 0), ("end", 900, 71999), ("narrow", 320, 24000)] {
-                bar.setFrameSize(NSSize(width: width, height: 124)); refresh(bar, position)
+                bar.setFrameSize(NSSize(width: CGFloat(width), height: bar.frame.height))
+                bar.setFrameSize(NSSize(width: CGFloat(width), height: bar.preferredHeight))
+                refresh(bar, position)
                 if let bitmap = bar.bitmapImageRepForCachingDisplay(in: bar.bounds) {
                     bar.cacheDisplay(in: bar.bounds, to: bitmap)
                     try? bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name + ".png"))
@@ -197,7 +259,7 @@ import QuartzCore
                     return true
                 }
                 let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)!
-                bar.setFrameSize(NSSize(width: 900, height: 124))
+                bar.setFrameSize(NSSize(width: 900, height: bar.preferredHeight))
                 bar.resetFilmstrip()
                 bar.updateTimeline(index: fixture, duration: 20, paused: true, uprightSize: size)
                 bar.update(frameCount: 600, position: 300, cached: [], loopA: nil, loopB: nil, text: "aspect")
@@ -206,11 +268,11 @@ import QuartzCore
                     bar.setFilmstripImage(cg, seconds: time)
                     precondition(!bar.needsDisplay, "A delivered image must paint without a new input event")
                 }
-                let event = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 450, y: 50), modifierFlags: [],
+                let event = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: 450, y: 24), modifierFlags: [],
                     timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
                 bar.mouseMoved(with: event)
-                precondition(!bar.filmHover.isHidden && bar.filmHover.frame.height > 48, "Hover must enlarge the cached frame")
-                precondition(bar.hitTest(NSPoint(x: 450, y: 50)) === bar, "Hover must pass through seek input")
+                precondition(bar.filmPointer != nil, "Hover must stay on the timeline")
+                precondition(bar.hitTest(NSPoint(x: 450, y: 24)) === bar, "Hover must pass through seek input")
                 if let arg = CommandLine.arguments.firstIndex(of: "--shots") {
                     let directory = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
                     let bitmap = bar.bitmapImageRepForCachingDisplay(in: bar.bounds)!
@@ -218,41 +280,43 @@ import QuartzCore
                     try? bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(aspect < 1 ? "portrait-hover.png" : "wide-hover.png"))
                 }
                 bar.mouseExited(with: event)
-                precondition(bar.filmHover.isHidden, "Hover must disappear on exit")
+                precondition(bar.filmPointer == nil, "The hover marker must disappear on exit")
             }
-            print("aspect-hover-checks\tpassed: portrait, wide, cached enlargement, seek passthrough, exit")
+            print("aspect-hover-checks\tpassed: portrait, wide, hover marker, seek passthrough, exit")
             bar.setFilmRevealed(false)
             bar.setPlaybackControlsVisible(true)
             precondition(!bar.showsFilmstrip, "Playback reveal must not open film")
-            bar.updateFilmPointer(NSPoint(x: 450, y: 50))
+            bar.updateFilmPointer(NSPoint(x: 450, y: 8))
             precondition(bar.showsFilmstrip, "Entering the film zone must open it")
             bar.updateFilmPointer(nil); spin(0.6)
             precondition(!bar.showsFilmstrip, "Film must fold promptly after leaving")
             bar.toggleFilmPin(); bar.updateFilmPointer(nil); spin(0.6)
             precondition(bar.showsFilmstrip && bar.filmPinned, "Pinned film must stay without mouse activity")
             bar.toggleFilmPin()
+            bar.setPlaybackControlsVisible(true)
             bar.setFilmRevealed(true)
             var seeks: [Double] = []
             bar.onFilmSeek = { seeks.append($0) }
             func mouse(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
-                NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 50), modifierFlags: [], timestamp: 0,
+                NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 24), modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
             }
             bar.mouseDown(with: mouse(.leftMouseDown, 600))
             bar.mouseDragged(with: mouse(.leftMouseDragged, 602))
             bar.mouseUp(with: mouse(.leftMouseUp, 602))
-            precondition(seeks.count == 1 && seeks[0] > 10, "Click jitter must choose the clicked cell, not start a centre drag")
+            precondition(seeks.count == 1 && seeks[0] > 10, "Click jitter must seek to the clicked position without starting a centre drag")
             bar.mouseMoved(with: mouse(.mouseMoved, 600))
-            let upperPoint = NSPoint(x: bar.filmHover.frame.midX, y: bar.filmHover.frame.maxY - 1)
-            precondition(!bar.filmHover.isHidden && bar.filmHover.frame.contains(upperPoint))
-            precondition(bar.hitTest(upperPoint) === bar, "The visible enlargement above the cells must receive film input")
-            seeks = []
+            var trackSeeks: [Double] = []
+            bar.onSeek = { trackSeeks.append($0) }
+            let marginPoint = NSPoint(x: 600, y: 60)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
-                let upper = NSEvent.mouseEvent(with: type, location: upperPoint, modifierFlags: [], timestamp: 0,
+                let marginEvent = NSEvent.mouseEvent(with: type, location: marginPoint, modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
-                if type == .leftMouseDown { bar.mouseDown(with: upper) } else { bar.mouseUp(with: upper) }
+                if type == .leftMouseDown { bar.mouseDown(with: marginEvent) } else { bar.mouseUp(with: marginEvent) }
             }
-            precondition(seeks.count == 1 && seeks[0] > 10, "Clicking an enlarged frame's upper part must seek that frame")
+            precondition(trackSeeks.isEmpty && seeks.count == 2 && seeks[0] == seeks[1],
+                         "The margin must seek to the same time as the row below it")
+            bar.onSeek = nil
             bar.mouseDown(with: mouse(.leftMouseDown, 600))
             bar.mouseDragged(with: mouse(.leftMouseDragged, 620))
             bar.updateFilmPointer(nil)
@@ -264,7 +328,7 @@ import QuartzCore
             func wheel(_ x: Int32, _ y: Int32, option: Bool = false) -> NSEvent {
                 let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 2, wheel1: y, wheel2: x, wheel3: 0)!
                 if option { cg.flags = .maskAlternate }
-                cg.location = CGPoint(x: 450, y: NSScreen.screens[0].frame.height - 50)
+                cg.location = CGPoint(x: 450, y: NSScreen.screens[0].frame.height - 24)
                 return NSEvent(cgEvent: cg)!
             }
             var scrubs = 0
@@ -284,8 +348,8 @@ import QuartzCore
             bar.scrollWheel(with: wheel(0, 1, option: true))
             let scaled = TimelineFilmLayout(width: 876, height: 48, aspect: 2.35, duration: 20, center: 10,
                 secondsPerThumbnail: 1, focusFraction: 0.3, cropStrength: 0.7, outsideDensity: 2.75 * exp(-0.2))
-            precondition(!bar.filmHover.isHidden && abs(bar.filmHover.seconds - scaled.cell(at: 150)!.seconds!) < 0.00001,
-                "Option-scroll must refresh the enlarged picture's selected sample without pointer movement")
+            precondition(bar.filmPointer == nil && scaled.cell(at: 150)?.seconds != nil,
+                         "Changing density must clear the old hover target while preserving samples")
             bar.configureLens(seconds: 1, focus: 0.3, crop: 0.7, magnification: 2.75, density: 2.75, save: false)
             bar.cancelInteraction()
             let beforeOption = scrubs
@@ -297,7 +361,7 @@ import QuartzCore
             let rightClick = mouse(.rightMouseDown, 450)
             let disabled = bar.menu(for: rightClick)!.items.first { $0.title == "Hide Filmstrip" }!
             _ = bar.perform(disabled.action!, with: disabled)
-            bar.updateFilmPointer(NSPoint(x: 450, y: 50))
+            bar.updateFilmPointer(NSPoint(x: 450, y: 8))
             precondition(!bar.showsFilmstrip && !bar.filmstripEnabled)
             UserDefaults.standard.set(true, forKey: "timeline-film-pinned")
             UserDefaults.standard.set(48, forKey: "timeline-film-height")
@@ -383,17 +447,17 @@ import QuartzCore
                     bar.setFrameSize(NSSize(width: 2560, height: bar.preferredHeight))
                     bar.layoutSubtreeIfNeeded(); bar.displayIfNeeded()
                 })
-                precondition(bar.preferredHeight == height + 76, "Slider must resize the actual film live")
+                precondition(bar.preferredHeight == height + 45, "Slider must resize the actual film live")
                 precondition(UserDefaults.standard.double(forKey: "timeline-film-height") == height)
             }
-            let resized = SeekBarView(frame: .zero)
+            let resized = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 140))
             resized.setFilmRevealed(true)
-            precondition(resized.preferredHeight == 133, "A new timeline must restore the chosen 57 pt height")
+            precondition(resized.preferredHeight == 102, "A new timeline must restore the chosen 57 pt height")
             let reset = controls.view.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Reset" }!
             // This standalone content controller has no popover visibility hold. Animated performClick pumps
             // unrelated auto-hide timers; send the real reset action directly to test its resize/persistence.
             NSApp.sendAction(reset.action!, to: reset.target, from: reset)
-            precondition(bar.preferredHeight == 124 && heightSlider.doubleValue == 48, "Reset must restore 48 pt")
+            precondition(bar.preferredHeight == 93 && heightSlider.doubleValue == 48, "Reset must restore 48 pt")
             report("film-height-live-65-cells", 1, heightUpdates)
             print("film-height-check\tpassed: native slider, live geometry, persisted restore, reset")
             if let arg = CommandLine.arguments.firstIndex(of: "--shots") {
@@ -450,13 +514,10 @@ import QuartzCore
                 view.subviews.flatMap { ($0 as? NSButton).map { [$0] } ?? transportButtons($0) }
             }
             for edge in [30.0, 870] {
-                let event = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: edge, y: 50), modifierFlags: [],
+                let event = NSEvent.mouseEvent(with: .mouseMoved, location: NSPoint(x: edge, y: 24), modifierFlags: [],
                     timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
                 bar.mouseMoved(with: event)
-                precondition(!bar.filmHover.isHidden, "An edge picture must still reveal its full preview")
-                for rect in bar.transport.occupiedRects + [bar.modeControl.frame] {
-                    precondition(!bar.filmHover.frame.intersects(rect), "Enlarged previews must avoid visible controls")
-                }
+                precondition(bar.filmPointer != nil, "An edge cell must accept hover")
                 for button in transportButtons(bar.transport) {
                     let local = bar.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), from: button)
                     precondition(bar.hitTest(local) === button, "A thumbnail must never take a transport button's hit")
@@ -466,9 +527,19 @@ import QuartzCore
                 let enter = NSEvent.mouseEvent(with: .mouseMoved, location: bar.convert(local, to: nil), modifierFlags: [],
                     timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
                 bar.mouseMoved(with: enter)
-                precondition(bar.filmHover.isHidden, "Moving directly from the film into a control must dismiss the hover")
+                precondition(bar.filmPointer == nil, "Moving directly from the film into a control must clear the hover marker")
             }
             print("edge-controls-checks\tpassed: no overlap, all buttons hit, direct transition clears hover")
+            if bar.filmPinned { bar.toggleFilmPin() }
+            bar.setFilmRevealed(true); bar.setPlaybackControlsVisible(true); bar.layoutSubtreeIfNeeded()
+            let pin = bar.modeControl.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Pin Filmstrip (⌥⌘L)" }!
+            let pinPoint = bar.convert(NSPoint(x: pin.bounds.midX, y: pin.bounds.midY), from: pin)
+            precondition(bar.hitTest(pinPoint) === pin, "The strip's pin button must take its own hit")
+            pin.performClick(nil)
+            precondition(bar.filmPinned && bar.showsFilmstrip && pin.state == .on &&
+                         UserDefaults.standard.bool(forKey: "timeline-film-pinned"), "The on-strip pin must latch and persist")
+            pin.performClick(nil)
+            precondition(!bar.filmPinned && pin.state == .off, "The same button must unpin the strip")
             let tuning = bar.modeControl.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Lens settings" }!
             for round in 1...10 {
                 bar.setFilmRevealed(true); bar.setPlaybackControlsVisible(true); bar.layoutSubtreeIfNeeded()
@@ -485,7 +556,7 @@ import QuartzCore
                     liveHeight.doubleValue = 75
                     NSApp.sendAction(liveHeight.action!, to: liveHeight.target, from: liveHeight)
                     bar.setFrameSize(NSSize(width: 900, height: bar.preferredHeight)); bar.layoutSubtreeIfNeeded()
-                    precondition(bar.preferredHeight == 151 && bar.isInteracting,
+                    precondition(bar.preferredHeight == 120 && bar.isInteracting,
                                  "The retained popover must remain open while resizing its owner")
                 }
                 tuning.performClick(nil)
@@ -564,7 +635,7 @@ import QuartzCore
         let window = FilmBenchWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 200),
             styleMask: [.titled], backing: .buffered, defer: false)
         window.autorecalculatesKeyViewLoop = true
-        let bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 124))
+        let bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 130))
         window.contentView!.addSubview(bar); window.orderFrontRegardless()
         bar.setFilmMode(.lens, save: false)
         bar.updateTimeline(index: index, duration: 20, paused: true, previewSettle: 0)

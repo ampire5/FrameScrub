@@ -11,7 +11,7 @@ extension SettingsPanel {
                 .toggle("home-sidebar", "Sidebar (⌃⌘S)", symbol: "sidebar.left", description: "Default on."),
                 .choice("icon-set", "Icons", IconSet.allCases.map { ($0.rawValue, $0.title) }, symbol: "star",
                         description: "The set the line icons are drawn from. Takes effect at the next launch. "
-                            + "Default Lucide."),
+                            + "Default SF Symbols."),
                 .number("recent-count", "Recent videos", step: 5, symbol: "clock",
                         description: "How many videos Recent keeps. 1–200, default 50."),
             ]),

@@ -4,7 +4,7 @@ extension SettingsPanel {
     /// Scrubbing with the trackpad and the wheel, and the Logitech wheel's modes.
     static var scrolling: SettingsPage {
         SettingsPage("scrolling", "Scrolling", symbol: "scroll", sections: [
-            SettingsSection("Trackpad and mouse wheel scrubbing", rows: [
+            SettingsSection("Trackpad and wheel", rows: [
                 .number("scrub-px-per-frame", "Points per frame", unit: "pt", step: 0.5, symbol: "ruler",
                         description: "How far a scroll goes for one frame. 0.5–500, default 8."),
                 .toggle("scrub-accel", "Accelerate: faster movement takes bigger steps", symbol: "speedometer",

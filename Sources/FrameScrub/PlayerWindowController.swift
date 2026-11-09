@@ -134,8 +134,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let keyHelp = KeyHelpView()
     private var previewProvider: FrameScrubCore.PreviewProvider?
     private var previewImage: CGImage?
+    private var previewSample: (seconds: Double, exact: Bool)?
     /// Where the pointer is on the seek bar (0…1); nil while it is not on the bar.
     private var previewFraction: Double?
+    private var previewHoverWork: DispatchWorkItem?
     /// The keyframe a scroll over the bar moved the preview to, and where the pointer was then; the preview stays
     /// there (and a click goes there) until the pointer moves away by more than `pinSlack`.
     private var previewPin: (frame: Int, fraction: Double)?
@@ -500,7 +502,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         configurePreview(force: true)
         // The window keeps its size: the picture fits into it (⌘1–⌘4 and aspect changes still size the window).
         window?.resizeIncrements = NSSize(width: 1, height: 1)   // no aspect left from the previous file
-        revealSeekBar()
+        hideSeekBarWork?.cancel()
+        hideSeekBarWork = nil
+        seekBar.setPlaybackControlsVisible(false)
+        seekBar.setFilmRevealed(false)
+        seekBar.alphaValue = seekBar.showsFilmstrip || seekBar.playbackVisible ? 1 : 0
+        updateSeekBar()
+        seekBar.refreshVisibility()
+        updateSeekBarForPointer()
         statsFileChanged()
         StartupTrace.mark("open returned")
     }
@@ -568,6 +577,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         lastFrame = nil
         videoView.clear(blank: true)
         hideSeekBarWork?.cancel()
+        hideSeekBarWork = nil
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
         failedURL = nil
@@ -815,6 +825,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             window.titleVisibility = .hidden
         }
         hideSeekBarWork?.cancel()
+        hideSeekBarWork = nil
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
         osd.hide()   // the player's messages and icons were about the video, now behind Home
@@ -1521,7 +1532,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             osd.trailingAnchor.constraint(lessThanOrEqualTo: visibleArea.trailingAnchor, constant: -16),
             seekBar.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             seekBar.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor, constant: -16),
-            seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -12),
+            seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -8),
             { let constraint = seekBar.heightAnchor.constraint(equalToConstant: seekBar.preferredHeight)
                 seekBarHeight = constraint; return constraint }(),
             backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
@@ -1543,7 +1554,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onEnterExit = { [weak self] in
             self?.showCursorAfterScrub()
             self?.updatePrecisionWheel()
-            self?.revealSeekBar()
+            self?.updateSeekBarForPointer()
         }
         let transport = seekBar.transport
         transport.onPlay = { [weak self] in self?.runFromSeekBar(.cyclePause) }
@@ -1551,7 +1562,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         transport.onForward = { [weak self] in self?.runFromSeekBar(.seek(10, .byConfig)) }
         transport.onSpeed = { [weak self] in self?.runFromSeekBar(.setSpeed($0)) }
         transport.onFullscreen = { [weak self] in self?.runFromSeekBar(.cycleFullscreen) }
-        seekBar.onHeightChange = { [weak self] height in self?.seekBarHeight.constant = height }
+        seekBar.onHeightChange = { [weak self] height in
+            guard let self, seekBarHeight.constant != height else { return }
+            seekBarHeight.constant = height
+        }
         seekBar.onFilmstripRequest = { [weak self] times in self?.filmstripLoader?.request(times) }
         seekBar.onFilmScrubBegan = { [weak self] in self?.core.pause() }
         seekBar.onFilmSeek = { [weak self] seconds in
@@ -1663,13 +1677,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         videoView.onOtherButtonUp = { [weak self] button, time in self?.buttons.appKitUp(button, at: time) }
         videoView.onMouseMoved = { [weak self] in
             self?.showCursorAfterScrub()
-            self?.seekBar.updateFilmPointer(self?.window?.mouseLocationOutsideOfEventStream)
-            self?.revealSeekBar()
+            self?.updateSeekBarForPointer()
             self?.updatePrecisionWheel()
         }
         videoView.onEnterExit = { [weak self] in
             self?.showCursorAfterScrub()
-            self?.seekBar.updateFilmPointer(nil)
+            self?.updateSeekBarForPointer()
             self?.updatePrecisionWheel()
         }
         videoView.onOpenFile = { [weak self] in self?.open($0) }
@@ -2612,7 +2625,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Overlays
 
-    private func revealSeekBar() {
+    private func updateSeekBarForPointer() {
+        guard !showsHome, failureView.isHidden else { return }
+        let point = window?.mouseLocationOutsideOfEventStream
+        seekBar.updateFilmPointer(point)
+        if seekBar.isInRevealZone(point) || seekBar.isInteracting {
+            hideSeekBarWork?.cancel()
+            hideSeekBarWork = nil
+            if !seekBar.playbackVisible || seekBar.alphaValue < 1 { revealSeekBar(linger: false) }
+        } else if hideSeekBarWork == nil, seekBar.playbackVisible || isBackButtonShown {
+            scheduleSeekBarHide(after: 0.15)
+        }
+    }
+
+    private func revealSeekBar(linger: Bool = true) {
         // No file: nothing to show, and over the Stash page the bar would take its clicks.
         if showsHome || !failureView.isHidden { return }
         updateSeekBar()
@@ -2629,28 +2655,28 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.setPlaybackControlsVisible(true)
         seekBar.revealPlaybackControls()
         showBackButton(true, duration: 0.15)
+        if linger { scheduleSeekBarHide(after: 1.5) }
+    }
+
+    private func scheduleSeekBarHide(after delay: TimeInterval) {
         hideSeekBarWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            if isPointer(over: seekBar) || seekBar.isInteracting { return }   // a pointer resting on the bar keeps it
-            previewFraction = nil
-            previewPin = nil
-            seekBar.previewFrame = nil
-            previewImage = nil
-            previewView.hide()
-            if isPointer(over: backButton) { return }
+            hideSeekBarWork = nil
+            if seekBar.isInRevealZone(window?.mouseLocationOutsideOfEventStream) || seekBar.isInteracting { return }
+            hover(nil)
             seekBar.setPlaybackControlsVisible(false)
-            if !seekBar.showsFilmstrip {
+            if !seekBar.playbackVisible, !seekBar.showsFilmstrip {
                 NSAnimationContext.runAnimationGroup { context in
                     context.duration = 0.2
                     self.seekBar.animator().alphaValue = 0
                 }
             }
-            showBackButton(false, duration: 0.2)
+            if !isPointer(over: backButton) { showBackButton(false, duration: 0.2) }
             hideCursorOverVideo()
         }
         hideSeekBarWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     /// Fades the back button in or out and moves the OSD out of its way.
@@ -2793,11 +2819,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.resetFilmstrip()
         previewProvider?.stop()
         previewProvider = nil
-        previewImage = nil
-        previewFraction = nil
-        previewPin = nil
-        seekBar.previewFrame = nil
-        previewView.hide()
+        hover(nil)
         guard let url = core.url, let index = core.index, let info = core.info else { return }
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
         let imagePool = PreviewImagePool(url: url, rotationClockwise: info.rotationClockwise)
@@ -2809,6 +2831,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 guard let self else { return }
                 let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
                 if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
+                guard previewSample != nil else { return }
                 previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
                 updatePreviewView()
                 if PlaybackDiagnostics.enabled {
@@ -3207,29 +3230,48 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func hover(_ fraction: Double?) {
+        let enteredTimeline = previewFraction == nil
         previewFraction = fraction
         guard let fraction, let index = core.index else {
+            previewHoverWork?.cancel()
+            previewHoverWork = nil
             previewPin = nil
             seekBar.previewFrame = nil
             previewImage = nil
+            previewSample = nil
             previewView.hide()
             return
         }
         releasePin(ifPointerAt: fraction)
-        requestPreview(index)
-        revealSeekBar()          // keeps the bar visible while the mouse is on it
+        if enteredTimeline {
+            // Brief crossings on the way to the controls should not flash a preview.
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                previewHoverWork = nil
+                if let index = core.index { requestPreview(index) }
+            }
+            previewHoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        } else if previewHoverWork == nil {
+            requestPreview(index)
+        }
     }
 
     private func requestPreview(_ index: FrameIndex) {
         guard let frame = previewFrame else { return }
-        previewProvider?.request(seconds: index.seconds(forFrame: frame))
+        // The timecode tracks the pointer continuously. The image only needs a new keyframe.
+        let seconds = index.seconds(forFrame: index.keyframe(atOrBefore: frame))
+        if let previewProvider, previewSample?.seconds != seconds || previewSample?.exact != index.isExact {
+            previewSample = (seconds, index.isExact)
+            previewProvider.request(seconds: seconds)
+        }
         updatePreviewView()
     }
 
     /// Scrolling over the bar moves the preview from keyframe to keyframe without touching playback; a click then
     /// goes to the keyframe shown. Without known keyframes (approximate index) the scroll does nothing.
     private func scrollOverSeekBar(_ event: NSEvent) {
-        guard let fraction = previewFraction, let index = core.index, let from = previewFrame else {
+        guard !seekBar.showsFilmstrip, let fraction = previewFraction, let index = core.index, let from = previewFrame else {
             return handleScroll(event, source: .menu)   // no preview: the bar's scroll scrubs, silently (the bar never vibrates)
         }
         lensScroll.invertX = core.config.scrub.invert
@@ -3252,15 +3294,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         defer { if PlaybackDiagnostics.enabled {
             PlaybackDiagnostics.shared.record("update_view_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: "preview.ui")
         } }
-        guard let frame = previewFrame, let index = core.index, let container = window?.contentView else { return }
-        let lens = KeyframeLens(index: index, frame: frame)
+        guard previewHoverWork == nil, let frame = previewFrame,
+              let index = core.index, let container = window?.contentView else { return }
+        let lens = seekBar.showsFilmstrip ? nil : KeyframeLens(index: index, frame: frame)
         seekBar.previewFrame = frame
         previewView.show(image: previewImage, scale: window?.backingScaleFactor ?? 2,
                          time: "\(FrameNaming.timecode(index.seconds(forFrame: frame)))  f\(frame)" + (lens.map { "  " + $0.label } ?? ""),
                          lens: lens, playhead: core.position)
         previewView.layoutSubtreeIfNeeded()
         let fraction = core.durationSeconds > 0 ? index.seconds(forFrame: frame) / core.durationSeconds : 0
-        let trackX = seekBar.frame.minX + 12 + fraction * (seekBar.frame.width - 24)
+        let localX = seekBar.filmPointer?.x ?? (12 + fraction * (seekBar.frame.width - 24))
+        let trackX = seekBar.frame.minX + localX
         let width = previewView.fittingSize.width
         let maxLeading = max(container.bounds.width - width - 8, 8)
         previewLeading.constant = min(max(trackX - width / 2, 8), maxLeading)

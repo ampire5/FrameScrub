@@ -545,7 +545,7 @@ import HomeScreenModel
         source == HomeRecent.stash
             ? HomeSourceInfo(title: "Stash", page: stashPage())
             : HomeSourceInfo(title: "Recent", sortKeys: [.date, .name], groupsByDate: true, noun: "video",
-                             emptyHint: "Drop a video here or press ⌘O")
+                             emptyHint: "Drop a video here or press ⌘O to open one")
     }
 
     /// Recent; the places, each opening as a tree; Stash's library when `stash-url` is set.

@@ -6,8 +6,11 @@ import HomeChrome
 final class TimelineModeControl: NSVisualEffectView {
     var onSelect: ((TimelineFilmMode) -> Void)?
     var onSettings: (() -> Void)?
+    var onPin: (() -> Void)?
+    static let wideLayoutMinimum: CGFloat = 500
     private let segments = NSSegmentedControl()
     private let settings = NSButton()
+    private let pin = NSButton()
 
     init() {
         super.init(frame: .zero)
@@ -34,20 +37,38 @@ final class TimelineModeControl: NSVisualEffectView {
         settings.refusesFirstResponder = true; settings.toolTip = "Lens settings"
         settings.setAccessibilityLabel("Lens settings")
         settings.target = self; settings.action = #selector(openSettings); addSubview(settings)
+        pin.setButtonType(.pushOnPushOff)
+        pin.isBordered = false
+        pin.contentTintColor = Chrome.Palette.overMedia.text
+        pin.refusesFirstResponder = true
+        pin.target = self
+        pin.action = #selector(togglePin)
+        addSubview(pin)
     }
     required init?(coder: NSCoder) { fatalError("not used") }
     func setMode(_ mode: TimelineFilmMode) { segments.selectedSegment = mode.rawValue }
+    func setPinned(_ pinned: Bool) {
+        let label = pinned ? "Unpin Filmstrip" : "Pin Filmstrip"
+        let symbol = pinned ? "pin.fill" : "pin"
+        pin.state = pinned ? .on : .off
+        pin.image = Icons.symbol(symbol, pointSize: 12, description: label)
+            ?? NSImage(systemSymbolName: symbol, accessibilityDescription: label)
+        pin.toolTip = "\(label) (⌥⌘L)"
+        pin.setAccessibilityLabel(label)
+    }
     @objc private func selected() {
         if let mode = TimelineFilmMode(rawValue: segments.selectedSegment) { onSelect?(mode) }
     }
     @objc private func openSettings() { onSettings?() }
+    @objc private func togglePin() { onPin?() }
     override func layout() {
         super.layout()
         segments.controlSize = bounds.height < 24 ? .mini : .small
         let buttonWidth: CGFloat = bounds.height < 24 ? 20 : 25
-        segments.frame = NSRect(x: 2, y: 1, width: max(1, bounds.width - buttonWidth - 4), height: bounds.height - 2)
+        segments.frame = NSRect(x: 2, y: 1, width: max(1, bounds.width - 2 * buttonWidth - 4), height: bounds.height - 2)
         for i in 0..<3 { segments.setWidth(max(1, (segments.frame.width - 2) / 3), forSegment: i) }
-        settings.frame = NSRect(x: bounds.width - buttonWidth - 1, y: 1, width: buttonWidth, height: bounds.height - 2)
+        settings.frame = NSRect(x: bounds.width - 2 * buttonWidth - 1, y: 1, width: buttonWidth, height: bounds.height - 2)
+        pin.frame = NSRect(x: settings.frame.maxX, y: 1, width: buttonWidth, height: bounds.height - 2)
     }
     override func hitTest(_ point: NSPoint) -> NSView? {
         alphaValue > 0.01 ? super.hitTest(point) : nil
