@@ -80,9 +80,9 @@ enum StashFile {
 
     /// The scene's first file on this Mac, Stash's stream of it, or why it cannot be opened. A scene without paths
     /// (a link, a plugin page that named only the id) has them asked of Stash first.
-    func resolve(_ scene: StashScene, completion: @escaping @MainActor (StashFile) -> Void) {
+    func resolve(_ scene: StashScene, mountAllowed: Bool = true, completion: @escaping @MainActor (StashFile) -> Void) {
         guard scene.paths.isEmpty, streaming != .always else {
-            decide(sceneID: scene.id, paths: scene.paths, completion: completion)
+            decide(sceneID: scene.id, paths: scene.paths, mountAllowed: mountAllowed, completion: completion)
             return
         }
         guard let client else {
@@ -98,7 +98,7 @@ enum StashFile {
                 completion(.failed(OpenFailure(reason: error.localizedDescription, detail: "Stash scene \(scene.id)")))
                 return
             }
-            self?.decide(sceneID: scene.id, paths: paths, completion: completion)
+            self?.decide(sceneID: scene.id, paths: paths, mountAllowed: mountAllowed, completion: completion)
         }
     }
 

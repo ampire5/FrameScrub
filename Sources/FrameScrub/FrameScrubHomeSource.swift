@@ -8,6 +8,15 @@ import HomeScreenModel
 /// at once on the way back. Clicks and menus go back to the window.
 @MainActor final class FrameScrubHomeSource: HomeSource {
     weak var view: HomeBrowserView?
+    var catalogs: [String: PluginCatalogSource] = [:]
+    var onCut: ((PluginCatalogSource, String, Bool) -> Void)?
+    var onCatalogNavigation: (() -> Void)?
+
+    private func catalog(_ location: BrowserLocation) -> PluginCatalogSource? {
+        guard case let .source(id) = location else { return nil }
+        return catalogs[id]
+    }
+
     /// A video card opened (any click: one window), from Recent or from a folder, with the sort it was shown in.
     var onOpen: ((URL, BrowserLocation, BrowserSort) -> Void)?
     /// A card's menu item: `finder`, `copy`, and Recent's `remove`.
@@ -109,7 +118,7 @@ import HomeScreenModel
     func list(_ location: BrowserLocation) -> AsyncThrowingStream<BrowserListing, Error> {
         switch location {
         case .source(HomeRecent.source): return listRecent()
-        case .source: return AsyncThrowingStream { $0.finish() }
+        case .source: return catalog(location)?.listing() ?? AsyncThrowingStream { $0.finish() }
         case .places:
             return AsyncThrowingStream { continuation in
                 let task = Task { @MainActor [weak self] in
@@ -255,6 +264,7 @@ import HomeScreenModel
     }
 
     func lastListing(for location: BrowserLocation) -> BrowserListing? {
+        if let catalog = catalog(location) { return catalog.lastListing }
         guard case .folder(let folder) = location, let kept = listings[folder] else { return nil }
         return BrowserListing(entries: withFacts(kept), complete: true)
     }
@@ -271,8 +281,8 @@ import HomeScreenModel
         case .place:   // the home folder, else a volume (shares are not always under /Volumes)
             entry.url.standardizedFileURL == FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
                 ? "house" : "externaldrive"
-        case .folder, .archive: "folder"
-        case .file, .collection: "film"
+        case .folder, .archive, .collection: "folder"
+        case .file: "film"
         }
     }
 
@@ -281,6 +291,13 @@ import HomeScreenModel
     /// The cards' pictures, those in view first: saved ones read off the main thread, the others made in the
     /// background one at a time.
     func wantImages(_ ids: [String], width: CGFloat) {
+        if let location = view?.location, let catalog = catalog(location) {
+            catalog.want(ids) { [weak self] id, image in
+                guard self?.view?.location == location else { return }
+                self?.view?.setImage(image, for: id)
+            }
+            return
+        }
         if view?.location == .source(HomeRecent.source) {
             recentPictures.want(ids)
         } else {
@@ -355,6 +372,7 @@ import HomeScreenModel
     /// Home hidden: stop its subscription too, so returning re-reads files and saved playback progress.
     /// A location change has already subscribed to the new place before `moved` arrives: keep that subscription.
     func stopImages(keepingListing: Bool = false) {
+        for catalog in catalogs.values { catalog.stop() }
         if !keepingListing {
             let listing = activeListing
             activeListing = nil
@@ -493,6 +511,7 @@ import HomeScreenModel
     // MARK: Cards
 
     func menu(for entry: BrowserEntry, in location: BrowserLocation) -> [HomeMenuItem] {
+        if catalog(location) != nil { return [HomeMenuItem(id: "edit-virtual-cut", title: "Edit Cut…")] }
         var items = [HomeMenuItem(id: "information", title: "File Information…"),
                      HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
         if !entry.isFile { items.removeAll { $0.id == "information" } }
@@ -501,6 +520,10 @@ import HomeScreenModel
     }
 
     func perform(_ item: String, on entry: BrowserEntry, in location: BrowserLocation) {
+        if let catalog = catalog(location) {
+            if item == "edit-virtual-cut" { onCut?(catalog, entry.id, true) }
+            return
+        }
         if item == "information", entry.isFile {
             if metadataInspector == nil { metadataInspector = MediaMetadataInspector() }
             metadataInspector?.show(entry)
@@ -508,6 +531,7 @@ import HomeScreenModel
     }
 
     func open(_ entry: BrowserEntry, in location: BrowserLocation, sort: BrowserSort, how: HomeClick) {
+        if let catalog = catalog(location) { onCut?(catalog, entry.id, false); return }
         guard entry.isFile else { return }
         onOpen?(entry.url, location, sort)
     }
@@ -542,7 +566,11 @@ import HomeScreenModel
     }
 
     func info(for source: String) -> HomeSourceInfo {
-        source == HomeRecent.stash
+        if let catalog = catalogs[source] {
+            return HomeSourceInfo(title: catalog.descriptor.title, sortKeys: [.name], noun: "cut",
+                                  emptyHint: "Saved cuts appear here")
+        }
+        return source == HomeRecent.stash
             ? HomeSourceInfo(title: "Stash", page: stashPage())
             : HomeSourceInfo(title: "Recent", sortKeys: [.date, .name], groupsByDate: true, noun: "video",
                              emptyHint: "Drop a video here or press ⌘O to open one")
@@ -564,6 +592,13 @@ import HomeScreenModel
                 HomeSidebarRow(id: HomeRecent.stash, title: "Library", symbol: "server.rack", location: .source(HomeRecent.stash)),
             ]))
         }
+        if !catalogs.isEmpty {
+            let rows = catalogs.values.sorted { $0.locationID < $1.locationID }.map {
+                HomeSidebarRow(id: $0.locationID, title: $0.descriptor.title, symbol: "film.stack",
+                               location: .source($0.locationID))
+            }
+            sections.append(HomeSidebarSection(id: "plugins", title: "Plugins", rows: rows))
+        }
         return sections
     }
 
@@ -574,6 +609,7 @@ import HomeScreenModel
 
     func moved(from old: BrowserLocation?, to new: BrowserLocation) {
         if old != new {
+            if let old, catalog(old) != nil { onCatalogNavigation?() }
             thumbnailsPaused = false
             folderCardIDs = []
             stopImages(keepingListing: true)

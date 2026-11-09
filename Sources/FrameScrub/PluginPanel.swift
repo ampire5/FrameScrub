@@ -165,6 +165,7 @@ import WebKit
     /// Why the page is not there (a failed load), above the Reload button.
     private let failure = NSTextField(wrappingLabelWithString: "")
     private(set) var url: URL?
+    private(set) var pageSource: PluginPageSource?
     /// Whether the page was already reloaded once after its content process died: a second death shows the button.
     private var reloadedAfterCrash = false
 
@@ -333,7 +334,8 @@ import WebKit
     @discardableResult
     func load(_ url: URL, from source: PluginPageSource, force: Bool = false) -> Bool {
         guard source.accepts(url) else { return false }
-        if url == self.url && !force { return true }
+        if url == self.url && source == pageSource && !force { return true }
+        pageSource = source
         self.url = url
         reloadedAfterCrash = false
         crashed.isHidden = true

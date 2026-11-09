@@ -234,6 +234,10 @@ public final class PlayerCore {
     }
 
     public var frameCount: Int { index?.frameCount ?? 0 }
+    /// A cut segment owns these bounds while its underlying file is playing.
+    public var virtualPlaybackBounds: Range<Double>? { didSet { syncCacheRegions() } }
+    public var onVirtualPlaybackBoundary: ((Int) -> Void)?
+
     public var currentSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
     public var durationSeconds: Double { info?.durationSeconds ?? 0 }
 
@@ -251,7 +255,7 @@ public final class PlayerCore {
     /// that touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
     /// Making it touches nothing: even the volume's kind (a `statfs`, which waits for an SMB server) is asked when it
     /// runs. `cancellation` stops it while it reads.
-    public func preparation(for url: URL, cancellation: OpenCancellation? = nil) -> @Sendable () throws -> PreparedOpen {
+    public func preparation(for url: URL, cancellation: OpenCancellation? = nil, expectedVersion: String? = nil) -> @Sendable () throws -> PreparedOpen {
         let config = config, factor = pressureFactor, resumeStore = resumeStore
         let byteSource = byteSource
         return {
@@ -261,6 +265,9 @@ public final class PlayerCore {
             let budget = Self.readCacheBudget(config: config, policy: policy, factor: factor)
             let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
             try cancellation?.watch(readCache)
+            if let expectedVersion, try VirtualCutMediaVersion.read(from: readCache) != expectedVersion {
+                throw VirtualCutMediaVersion.Changed()
+            }
             let source = try MediaSource(url: url, readCache: readCache)
             if let identity { FileFactsStore.shared.store(source.metadata, identity: identity) }
             readCache.probe = StreamProbe(source)
@@ -269,7 +276,7 @@ public final class PlayerCore {
     }
 
     /// Opens a file `preparation(for:)` read; the file open until now is left. `landingTime` as for `open(_:)`.
-    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil) {
+    public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil, virtualBounds: Range<Double>? = nil) {
         let url = prepared.url, readCache = prepared.readCache, source = prepared.source
         networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
@@ -278,6 +285,7 @@ public final class PlayerCore {
         let pendingSegments = index == nil && !segmentsSource.isEmpty
             ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
         close(announcing: pendingSegments == nil)   // restored segments are announced once, by the first seek
+        virtualPlaybackBounds = virtualBounds
         session += 1
         let current = session
         let approximate = source.approximateIndex()
@@ -323,7 +331,7 @@ public final class PlayerCore {
                                    session: current)
         }
         // keep-speed: the speed the user chose goes on; the shuttle's and a hold's are only for the file they began in.
-        let kept = config.keepSpeed ? (shuttleSpeed ? 1 : heldFrom?.speed ?? speed) : 1
+        let kept = (config.keepSpeed || virtualBounds != nil) ? (shuttleSpeed ? 1 : heldFrom?.speed ?? speed) : 1
         heldFrom = nil   // the hold's key-up after the open has nothing to put back
         let willHaveSound = enableAudio && source.audioStreamIndex != nil   // the sound comes in later: its range now
         let range = willHaveSound ? AudioOutput.rateRange : 0.01...100
@@ -335,7 +343,7 @@ public final class PlayerCore {
         buildIndexInBackground(url, readCache: readCache, session: current)
         seek(toFrame: 0)
         resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
-        if config.autoplay { play() }
+        if config.autoplay, virtualBounds == nil { play() }
         // Start in the final playback/pause mode and at the restored position, never in the
         // filler's default paused mode while open/export/audio setup is still being prepared.
         filler.start()
@@ -351,6 +359,7 @@ public final class PlayerCore {
         cancelEdgeDrag()   // before the marks are remembered: the drag never reached them
         // Persist only an observed display date: Home may have hidden this paused video for hours.
         rememberPosition()
+        virtualPlaybackBounds = nil
         exportFlag?.cancel()
         exportFlag = nil
         indexFlag?.cancel()
@@ -560,7 +569,10 @@ public final class PlayerCore {
     /// The cache follows the A–B loop, else the locked segments (segment lock spec §3): frames outside them are wasted
     /// work and evict useful ones.
     private func syncCacheRegions() {
-        if let a = loopA, let b = loopB {
+        if let bounds = virtualPlaybackBounds, let index {
+            let first = index.frameNumber(forSeconds: bounds.lowerBound)
+            filler?.setRegions([first...max(first, index.frameNumber(before: bounds.upperBound))], advance: .repeating)
+        } else if let a = loopA, let b = loopB {
             filler?.setRegions([min(a, b)...max(a, b)], advance: .repeating)
         } else {
             filler?.setRegions(lockedSegments?.ranges ?? [], advance: segmentAdvance)
@@ -591,6 +603,12 @@ public final class PlayerCore {
         StartupTrace.mark("exact index ready")
         if !unchanged { landingID += 1 }   // a pending landing counts frames of the old index
         filler.updateIndex(exact, clearCache: !unchanged)
+        if let bounds = virtualPlaybackBounds {
+            let first = exact.frameNumber(forSeconds: bounds.lowerBound)
+            let last = max(first, exact.frameNumber(before: bounds.upperBound))
+            position = min(max(position, first), last)
+            syncCacheRegions()
+        }
         refocus(direction: 0)
         showCurrent()
         announceSegment()
@@ -603,7 +621,9 @@ public final class PlayerCore {
         guard let index else { return }
         if shuttleSpeed { applySpeed(1) }   // Space after the shuttle: 1× (spec §2)
         let loop = playbackLoop
-        if playMarksOnly, lockedSegments == nil,
+        if virtualPlaybackBounds != nil {
+            // The cut coordinator already chose the starting frame, including the final frame of a source.
+        } else if playMarksOnly, lockedSegments == nil,
            let start = PlaybackEdges.markStart(position: position, direction: direction, marks: marks.segments) {
             seek(toFrame: start)
         } else if config.abLoop == .once, let loop, position == (direction > 0 ? loop.upperBound : loop.lowerBound) {
@@ -655,7 +675,13 @@ public final class PlayerCore {
     /// Every seek, step and scrub ends here, so each is held inside the locked segments.
     private func move(toFrame n: Int, direction: Int, hold: SegmentHold = .glued) {
         guard let index else { return }
-        position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: hold)
+        if let bounds = virtualPlaybackBounds {
+            let first = index.frameNumber(forSeconds: bounds.lowerBound)
+            let last = max(first, index.frameNumber(before: bounds.upperBound))
+            position = min(max(n, first), last)
+        } else {
+            position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: hold)
+        }
         refocus(direction: direction)
         if !isPaused { restartClock() }
         showCurrent()
@@ -706,6 +732,20 @@ public final class PlayerCore {
         let last = index.frameCount - 1
         let atEnd = direction > 0 && n >= last && seconds >= index.seconds(forFrame: last) + 1 / (info?.frameRate ?? 30)
         let atStart = direction < 0 && seconds < index.seconds(forFrame: 0)
+        if let bounds = virtualPlaybackBounds {
+            if direction > 0 && (seconds >= bounds.upperBound || atEnd) {
+                seek(toFrame: index.frameNumber(before: bounds.upperBound))
+                pause()
+                onVirtualPlaybackBoundary?(1)
+                return
+            }
+            if direction < 0 && (seconds < bounds.lowerBound || atStart) {
+                seek(toFrame: index.frameNumber(forSeconds: bounds.lowerBound))
+                pause()
+                onVirtualPlaybackBoundary?(-1)
+                return
+            }
+        }
         // Locked segments without an A–B loop: `next` plays them as marks, round and round; `repeat` loops the current
         // one (`playbackLoop`). Play-marks-only waits while they are locked.
         let locked = lockedSegments
@@ -939,8 +979,9 @@ public final class PlayerCore {
         }
         clock.followsAudio = direction > 0
         clock.rate = speed * Double(direction)
-        clock.start(at: currentSeconds)
-        if direction > 0 { audio?.play(fromSeconds: currentSeconds) } else { audio?.pause() }
+        let start = max(currentSeconds, virtualPlaybackBounds?.lowerBound ?? currentSeconds)
+        clock.start(at: start)
+        if direction > 0 { audio?.play(fromSeconds: start, until: virtualPlaybackBounds?.upperBound) } else { audio?.pause() }
     }
 
     /// Reverse the current direction without the shuttle's speed reset or implicit play from pause.
@@ -1043,6 +1084,7 @@ public final class PlayerCore {
     }
 
     private func recordActualView(persistImmediately: Bool = false) {
+        guard virtualPlaybackBounds == nil else { return }
         let firstView = lastViewedAt == nil
         lastViewedAt = Date()
         if firstView || persistImmediately, let url, let size = readCache?.fileSize, let lastViewedAt {
@@ -1832,6 +1874,7 @@ public final class PlayerCore {
 
     /// Saves where the file is (and its A–B range, marks, length) now, as leaving it does: Home shows it over the video.
     public func rememberPosition() {
+        guard virtualPlaybackBounds == nil else { return }
         if let lastViewedAt, let url, let size = readCache?.fileSize {
             resumeStore?.recordView(for: url, size: size, at: lastViewedAt)
         }
@@ -1861,7 +1904,7 @@ public final class PlayerCore {
     /// Spec §7.1: exact seek to the remembered position (unless less than 5 s remain) and the A–B range back; `seeks`
     /// false leaves the position (a landing time follows).
     private func resumeIfRemembered(_ url: URL, fallback: Double?, seeks: Bool) {
-        guard config.resumePlayback, let index else { return }
+        guard virtualPlaybackBounds == nil, config.resumePlayback, let index else { return }
         guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
         loopB = entry.loopB.map(index.frameNumber(forSeconds:))

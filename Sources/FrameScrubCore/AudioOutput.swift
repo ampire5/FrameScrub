@@ -145,7 +145,7 @@ public final class AudioOutput: @unchecked Sendable {
     private var recentPlays: [Double] = []
 
     /// Main thread; returns at once.
-    public func play(fromSeconds seconds: Double) {
+    public func play(fromSeconds seconds: Double, until end: Double? = nil) {
         playCalls += 1
         noteStart()
         let g = state.withLock { s -> Int? in
@@ -161,7 +161,7 @@ public final class AudioOutput: @unchecked Sendable {
             _ = restartEngine()   // a device change whose restart failed: try again when asked to play
             stopPlayer()
         }
-        feedQueue.async { [self] in feed(from: seconds, generation: g) }
+        feedQueue.async { [self] in feed(from: seconds, until: end, generation: g) }
     }
 
     /// Main thread; returns at once.
@@ -316,7 +316,7 @@ public final class AudioOutput: @unchecked Sendable {
 
     private func isCurrent(_ g: Int) -> Bool { state.withLock { $0.generation == g } }
 
-    private func feed(from seconds: Double, generation g: Int) {
+    private func feed(from seconds: Double, until end: Double?, generation g: Int) {
         guard isCurrent(g) else { return }
         var queued = false
         // A feed that ends before anything was queued leaves nothing to start: no longer starting.
@@ -337,6 +337,15 @@ public final class AudioOutput: @unchecked Sendable {
                 return
             }
             guard let chunk else { return }   // the end of the sound
+            if let end {
+                let secondsLeft = end - chunk.startSeconds
+                guard secondsLeft > 0 else { return }
+                let samples = (secondsLeft * chunk.buffer.format.sampleRate).rounded(.down)
+                if samples < Double(chunk.buffer.frameLength) {
+                    guard samples >= 1 else { return }
+                    chunk.buffer.frameLength = AVAudioFrameCount(samples)
+                }
+            }
             while slots.wait(timeout: .now() + 0.25) == .timedOut {
                 if !isCurrent(g) { return }
             }

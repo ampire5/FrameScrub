@@ -154,6 +154,12 @@ import Slots
         if !isPlaylistShown { togglePlaylist() }
         if isPlaylistShown { playlistView.beginFilter() }
     }
+    func focus(page: PluginPanel) {
+        guard let (edge, id, _) = host.livePages.first(where: { $0.2.view === page }) else { return }
+        host.select(id, edge: edge)
+        host.show(edge, focus: true)
+    }
+
     func togglePlugin(focus: Bool = false) {
         for edge in SlotEdge.allCases {
             let ids = host.tabIDs(in: edge).filter { $0.rawValue.hasPrefix("plugin:") }

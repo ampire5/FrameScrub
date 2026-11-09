@@ -146,6 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         } else {
             controller.showHome()
         }
+        if CommandLine.arguments.contains("--bench-virtual-cut"),
+           let card = ProcessInfo.processInfo.environment["FRAMESCRUB_VIRTUAL_CUT_BENCH_CARD"] {
+            controller.runVirtualCutBench(card: card)
+        }
         let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
     }

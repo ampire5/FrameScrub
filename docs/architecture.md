@@ -158,6 +158,15 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   updates and new filesystem events preserve a user pause of thumbnail generation.
 - Plugin page → `PluginPanel` / bridge → core plugin messages/policies/actions → application/player commands.
   Keep external page data separate from trusted application configuration.
+- A configured plugin can register a same-origin HTTP cut catalog. `PluginCatalogSource` owns the listing,
+  image and cut requests. File View uses its ordinary collection cards and cancels image work when leaving.
+  Registration is scoped to the live configured page. The host checks limits, origins, source open policy and
+  file fingerprints before playback. `VirtualCutTimeline` resolves overlaps while retaining authored IDs for
+  resume. `VirtualCutPlayback` owns pending seek generations and cross-source transitions; the window
+  routes the virtual timeline to its existing `PlayerCore`. Core holds the active file's frame and audio
+  bounds, and suppresses source resume writes. One upcoming source may be prepared on a utility queue
+  when foreground reads are ready. Closing or changing target cancels obsolete preparation. The provider
+  owns analysis, shared draft persistence, revisions and previews, outside the player process.
 
 ## Concurrency and cancellation
 

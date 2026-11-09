@@ -196,9 +196,9 @@ A minimal page: it shows the time, has a button that jumps to 30 s, and declares
 </script>
 ```
 
-### The bridge (version 2)
+### The bridge (version 3)
 
-`framescrub.version` says which. Version 2 adds `hide`, `playlist`, `enqueue`, `framescrub.stash` and the slot's `panel` state.
+`framescrub.version` says which. Version 3 adds native File View sources for [virtual cuts](docs/reference.md#virtual-cuts). Version 2 adds `hide`, `playlist`, `enqueue`, `framescrub.stash` and the slot's `panel` state.
 
 Every verb posts a command and forgets it; a failure fires the `error` event with the reason. `framescrub.request(cmd, args)` does the same with a Promise that resolves with the result or rejects with an `Error` saying what was wrong, e.g. `request("seek", {t: 12})`. Times are seconds.
 

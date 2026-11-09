@@ -122,6 +122,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let hud = FeedbackHUD()
     private let goToField = GoToField()
     private let seekBar = SeekBarView()
+    private var virtualCut: VirtualCutSession?
+    private var virtualCutReturn: (session: VirtualCutSession, time: Double)?
+    private lazy var virtualCutAnchors: [String: VirtualCutTimeline.Anchor] = {
+        guard let data = UserDefaults.standard.data(forKey: "virtual-cut.resume") else { return [:] }
+        return (try? JSONDecoder().decode([String: VirtualCutTimeline.Anchor].self, from: data)) ?? [:]
+    }()
+    private var virtualCutCatalogLocation: (source: String, card: String)?
+    private var pluginCatalogs: [Int: PluginCatalogSource] = [:]
+    private var catalogOpen: Task<Void, Never>?
+    private var virtualCutBenchBoundary: Double?
+    private var isVirtualCutBench = false
+
     private var seekBarHeight: NSLayoutConstraint!
     private var filmstripLoader: FilmstripPreviewLoader?
     private var filmstripPrewarmFrames = Set<Int>()
@@ -298,6 +310,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case let .file(url):
             open(url, landing: target.landing)
         case let .stashScene(id):
+            leaveVirtualCut()
             dropListPlaylist()
             openStashScene(id: id, paths: [], landing: target.landing)
         }
@@ -342,8 +355,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `stepped`: the direction of the step through the folder that asked for it (‹ ›, autoadvance); a file the decoders
     /// cannot read is then gone past, as a known one is, instead of showing why it did not open.
     private func openFile(_ url: URL, origin: FileOrigin = .plain, fallbackPosition: Double? = nil,
-                          landing: LinkTarget? = nil, stepped: Int? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
-        guard !isTerminating else { done?(.superseded); return }
+                          landing: LinkTarget? = nil, stepped: Int? = nil,
+                          virtualSource: VirtualCutSource? = nil, virtualBounds: Range<Double>? = nil,
+                          warmed: PreparedOpen? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+        guard !isTerminating else { warmed?.discard(); done?(.superseded); return }
+        if virtualSource == nil { leaveVirtualCut() }
         StartupTrace.beginOpen(url.lastPathComponent)
         MetadataInspectionQueue.shared.cancel()
         abandonOpening()
@@ -358,7 +374,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         recentThumbnailer.cancel()   // the file's reads come first
         pluginGrabber?.stop()
         pluginGrabber = nil
-        saveThumbnail()
+        if core.virtualPlaybackBounds == nil { saveThumbnail() }
         dropSceneSearch()
         lastFrame = nil
         videoView.clear()
@@ -373,7 +389,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         indexingShownAt = nil
         // The previous file stops now; the window stays responsive while the file answers.
         closeCore()
-        hideHome()
+        if virtualSource == nil { hideHome() }
         failureView.isHidden = true
         updateViewingVisibility()
         window?.representedURL = nil
@@ -391,14 +407,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         openingMessage = message
         openingMessageItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.openingMessageDelay, execute: item)
-        let prepare = core.preparation(for: url, cancellation: cancellation)
+        let prepare = core.preparation(for: url, cancellation: cancellation, expectedVersion: virtualSource?.version)
         let open = fileOpens
         Task { [weak self] in
             // Blocking reads: on a dispatch thread, not the cooperative pool.
             let (result, facts) = await withCheckedContinuation {
                 (answer: CheckedContinuation<(Result<PreparedOpen, Error>, URL?), Never>) in
                 DispatchQueue.global(qos: .userInitiated).async {
-                    let result = Result { try prepare() }
+                    let result = Result { try warmed ?? prepare() }
                     answer.resume(returning: (result, Self.warmedFileURL(url, opened: (try? result.get()) != nil)))
                 }
             }
@@ -412,9 +428,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             switch result {
             case let .success(prepared):
                 unreadable.clear(url)
-                finishOpen(url, prepared, facts: facts ?? url, fallbackPosition: fallbackPosition, landing: landing)
+                finishOpen(url, prepared, facts: facts ?? url, fallbackPosition: fallbackPosition, landing: landing,
+                           virtualBounds: virtualBounds)
                 done?(.opened)
             case let .failure(error):
+                if virtualSource != nil { done?(.failed); return }
                 let failure = OpenFailure(error)
                 if failure.marksUnreadable {
                     let entry = listedEntry(url)
@@ -462,14 +480,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     /// The rest of `openFile` once the file is read: the player takes it and the window follows.
-    private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?, landing: LinkTarget?) {
-        openCore(prepared, fallbackPosition: fallbackPosition, landingTime: landing?.time)
+    private func finishOpen(_ url: URL, _ prepared: PreparedOpen, facts: URL, fallbackPosition: Double?,
+                            landing: LinkTarget?, virtualBounds: Range<Double>?) {
+        openCore(prepared, fallbackPosition: fallbackPosition, landingTime: landing?.time, virtualBounds: virtualBounds)
         core.sceneInfo = pageSceneInfos[url]   // a page's name for it: its frames and clips are named so
         core.frameFolder = pageFrameFolders[url]
         StartupTrace.mark("core opened")
-        if let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
+        if virtualBounds == nil, let landing, !landing.isEmpty { core.applyLanding(landing) }   // after fileopened: its segment events follow
         colorFileChanged()   // before anything below reads the colour
-        hideHome()
+        if virtualBounds == nil { hideHome() }
         failureView.isHidden = true
         updateViewingVisibility()
         updatePrecisionWheel()
@@ -480,13 +499,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // reads: it waits for the first picture. A stream has no folder, no file facts and no place in Recent.
         if url.isFileURL { window?.representedURL = facts }
         videoView.onNextPicture = { [weak self] in
-            guard url.isFileURL else { return }
+            guard url.isFileURL, virtualBounds == nil else { return }
             self?.readFolder(of: url)
             self?.readFileFacts(of: url)
         }
         showPlaylistPosition(url, opening: true)
         positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
-        if url.isFileURL {
+        if url.isFileURL, virtualBounds == nil {
             NSDocumentController.shared.noteNewRecentDocumentURL(facts)
             var hidden = HiddenRecent()
             hidden.reveal(url)   // removed from Recent once: opening it again brings it back
@@ -517,11 +536,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// `core.open`, then the page's `fileopened`, then the segment event the open raised, if any (segments given before
     /// the open, or the previous file's leaving): the page hears of the file before anything about its segments.
-    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?, landingTime: Double? = nil) {
+    private func openCore(_ prepared: PreparedOpen, fallbackPosition: Double?, landingTime: Double? = nil,
+                          virtualBounds: Range<Double>? = nil) {
         guard !isTerminating else { prepared.discard(); return }
         holdsSegmentEvents = true
         heldSegmentEvent = nil
-        core.open(prepared, fallbackPosition: fallbackPosition, landingTime: landingTime)
+        core.open(prepared, fallbackPosition: fallbackPosition, landingTime: landingTime, virtualBounds: virtualBounds)
         holdsSegmentEvents = false
         pluginFileOpened()
         if let held = heldSegmentEvent {
@@ -566,7 +586,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// ⌘W / the back button: leaves the file and shows where it came from; with no file, closes the window.
     func closeFile() {
-        guard hasOpenFile else { window?.performClose(nil); return }
+        guard hasOpenFile || virtualCut != nil else { window?.performClose(nil); return }
+        rememberVirtualCut()
+        defer { leaveVirtualCut() }
         abandonOpening()
         folderWait.cancel()
         recentThumbnailer.cancel()
@@ -586,7 +608,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         deletingScene = false   // a delete still running finishes without opening anything
         queueGate.cancel()
         origin = .plain
-        showHome(tab: returnTab)
+        showHome(tab: virtualCut == nil ? returnTab : nil)
     }
 
     private var failureHint: String? { returnTab == .stash ? "⌘W — back to Stash" : nil }
@@ -634,6 +656,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard queueGate.isPending else { return }
             queueGate.answered()
         }
+        leaveVirtualCut()
         guard let stashSession = makeStashSession() else {
             showMessage("No Stash server: set stash-url in Settings → Stash", duration: 4)
             onFailure?()
@@ -799,6 +822,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func showHome(tab: HomeTab? = nil) {
         guard let window else { return }
         slots.isEnabled = false
+        virtualCut?.playback.wantsPlayback = false
+        virtualCut?.stopWarming()
+        rememberVirtualCut()
         cancelTourBoxInput()
         homeButtons.cancelAll()
         core.setViewingVisible(false)
@@ -839,7 +865,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
         let location: BrowserLocation
-        if let place = HomeRecent.location(of: shown) {
+        if tab == nil, let cut = virtualCutCatalogLocation, virtualCut != nil {
+            location = .source(cut.source)
+            selecting = cut.card
+        } else if let place = HomeRecent.location(of: shown) {
             location = place
         } else if let back {
             location = .folder(back.folder)
@@ -873,6 +902,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Back to the video (or to the reason a file failed): Home stays in the window, hidden and parked.
     func hideHome() {
         guard let home, !homeHost.isHidden else { return }
+        catalogOpen?.cancel()
         homeButtons.cancelAll()
         let cpu = StartupTrace.threadCPU(), wall = Date()
         homeHost.isHidden = true
@@ -925,6 +955,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             stashPage: { [weak self] in self?.makeStashLibrary() },
             hasStash: { [weak self] in self?.core.config.stashEnabled ?? false }, unreadable: unreadable)
         let view = HomeView(source: source)
+        source.catalogs = Dictionary(uniqueKeysWithValues: pluginCatalogs.values.map { ($0.locationID, $0) })
+        source.onCut = { [weak self] in self?.chooseCatalogCut($0, id: $1, edit: $2) }
+        source.onCatalogNavigation = { [weak self] in self?.catalogOpen?.cancel() }
         source.view = view.browser
         view.browser.unreadable = unreadable
         source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
@@ -1127,6 +1160,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         abandonOpening()
         core.pause()
         saveThumbnail()
+        rememberVirtualCut()
         let finishSession = stashSession?.prepareTerminationFlush()
         core.close()
         await finishSession?()
@@ -1567,11 +1601,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard let self, seekBarHeight.constant != height else { return }
             seekBarHeight.constant = height
         }
-        seekBar.onFilmstripRequest = { [weak self] times in self?.filmstripLoader?.request(times) }
+        seekBar.onFilmstripRequest = { [weak self] times in self?.requestFilmstrip(times) }
         seekBar.onFilmstripFold = { [weak self] in self?.prewarmFilmstrip() }
-        seekBar.onFilmScrubBegan = { [weak self] in self?.core.pause() }
+        seekBar.onFilmScrubBegan = { [weak self] in
+            self?.virtualCut?.playback.wantsPlayback = false
+            self?.core.pause()
+        }
         seekBar.onFilmSeek = { [weak self] seconds in
-            guard let self, let index = core.index else { return }
+            guard let self else { return }
+            if seekVirtualCut(to: seconds) { revealSeekBar(); return }
+            guard let index = core.index else { return }
             previewPin = nil
             positionWillMove(keepingFilmScroll: true)
             haptics.from(.menu) { self.core.seek(toFrame: index.frameNumber(forSeconds: seconds)) }
@@ -1644,6 +1683,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             guard let self, let target = GoToTarget.parse(text) else { return false }
             positionWillMove()
             core.inputIsFresh = true
+            if virtualCut != nil {
+                guard case let .seconds(seconds) = target else { return false }
+                return seekVirtualCut(to: seconds)
+            }
             haptics.from(.keyboard) { self.core.goTo(target) }
             return true
         }
@@ -1689,11 +1732,21 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         videoView.onOpenFile = { [weak self] in self?.open($0) }
         videoView.onDisplayRatioChange = { [weak self] in self?.refreshLowLatency() }
+        core.onVirtualPlaybackBoundary = { [weak self] direction in
+            guard let self else { return }
+            if isVirtualCutBench { virtualCutBenchBoundary = ProcessInfo.processInfo.systemUptime }
+            advanceVirtualCut(direction)
+        }
         core.onDisplayReferencesChange = { [weak self] in self?.refreshLowLatency() }
         videoView.effectClock = { [weak self] in self?.core.clock.seconds ?? 0 }
         videoView.onTick = { [weak self] in self?.core.tick() }
         seekBar.onSeek = { [weak self] fraction in
             guard let self else { return }
+            if let session = virtualCut {
+                _ = seekVirtualCut(to: fraction * session.playback.timeline.duration)
+                revealSeekBar()
+                return
+            }
             releasePin(ifPointerAt: fraction)
             positionWillMove()
             haptics.from(.menu) { self.core.seekFromBar(toFrame: self.previewPin?.frame ?? self.frame(atBarFraction: fraction)) }   // the bar is silent
@@ -1845,6 +1898,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         if keyHelp.isShown, event.keyCode == 53 { keyHelp.hide(); return }   // Esc closes the cheat sheet first
+        if let session = virtualCut, session.playback.failure != nil,
+           event.keyCode == 36 || event.keyCode == 76 {
+            if let request = session.playback.retry() { moveVirtualCut(session, request) }
+            return
+        }
         if let failedURL, event.keyCode == 36 || event.keyCode == 76 { openFile(failedURL, origin: origin); return }   // Return / Enter: try again
         if let failedScene, event.keyCode == 36 || event.keyCode == 76 { openStashScene(failedScene); return }
         if showsHome {
@@ -1925,6 +1983,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var menuSource: MouseHaptics.Source { NSApp.currentEvent?.type == .keyDown ? .keyboard : .menu }
 
     private func run(_ command: Command) {
+        if runVirtualCutCommand(command) { return }
         sceneFrameOSDToDrop = nil
         if Self.movesPosition(command) { seekBar.cancelFilmScroll(); cancelSceneSearch() }
         switch command {
@@ -1975,7 +2034,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
-            goToField.open(with: FrameNaming.timecode(core.currentSeconds))
+            goToField.open(with: FrameNaming.timecode(virtualCut?.playback.position ?? core.currentSeconds))
         case .cycleMouseProfile:
             switchMouseProfile()
         case .toggleArtifactFilters:
@@ -2341,7 +2400,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             case let .scrubFrames(frames, ticks):
                 positionWillMove()
                 core.inputIsFresh = fresh
-                haptics.from(source) { core.scrub(by: frames, ticks: ticks) }
+                haptics.from(source) { if !scrubVirtualCut(frames) { core.scrub(by: frames, ticks: ticks) } }
             case let .command(command): runInput(command, from: source, fresh: fresh)
             case let .scrubEdge(edge, frames): scrubEdge(edge, by: frames, heldButton: heldButton, from: source, fresh: fresh)
             case .zoomBy: break   // `handleMagnify` gives the continuous zoom's pinch to the view
@@ -2359,7 +2418,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         positionWillMove()
         core.inputIsFresh = fresh
         guard let heldButton else {
-            haptics.from(source) { core.scrub(by: frames) }
+            haptics.from(source) { if !scrubVirtualCut(frames) { core.scrub(by: frames) } }
             return
         }
         haptics.from(source) {
@@ -2449,7 +2508,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 switch action {
                 case let .command(command): runInput(command, from: .menu)
                 case let .scrub(frames):
-                    positionWillMove(); core.inputIsFresh = true; core.scrub(by: frames)
+                    positionWillMove(); core.inputIsFresh = true; if !scrubVirtualCut(frames) { core.scrub(by: frames) }
                 case let .edge(edge, frames):
                     if !tourBoxEditsEdge {
                         core.cancelEdgeDrag(); edgeDragOwner = nil; edgeDragSuppressed = nil
@@ -2866,13 +2925,35 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 && previewFraction == nil && !showsHome && !core.isExporting && window?.inLiveResize == false
                 && window?.occlusionState.contains(.visible) == true && core.allowsBackgroundPreview
         }
-        loader.onImage = { [weak self] image, seconds in self?.seekBar.setFilmstripImage(image, seconds: seconds) }
+        loader.onImage = { [weak self] image, seconds in
+            guard let self else { return }
+            if let cut = virtualCut {
+                for time in cut.filmSamples[seconds] ?? [] { seekBar.setFilmstripImage(image, seconds: time) }
+            } else { seekBar.setFilmstripImage(image, seconds: seconds) }
+        }
         filmstripLoader = loader
         prewarmFilmstrip()
     }
 
+    private func requestFilmstrip(_ times: [Double]) {
+        guard let cut = virtualCut else { filmstripLoader?.request(times); return }
+        cut.filmSamples = [:]
+        guard let active = cut.playback.activeSpan, cut.playback.pending == nil else {
+            filmstripLoader?.request([])
+            return
+        }
+        let timeline = cut.playback.timeline
+        var sourceTimes: [Double] = []
+        for time in times {
+            guard let location = timeline.location(at: time), location.spanIndex == active else { continue }
+            if cut.filmSamples[location.sourceTime] == nil { sourceTimes.append(location.sourceTime) }
+            cut.filmSamples[location.sourceTime, default: []].append(time)
+        }
+        filmstripLoader?.request(sourceTimes)
+    }
+
     private func prewarmFilmstrip() {
-        guard let loader = filmstripLoader, let index = core.index, index.isExact, seekBar.filmstripEnabled,
+        guard virtualCut == nil, let loader = filmstripLoader, let index = core.index, index.isExact, seekBar.filmstripEnabled,
               !seekBar.showsFilmstrip, !showsHome, window?.occlusionState.contains(.visible) == true else { return }
         seekBar.updateTimeline(index: core.index, duration: core.durationSeconds, paused: core.isPaused,
                                uprightSize: uprightVideoSize, geometry: videoView.geometry,
@@ -3233,7 +3314,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in self?.diagnosticSweep(step: step + 1) }
     }
 
-    private func hover(_ fraction: Double?) {
+    private func hover(_ pointerFraction: Double?) {
+        let fraction = virtualCut == nil ? pointerFraction : nil
         let enteredTimeline = previewFraction == nil
         previewFraction = fraction
         guard let fraction, let index = core.index else {
@@ -3315,6 +3397,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func updateSeekBar() {
+        if let session = virtualCut {
+            let state = session.playback
+            seekBar.updateVirtualCut(time: state.position, duration: state.timeline.duration,
+                                     paused: !state.wantsPlayback)
+            updateTransport()
+            return
+        }
+        seekBar.virtualTime = nil
         let marks = core.marks
         // What each clip gets before its mark from the keyframe it starts on (exact index only).
         let leadIns = core.index.map { index in
@@ -3388,6 +3478,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         slots.onPageDropped = { [weak self] page in
             guard let self else { return }
             clearPluginActions(of: page.token)
+            removePluginCatalog(page.token)
             panelInfoSent[page.token] = nil
         }
         core.onSegmentChange = { [weak self] current, locked in
@@ -3425,6 +3516,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         page.onPageReplaced = { [weak self, weak page] in
             guard let self, let page else { return }
             clearPluginActions(of: page.token)
+            removePluginCatalog(page.token)
             panelInfoSent[page.token] = nil   // the new page has heard nothing yet
             dispatchPanelInfo()
         }
@@ -3451,6 +3543,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The pages get `window.framescrub` for the origins now trusted.
     private func applyPluginTrust() {
         for page in slots.pages { page.trusted = pluginPolicy.trusted }
+        let configured = Set(globalConfig.plugins.compactMap { PluginOrigin(url: $0.url) })
+        for (token, catalog) in pluginCatalogs where !configured.contains(catalog.origin) {
+            removePluginCatalog(token)
+        }
     }
 
     /// The slots moved: the video takes its rect (only a pinned slot changes it), the seek bar, OSD and stats the part
@@ -3532,12 +3628,45 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func pluginMessage(_ request: PluginRequest, from origin: PluginOrigin) {
         let page = request.page.flatMap { slots.page(withToken: $0) }
         switch request.message {
+        case let .cutCatalog(descriptor):
+            guard let page, page.pageSource == .settings else { pluginFailed(request, "catalog requires a configured page"); return }
+            if let descriptor {
+                let configured = Set(globalConfig.plugins.compactMap { PluginOrigin(url: $0.url) })
+                guard descriptor.allowed(from: origin, configured: configured) else {
+                    pluginFailed(request, "catalog endpoint must have the configured page's origin")
+                    return
+                }
+                let catalog = PluginCatalogSource(descriptor: descriptor, origin: origin, page: page.token)
+                guard pluginCatalogs.count < 16 || pluginCatalogs[page.token] != nil,
+                      !pluginCatalogs.values.contains(where: { $0.page != page.token && $0.locationID == catalog.locationID }) else {
+                    pluginFailed(request, "catalog already registered or too many catalogs")
+                    return
+                }
+                if pluginCatalogs[page.token]?.descriptor != descriptor {
+                    pluginCatalogs[page.token]?.stop()
+                    pluginCatalogs[page.token] = catalog
+                    refreshPluginCatalogs()
+                }
+            } else { removePluginCatalog(page.token) }
+        case .openOriginalFragment:
+            openVirtualCutOriginal()
+        case .returnToVirtualCut:
+            returnToVirtualCut()
         case let .seek(t): core.seek(toSeconds: t)
-        case .play: if core.isPaused { core.play() }
-        case .pause: if !core.isPaused { core.pause() }
-        case let .step(n): core.step(frames: n)
-        case let .loop(segment): core.setLoop(seconds: segment)
+        case .play:
+            if let session = virtualCut { session.playback.wantsPlayback = true }
+            if core.isPaused, virtualCut?.playback.pending == nil, virtualCut?.playback.failure == nil { core.play() }
+        case .pause:
+            virtualCut?.playback.wantsPlayback = false
+            if !core.isPaused { core.pause() }
+        case let .step(n):
+            virtualCut?.playback.wantsPlayback = false
+            core.step(frames: n)
+        case let .loop(segment):
+            if let session = virtualCut { session.playback.loops = segment != nil }
+            else { core.setLoop(seconds: segment) }
         case let .segments(list, lock, advance):
+            guard virtualCut == nil else { pluginFailed(request, "open the original to set source ranges"); return }
             guard core.setSegments(seconds: list, lock: lock ?? true, advance: advance) else {
                 pluginFailed(request, "no segment inside the file")
                 return
@@ -4030,6 +4159,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerStateDidChange(_ player: PlayerCore) {
+        virtualCut?.playback.update(sourceTime: core.currentSeconds)
+        maybeWarmVirtualCut()
         if core.isPaused != wasPaused || (core.isPaused && pausedFilmstripPrewarmPosition != core.position) {
             prewarmFilmstrip()
         }
@@ -4039,7 +4170,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         pushPluginState(force: true)
         if core.isPaused != wasPaused {
             wasPaused = core.isPaused
-            if wasPaused { stashSession?.saveProgress() }
+            if wasPaused, virtualCut == nil { stashSession?.saveProgress() }
         }
         if seekBar.alphaValue > 0 { updateSeekBar() }
     }
@@ -4089,6 +4220,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     func playerDidReachEnd(_ player: PlayerCore) {
+        if virtualCut != nil { return }
         guard core.config.playlistAutoadvance else { return }
         if let listPlaylist {
             if listPlaylist.next != nil {
@@ -4248,4 +4380,402 @@ private final class SceneCutState: @unchecked Sendable {
 /// What a background folder read hands to the main thread (written before its group is left).
 private final class FolderReadResult: @unchecked Sendable {
     var listing: FolderListing?
+}
+
+extension PlayerWindowController {
+    private func startVirtualCut(_ cut: VirtualCut, key: String, catalog: (source: String, card: String)? = nil) {
+        guard let timeline = cut.timeline else { return }
+        leaveVirtualCut()
+        stashOpens += 1
+        queueGate.cancel()
+        abandonOpening()
+        dropListPlaylist()
+        let session = VirtualCutSession(key: key, cut: cut, timeline: timeline)
+        virtualCut = session
+        virtualCutCatalogLocation = catalog
+        let anchor = virtualCutAnchors[key]
+        let time = anchor.map { timeline.resume(at: $0) } ?? 0
+        if let request = session.playback.seek(time, playing: true) { moveVirtualCut(session, request) }
+    }
+
+    private func rememberVirtualCut() {
+        guard let session = virtualCut, let anchor = session.playback.timeline.anchor(at: session.playback.position),
+              virtualCutAnchors[session.key] != anchor else { return }
+        if virtualCutAnchors[session.key] == nil, virtualCutAnchors.count >= 128,
+           let victim = virtualCutAnchors.keys.first { virtualCutAnchors.removeValue(forKey: victim) }
+        virtualCutAnchors[session.key] = anchor
+        if let data = try? JSONEncoder().encode(virtualCutAnchors) {
+            UserDefaults.standard.set(data, forKey: "virtual-cut.resume")
+        }
+    }
+
+    private func leaveVirtualCut() {
+        guard virtualCut != nil else { return }
+        rememberVirtualCut()
+        virtualCut?.stopWarming()
+        virtualCut = nil
+        virtualCutCatalogLocation = nil
+        stashOpens += 1
+        abandonOpening()
+    }
+
+    @discardableResult private func seekVirtualCut(to time: Double) -> Bool {
+        guard let session = virtualCut else { return false }
+        if let request = session.playback.seek(time, playing: session.playback.wantsPlayback) {
+            let source = session.playback.timeline.spans[request.location.spanIndex].source
+            if session.warm?.source != source { session.stopWarming() }
+            moveVirtualCut(session, request)
+        }
+        return true
+    }
+
+    private func scrubVirtualCut(_ frames: Int) -> Bool {
+        guard let session = virtualCut else { return false }
+        session.playback.wantsPlayback = false
+        core.pause()
+        return seekVirtualCut(to: session.playback.position + Double(frames) / max(1, core.info?.frameRate ?? 30))
+    }
+
+    private func advanceVirtualCut(_ direction: Int) {
+        guard let session = virtualCut else { return }
+        if let request = session.playback.advance(direction) { moveVirtualCut(session, request) }
+        else { core.pause(); updateSeekBar() }
+    }
+
+    private func moveVirtualCut(_ session: VirtualCutSession, _ request: VirtualCutPlayback.Request) {
+        let span = session.playback.timeline.spans[request.location.spanIndex]
+        if session.openingSource == span.source { updateSeekBar(); return } // the in-flight open uses the latest target
+        if session.openingSource != nil {
+            session.openingSource = nil
+            stashOpens += 1
+            abandonOpening()
+        }
+        if session.loadedSource == span.source, core.index != nil {
+            finishVirtualCutMove(session, request)
+            return
+        }
+        session.openingSource = span.source
+        session.loadedSource = nil
+        session.direction = core.direction
+        core.pause()
+        stashSession?.leave()
+        hideHome()
+        showMessage("Opening fragment…", duration: 2)
+        let ticket = UUID()
+        session.openTicket = ticket
+        let open: (URL, FileOrigin, PreparedOpen?) -> Void = { [weak self, weak session] url, origin, prepared in
+            guard let self, let session, virtualCut === session, session.openTicket == ticket,
+                  let target = session.playback.pending else { return }
+            let targetSpan = session.playback.timeline.spans[target.location.spanIndex]
+            openFile(url, origin: origin, landing: LinkTarget(time: target.location.sourceTime),
+                     virtualSource: span.source, virtualBounds: targetSpan.sourceStart..<targetSpan.sourceEnd,
+                     warmed: prepared) { [weak self, weak session] outcome in
+                guard let self, let session, virtualCut === session, session.openTicket == ticket,
+                      let latest = session.playback.pending else { return }
+                session.openingSource = nil
+                switch outcome {
+                case .opened:
+                    session.loadedSource = span.source
+                    finishVirtualCutMove(session, latest, reopened: true)
+                case .failed:
+                    failVirtualCutMove(session, latest)
+                case .superseded: break
+                }
+            }
+        }
+        if let warm = session.warm, warm.source == span.source, let prepared = warm.prepared,
+           let url = warm.url, let origin = warm.origin {
+            session.warm = nil
+            open(url, origin, prepared)
+            return
+        }
+        session.stopWarming()
+        switch span.source.kind {
+        case .file:
+            open(URL(filePath: span.source.locator), .plain, nil)
+        case .stream:
+            if let url = URL(string: span.source.locator) { open(url, .plain, nil) }
+        case .scene:
+            guard let stash = makeStashSession() else { failVirtualCutMove(session, request); return }
+            let scene = StashScene(id: span.source.locator, paths: [])
+            stash.resolve(scene) { [weak self, weak session] result in
+                guard let self, let session, virtualCut === session, session.openTicket == ticket,
+                      let latest = session.playback.pending else { return }
+                switch result {
+                case let .file(url), let .stream(url):
+                    stashScene = scene
+                    open(url, .stash(sceneID: scene.id, hasQueue: false), nil)
+                case .failed:
+                    failVirtualCutMove(session, latest)
+                }
+            }
+        }
+    }
+
+    private func finishVirtualCutMove(_ session: VirtualCutSession, _ request: VirtualCutPlayback.Request, reopened: Bool = false) {
+        let span = session.playback.timeline.spans[request.location.spanIndex]
+        guard let index = core.index, span.sourceStart < core.durationSeconds,
+              span.sourceEnd <= core.durationSeconds + 1.0 / max(1, core.info?.frameRate ?? 30) else {
+            failVirtualCutMove(session, request)
+            return
+        }
+        let previous = session.playback.activeSpan
+        guard session.playback.opened(request) else { return }
+        if previous != session.playback.activeSpan { session.warmedForSpan = nil }
+        core.virtualPlaybackBounds = span.sourceStart..<span.sourceEnd
+        if reopened, core.direction != session.direction { core.reversePlaybackDirection() }
+        let frame = min(index.frameNumber(forSeconds: request.location.sourceTime), index.frameNumber(before: span.sourceEnd))
+        core.seek(toFrame: frame)
+        if session.playback.wantsPlayback && !showsHome && core.isPaused { core.play() }
+        window?.title = session.cut.title
+        updateSeekBar()
+    }
+
+    private func failVirtualCutMove(_ session: VirtualCutSession, _ request: VirtualCutPlayback.Request) {
+        guard session.playback.failed(request) else { return }
+        session.openingSource = nil
+        session.loadedSource = nil
+        core.pause()
+        window?.title = session.cut.title
+        osd.show("Fragment unavailable. Return to retry, › to skip.", duration: nil)
+        updateSeekBar()
+    }
+
+    private func runVirtualCutCommand(_ command: Command) -> Bool {
+        guard let session = virtualCut else { return false }
+        switch command {
+        case .cyclePause:
+            session.playback.wantsPlayback.toggle()
+            if session.playback.wantsPlayback {
+                if session.playback.activeSpan != nil, session.playback.pending == nil { core.play() }
+            } else { core.pause() }
+            updateTransport()
+        case let .seek(delta, _):
+            _ = seekVirtualCut(to: session.playback.position + delta)
+        case .playlistNext, .markNext:
+            advanceVirtualCut(1)
+        case .playlistPrev, .markPrev:
+            advanceVirtualCut(-1)
+        case .frameStep, .frameBackStep:
+            let step = command == .frameStep ? 1 : -1
+            if let index = core.index, let current = session.playback.activeSpan, session.playback.pending == nil {
+                let span = session.playback.timeline.spans[current]
+                let target = core.position + step
+                if target >= index.frameCount || target < 0 ||
+                    index.seconds(forFrame: target) >= span.sourceEnd || index.seconds(forFrame: target) < span.sourceStart {
+                    session.playback.wantsPlayback = false
+                    core.pause()
+                    advanceVirtualCut(step)
+                } else {
+                    session.playback.wantsPlayback = false
+                    core.perform(command)
+                }
+            }
+        case .deleteFile, .saveClip, .exportRange, .markDelete, .markClear, .markSnap, .markIn, .markOut, .markLoop, .playMarks:
+            showMessage("Open the original to use this action.")
+        case .abLoop:
+            session.playback.loops.toggle()
+            showMessage(session.playback.loops ? "Loop cut: On" : "Loop cut: Off")
+        default:
+            return false
+        }
+        return true
+    }
+}
+
+extension PlayerWindowController {
+    private func removePluginCatalog(_ page: Int) {
+        guard let old = pluginCatalogs.removeValue(forKey: page) else { return }
+        old.stop()
+        refreshPluginCatalogs()
+    }
+
+    private func refreshPluginCatalogs() {
+        homeSource?.catalogs = Dictionary(uniqueKeysWithValues: pluginCatalogs.values.map { ($0.locationID, $0) })
+        if let browser = home?.browser, case let .source(id) = browser.location, id.hasPrefix("plugin-cut:") {
+            if homeSource?.catalogs[id] == nil { browser.show(.source(HomeRecent.source), selecting: nil) }
+            else if showsHome { browser.reload() }
+        }
+        home?.reloadSidebar()
+    }
+
+    private func chooseCatalogCut(_ catalog: PluginCatalogSource, id: String, edit: Bool) {
+        catalogOpen?.cancel()
+        guard pluginCatalogs[catalog.page] === catalog else { return }
+        if edit {
+            guard let page = slots.page(withToken: catalog.page) else { return }
+            if virtualCut != nil {
+                leaveVirtualCut()
+                closeCore()
+                videoView.clear(blank: true)
+            }
+            hideHome()
+            slots.focus(page: page)
+            page.dispatch(.editVirtualCut(id: id))
+            return
+        }
+        catalogOpen = Task { [weak self, weak catalog] in
+            guard let catalog else { return }
+            do {
+                let cut = try await catalog.cut(id)
+                try Task.checkCancellation()
+                guard let self, pluginCatalogs[catalog.page] === catalog, showsHome,
+                      home?.browser.location == .source(catalog.locationID) else { return }
+                let files = cut.ranges.filter { $0.source.kind == .file }.map { URL(filePath: $0.source.locator) }
+                guard files.isEmpty || pluginPolicy.decision(forOpening: files, from: catalog.origin) == .allowed else {
+                    showMessage("Allow this plugin to open local videos before playing this cut.", duration: 5)
+                    return
+                }
+                guard !cut.ranges.contains(where: { range in
+                    range.source.kind == .stream && URL(string: range.source.locator).map(isStashURL) == true
+                }) else {
+                    showMessage("Use scene IDs for media from the configured server.", duration: 5)
+                    return
+                }
+                startVirtualCut(cut, key: catalog.locationID + "/" + id, catalog: (catalog.locationID, id))
+            } catch {
+                guard !Task.isCancelled, let self, showsHome else { return }
+                showMessage(error.localizedDescription, duration: 5)
+            }
+        }
+    }
+
+    private func openVirtualCutOriginal() {
+        guard let session = virtualCut, let span = session.playback.activeSpan, let url = core.url,
+              session.playback.pending == nil else { return }
+        let time = session.playback.position
+        let mediaTime = core.currentSeconds
+        let catalog = virtualCutCatalogLocation
+        let source = session.playback.timeline.spans[span].source
+        leaveVirtualCut()
+        if source.kind == .scene {
+            openStashScene(id: source.locator, paths: [], landing: LinkTarget(time: mediaTime))
+        } else {
+            open(url, landing: LinkTarget(time: mediaTime))
+        }
+        virtualCutReturn = (session, time)
+        virtualCutCatalogLocation = catalog
+    }
+
+    private func returnToVirtualCut() {
+        guard virtualCut == nil, let (session, time) = virtualCutReturn else { return }
+        virtualCutReturn = nil
+        session.loadedSource = nil
+        virtualCut = session
+        if let request = session.playback.seek(time, playing: false) { moveVirtualCut(session, request) }
+    }
+}
+
+extension PlayerWindowController {
+    private func maybeWarmVirtualCut() {
+        guard let session = virtualCut, let active = session.playback.activeSpan,
+              session.playback.pending == nil, session.playback.failure == nil, !showsHome,
+              window?.occlusionState.contains(.visible) == true, core.allowsBackgroundPreview,
+              session.warm == nil, session.warmedForSpan != active else { return }
+        let spans = session.playback.timeline.spans
+        let next = active + core.direction
+        guard spans.indices.contains(next), spans[next].source != session.loadedSource else { return }
+        let span = spans[active]
+        let remaining = core.direction > 0 ? span.cutEnd - session.playback.position : session.playback.position - span.cutStart
+        guard core.isPaused || remaining < 4 else { return }
+        session.warmedForSpan = active
+        let source = spans[next].source
+        let warm = VirtualCutSession.Warm(source: source)
+        session.warm = warm
+        let prepare: (URL, FileOrigin) -> Void = { [weak self, weak session, weak warm] url, origin in
+            guard let self, let session, let warm, virtualCut === session, session.warm === warm,
+                  !showsHome, core.allowsBackgroundPreview else { return }
+            let read = core.preparation(for: url, cancellation: warm.cancellation, expectedVersion: source.version)
+            Task { [weak self, weak session, weak warm] in
+                let prepared: PreparedOpen? = await withCheckedContinuation { continuation in
+                    DispatchQueue.global(qos: .utility).async {
+                        continuation.resume(returning: try? read())
+                    }
+                }
+                guard let self, let session, let warm, virtualCut === session, session.warm === warm else {
+                    prepared?.discard()
+                    return
+                }
+                warm.url = url
+                warm.origin = origin
+                warm.prepared = prepared
+            }
+        }
+        switch source.kind {
+        case .file:
+            prepare(URL(filePath: source.locator), .plain)
+        case .stream:
+            if let url = URL(string: source.locator) { prepare(url, .plain) }
+        case .scene:
+            guard let stash = makeStashSession() else { return }
+            stash.resolve(StashScene(id: source.locator, paths: []), mountAllowed: false) { result in
+                switch result {
+                case let .file(url), let .stream(url):
+                    prepare(url, .stash(sceneID: source.locator, hasQueue: false))
+                case .failed:
+                    break
+                }
+            }
+        }
+    }
+}
+
+extension PlayerWindowController {
+    /// Run with a configured provider and a short cut containing at least two different sources.
+    func runVirtualCutBench(card: String) {
+        Task { @MainActor [weak self] in
+            guard let self else { exit(1) }
+            @MainActor func wait(_ condition: @MainActor () -> Bool) async -> Bool {
+                let deadline = ProcessInfo.processInfo.systemUptime + 20
+                while ProcessInfo.processInfo.systemUptime < deadline {
+                    if condition() { return true }
+                    try? await Task.sleep(for: .milliseconds(25))
+                }
+                return false
+            }
+            func fail(_ message: String) -> Never {
+                print("virtual-cut: \(message)")
+                exit(1)
+            }
+            isVirtualCutBench = true
+            window?.orderFrontRegardless()
+            guard await wait({ !pluginCatalogs.isEmpty }), let catalog = pluginCatalogs.values.first,
+                  let browser = home?.browser else { fail("catalog not registered") }
+            let location = BrowserLocation.source(catalog.locationID)
+            for round in 1...3 {
+                browser.show(.source(HomeRecent.source), selecting: nil)
+                let cpu = StartupTrace.threadCPU()
+                browser.show(location, selecting: card)
+                window?.layoutIfNeeded()
+                window?.displayIfNeeded()
+                let elapsed = StartupTrace.threadCPU() - cpu
+                print("virtual-cut: File View round \(round) CPU \(elapsed) ms")
+                guard await wait({ catalog.lastListing?.entries.contains(where: { $0.id == card }) == true }) else {
+                    fail("card not listed")
+                }
+            }
+            let began = ProcessInfo.processInfo.systemUptime
+            chooseCatalogCut(catalog, id: card, edit: false)
+            guard await wait({ virtualCut?.playback.activeSpan == 0 || virtualCut?.playback.failure != nil }),
+                  let cut = virtualCut, cut.playback.failure == nil else { fail("first source did not open") }
+            print("virtual-cut: first source wall \((ProcessInfo.processInfo.systemUptime - began) * 1_000) ms")
+            guard cut.playback.timeline.spans.count > 1 else { fail("benchmark needs multiple spans") }
+            let crossing = ProcessInfo.processInfo.systemUptime
+            guard await wait({ cut.playback.activeSpan == 1 || cut.playback.failure != nil }),
+                  cut.playback.failure == nil else { fail("playback did not cross the join") }
+            print("virtual-cut: crossed join after \((ProcessInfo.processInfo.systemUptime - crossing) * 1_000) ms")
+            if let boundary = virtualCutBenchBoundary {
+                print("virtual-cut: boundary to source ready \((ProcessInfo.processInfo.systemUptime - boundary) * 1_000) ms")
+            }
+            cut.playback.wantsPlayback = false
+            core.pause()
+            _ = seekVirtualCut(to: 0.25)
+            guard await wait({ cut.playback.activeSpan == 0 && cut.playback.pending == nil }),
+                  cut.playback.failure == nil else { fail("seek back across join failed") }
+            showHome()
+            guard browser.location == location else { fail("did not return to File View catalog") }
+            print("virtual-cut: passed")
+            exit(0)
+        }
+    }
 }

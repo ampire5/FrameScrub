@@ -38,7 +38,7 @@ public enum PluginBridgeScript {
     private static func bridge(stash stashJSON: String) -> String {
         return """
         window.framescrub = {
-          version: 2,
+          version: 3,
           stash: \(stashJSON),
           _next: 1,
           _pending: {},
@@ -80,6 +80,9 @@ public enum PluginBridgeScript {
           open(o) { this.send("open", o); },
           focusPlayer() { this.send("focusPlayer"); },
           hide() { this.send("hide"); },
+          cutCatalog(catalog) { return this.request("cutCatalog", {catalog}); },
+          openOriginalFragment() { this.send("openOriginalFragment"); },
+          returnToVirtualCut() { this.send("returnToVirtualCut"); },
           playlist(items, opts) {
             const args = {items};
             if (opts && opts.index !== undefined) args.index = opts.index;

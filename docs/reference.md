@@ -892,3 +892,38 @@ parameters are labelled. No separate advanced-settings screen is required for th
 Mild/Strong Cleanup buttons preserve grain and dither, enable processing, and select processed
 comparison. Both disable MetalFX anti-ringing. Strong uses Window strength .95, threshold12,
 radius32 and texture protection1. Mild uses Window .5/9/24. Both disable colour noise filtering. These are stronger settings of existing shaders, not a new restoration model.
+
+## Virtual cuts
+
+A configured plugin can list cuts in File View. Open a card to play its
+ranges on one timeline. Use the seek bar or ⌘G for a time in the cut.
+Previous and Next move between ranges. The A–B action toggles looping
+the whole cut. On a missing source, Return retries and Next skips.
+The cut remembers its own position. The card's **Edit Cut** action
+returns to the plugin editor.
+
+### Provider contract
+
+A page loaded from a configured plugin slot calls
+`framescrub.cutCatalog({id, title, endpoint})`. The endpoint is an HTTP(S)
+URL on the page's own origin. A page can unregister with
+`framescrub.cutCatalog(null)`. FrameScrub does not follow redirects. The
+provider keeps its own authorization, catalog and revision data.
+
+- `GET <endpoint>` returns up to 2,000 cards as an array of
+  `{id, title, revision, duration}`. Card IDs contain only ASCII
+  letters, digits, dashes and underscores. Durations are seconds.
+- `GET <endpoint>/<id>` returns `{id, title, revision, ranges}`.
+  Each range is `{id, source, start, end}`, with a stable range ID
+  and a positive, exclusive time interval in seconds.
+- `source` is `{kind, locator, version}`. Use kind `scene` with a
+  configured Stash scene ID, `file` with an allowed absolute video path,
+  or `stream` with an HTTP(S) media URL. Version is the lowercase
+  OpenSubtitles fingerprint of the exact media bytes. A cut can hold
+  up to 2,000 ranges. Intersecting ranges of the same source and
+  version play once, at the first occurrence in the authored order.
+- `GET <endpoint>/<id>/preview` returns a JPEG. Build a mosaic on the
+  provider if a card has several representative frames.
+- **Edit Cut** emits `editvirtualcut` with `{id}` to the registering page.
+  `framescrub.openOriginalFragment()` opens the source at the current
+  frame. `framescrub.returnToVirtualCut()` returns to the cut.

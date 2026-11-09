@@ -47,6 +47,9 @@ public enum PluginMessage: Equatable, Sendable {
     case setPlaylist(items: [PlaylistItem], index: Int, name: String?)
     /// `items` go at the end of the playlist.
     case enqueue([PlaylistItem])
+    case cutCatalog(PluginCutCatalog?)
+    case openOriginalFragment
+    case returnToVirtualCut
 
     /// Why a message was refused; the text reaches the page (a rejected promise, or an `error` event).
     public struct Failure: Error, Equatable, Sendable, CustomStringConvertible {
@@ -72,6 +75,15 @@ public enum PluginMessage: Equatable, Sendable {
     private static func parse(_ cmd: String, _ json: [String: Any]) throws(Failure) -> PluginMessage {
         let args = Arguments(json)
         switch cmd {
+        case "cutCatalog":
+            if json["catalog"] is NSNull { return .cutCatalog(nil) }
+            guard let object = json["catalog"] as? [String: Any], let id = object["id"] as? String,
+                  let title = object["title"] as? String, let value = object["endpoint"] as? String,
+                  let url = URL(string: value), let catalog = PluginCutCatalog(id: id, title: title, endpoint: url)
+            else { throw Failure("invalid catalog descriptor") }
+            return .cutCatalog(catalog)
+        case "openOriginalFragment": return .openOriginalFragment
+        case "returnToVirtualCut": return .returnToVirtualCut
         case "seek":
             return .seek(try args.time("t"))
         case "play":
@@ -394,6 +406,7 @@ public enum PluginEvent: Equatable, Sendable {
     case action(name: String, t: Double, frame: Int)
     /// The page's slot changed: where it is, how it lies over the video, shown or not, keyboard or not.
     case panel(PanelInfo)
+    case editVirtualCut(id: String)
 
     public var name: String {
         switch self {
@@ -404,6 +417,7 @@ public enum PluginEvent: Equatable, Sendable {
         case .segment: "segment"
         case .action: "action"
         case .panel: "panel"
+        case .editVirtualCut: "editvirtualcut"
         }
     }
 
@@ -422,6 +436,8 @@ public enum PluginEvent: Equatable, Sendable {
             return PluginJSON.encode(ActionPressed(name: name, t: t, frame: frame))
         case let .panel(info):
             return info.json
+        case let .editVirtualCut(id):
+            return PluginJSON.encode(["id": id])
         }
     }
 

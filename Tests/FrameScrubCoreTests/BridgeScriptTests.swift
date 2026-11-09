@@ -5,11 +5,12 @@ import Testing
 @Suite struct BridgeScriptTests {
     private let origin = PluginOrigin(url: URL(string: "https://notes.example")!)!
 
-    @Test func versionTwoWithTheNewVerbs() {
+    @Test func versionThreeWithCatalogAndPreviousVerbs() {
         let script = PluginBridgeScript.source(trusted: [origin], stash: nil)
-        #expect(script.contains("version: 2,"))
+        #expect(script.contains("version: 3,"))
         #expect(script.contains("hide() { this.send(\"hide\"); }"))
         #expect(script.contains("\"setPlaylist\""))
+        #expect(script.contains("cutCatalog(catalog)"))
         #expect(script.contains("enqueue(items) { this.send(\"enqueue\", {items}); }"))
     }
 

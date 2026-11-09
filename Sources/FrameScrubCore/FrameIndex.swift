@@ -83,6 +83,17 @@ public struct FrameIndex: Sendable {
         return keyframeList[lo]
     }
 
+    /// The last frame whose presentation time is strictly below the cut boundary.
+    public func frameNumber(before seconds: Double) -> Int {
+        var lo = 0
+        var hi = frameCount
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if self.seconds(forFrame: mid) < seconds { lo = mid + 1 } else { hi = mid }
+        }
+        return max(0, lo - 1)
+    }
+
     /// Whether frame `n` is a keyframe. Approximate indexes know no keyframes.
     public func isKeyframe(_ n: Int) -> Bool {
         isExact && frameCount > 0 && keyframe(atOrBefore: n) == n

@@ -96,7 +96,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         NSRect(x: 0, y: 0, width: bounds.width,
                height: playbackVisible ? timeline.maxY + 4 : visibleFilmHeight)
     }
-    private var currentSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
+    var virtualTime: Double?
+    private var currentSeconds: Double { virtualTime ?? index?.seconds(forFrame: position) ?? 0 }
+
+    func updateVirtualCut(time: Double, duration: Double, paused: Bool) {
+        virtualTime = time
+        updateTimeline(index: nil, duration: duration, paused: paused)
+        let fraction = duration > 0 ? min(1, max(0, time / duration)) : 0
+        update(frameCount: 10_001, position: Int((10_000 * fraction).rounded()), cached: [],
+               loopA: nil, loopB: nil,
+               text: "\(FrameNaming.timecode(time)) / \(FrameNaming.timecode(duration))")
+    }
     private var filmLayout: TimelineFilmLayout {
         let displayedTime = presentedFilmTime ?? currentSeconds
         let key = [Double(film.width), Double(stripHeight), Double(pictureAspect), duration, displayedTime,
@@ -310,7 +320,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         return index.seconds(forFrame: index.keyframe(atOrBefore: index.frameNumber(forSeconds: seconds)))
     }
     private func updateDesiredImages() {
-        guard wantsFilm, film.width > 0, let index, index.frameCount > 0 else {
+        guard wantsFilm, film.width > 0, virtualTime != nil || (index?.frameCount ?? 0) > 0 else {
             cancelFilmstripRequests(); desiredTimes = []; return
         }
         let layout = filmLayout
