@@ -70,6 +70,6 @@ Files: private adapter and its tests outside this public repository. Public prov
 
 ## Verification record
 
-- Swift suite: 1,878 tests, 21 skipped, no failures. SwiftPM needed its video fixtures and permission to run the manifest compiler.
+- Swift suite: 1,878 tests, 21 skipped, no failures. The Apple Silicon release build succeeded. SwiftPM needed its video fixtures and permission to run the manifest compiler.
 - A real-window M4 Max run opened a saved two-source cut from File View, crossed the join, sought back and restored its catalog. See `docs/bench/virtual-cuts.md`.
-- The separate provider passed four local tests. Its live instance returned cached fragments from two scenes, saved a test cut and generated a mosaic through a tunnel. A fresh inference pass and physical Intel window run still need verification. The installed inference API has no observed cancellation endpoint. Cancellation discards the result and releases the worker when the current pass returns.
+- The separate provider passed four local tests. Its live instance returned cached fragments from two scenes, saved a test cut and generated a mosaic through a tunnel. A live coarse and refined analysis completed with 682 sampled frames and two returned fragments. The physical Intel window run still needs verification. The installed inference API has no observed cancellation endpoint. Cancellation discards the result and releases the worker when the current pass returns.
