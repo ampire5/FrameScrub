@@ -23,7 +23,7 @@ consent, and reports the URL in `fileopened` and `info`.
 
 ## Review Focus
 
-- A URL with spaces or non-ASCII in its path (`http://127.0.0.1:8793/stream/5367369?kind=trailer&q=best`, and one with `%20`) — opens unchanged, not re-encoded twice.
+- Stream URLs preserve the query string (for example, `http://media.example/videos/5.mp4?quality=preview&lang=en`). Paths with spaces or non-ASCII characters open correctly, and existing `%20` escapes are preserved.
 - A stream that answers 403/404 at open — `open` request rejects with `open: cannot open <url>`; in a list at autoadvance the next item is tried once and `error` fires.
 - `enqueue` while a page stream is on screen with the folder as the playlist — the new list starts with that stream as a `.stream` item, not as a `.file` of an http URL.
 - Stash's own stream keeps working after the `fileopened` change (`path: null`, `url` set, `scene` set).
@@ -54,8 +54,8 @@ In `PluginMessageTests`:
 
 ```swift
 @Test func openStream() {
-    #expect(message(["cmd": "open", "url": "http://127.0.0.1:8793/stream/5?kind=trailer", "t": 3])
-            == .open(.stream(URL(string: "http://127.0.0.1:8793/stream/5?kind=trailer")!,
+    #expect(message(["cmd": "open", "url": "http://media.example/videos/5.mp4?quality=preview", "t": 3])
+            == .open(.stream(URL(string: "http://media.example/videos/5.mp4?quality=preview")!,
                              landing: LinkTarget(time: 3, segments: [], lock: nil, advance: nil))))
     #expect(message(["cmd": "open", "url": "https://cdn.example/a%20b.mp4"]) != nil)
     for bad in ["file:///v/a.mp4", "ftp://h/a.mp4", "/v/a.mp4", "http://", "http:///a.mp4", ""] {

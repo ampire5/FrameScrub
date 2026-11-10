@@ -283,8 +283,8 @@ import Testing
     }
 
     @Test func openStream() {
-        #expect(message(["cmd": "open", "url": "http://127.0.0.1:8793/stream/5?kind=trailer", "t": 3])
-                == .open(.stream(URL(string: "http://127.0.0.1:8793/stream/5?kind=trailer")!, landing: LinkTarget(time: 3))))
+        #expect(message(["cmd": "open", "url": "http://media.example/videos/5.mp4?quality=preview", "t": 3])
+                == .open(.stream(URL(string: "http://media.example/videos/5.mp4?quality=preview")!, landing: LinkTarget(time: 3))))
         #expect(message(["cmd": "open", "url": "HTTPS://cdn.example/a%20b.mp4", "segments": [[1, 2]]])
                 == .open(.stream(URL(string: "HTTPS://cdn.example/a%20b.mp4")!, landing: LinkTarget(segments: [1...2]))))
         for bad in ["file:///v/a.mp4", "ftp://h/a.mp4", "/v/a.mp4", "http://", "http:///a.mp4", "", "h/a.mp4"] {

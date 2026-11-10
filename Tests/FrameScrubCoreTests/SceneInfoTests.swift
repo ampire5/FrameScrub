@@ -14,21 +14,21 @@ import Testing
         return nil
     }
 
-    private let full = SceneInfo(title: "Hot Blonde: Test", studio: "Studio A", performers: ["Ann", "Bea"],
-                                 date: "2026-10-25", code: "5367369", url: URL(string: "https://example.com/s/1"))
+    private let full = SceneInfo(title: "Mountain Hike: Test", studio: "Studio A", performers: ["Ann", "Bea"],
+                                 date: "2026-10-25", code: "42", url: URL(string: "https://example.com/s/1"))
 
     @Test func playlistItemsCarryInfo() {
         let json = posted(#"""
         {"cmd":"setPlaylist","index":1,"items":[
-          {"url":"http://h/stream/1?kind=trailer","title":"A"},
-          {"url":"http://h/stream/2?kind=trailer","info":{"title":"Hot Blonde: Test","studio":"Studio A",
-           "performers":["Ann","Bea"],"date":"2026-10-25","code":"5367369","url":"https://example.com/s/1"}},
+          {"url":"http://media.example/videos/1.mp4?quality=preview","title":"A"},
+          {"url":"http://media.example/videos/2.mp4?quality=preview","info":{"title":"Mountain Hike: Test","studio":"Studio A",
+           "performers":["Ann","Bea"],"date":"2026-10-25","code":"42","url":"https://example.com/s/1"}},
           {"path":"/v/a.mp4","info":{"title":"Local"}}]}
         """#)
         #expect(reason(json) == nil)
         let infos = PluginMessage.sceneInfos(json)
         #expect(infos.count == 2)
-        #expect(infos[URL(string: "http://h/stream/2?kind=trailer")!] == full)
+        #expect(infos[URL(string: "http://media.example/videos/2.mp4?quality=preview")!] == full)
         #expect(infos[URL(filePath: "/v/a.mp4", directoryHint: .notDirectory)] == SceneInfo(title: "Local"))
         // the items themselves are as before
         guard case let .setPlaylist(items, index, _) = PluginMessage(json: json) else { Issue.record("not parsed"); return }
@@ -54,7 +54,7 @@ import Testing
     }
 
     @Test func theTitleReadsAsAStashScenes() {
-        var json: [String: Any] = ["id": "1", "title": "Hot Blonde: Test", "date": "2026-10-25"]
+        var json: [String: Any] = ["id": "1", "title": "Mountain Hike: Test", "date": "2026-10-25"]
         json["studio"] = ["name": "Studio A"]
         let stash = StashSceneDetails(json: json)!
         #expect(full.displayTitle(fallback: "2") == StashTitle.text(details: stash, fileName: "2"))
@@ -62,14 +62,14 @@ import Testing
     }
 
     @Test func exportsAreNamedAfterTheScene() {
-        let stream = URL(string: "http://127.0.0.1:8793/stream/5367369?kind=trailer")!
-        #expect(full.fileStem == "2026-10-25 [5367369] Hot Blonde - Test (Ann, Bea)")
+        let stream = URL(string: "http://media.example/videos/42.mp4?quality=preview")!
+        #expect(full.fileStem == "2026-10-25 [42] Mountain Hike - Test (Ann, Bea)")
         let named = full.namingURL(for: stream)!
         let naming = FrameNaming(directoryTemplate: "%{video-dir}", fileTemplate: "%{video-name}_%{frame:06}")
         #expect(naming.fileName(forVideo: named, frame: 12, seconds: 0.5, format: .jpeg)
-                == "2026-10-25 [5367369] Hot Blonde - Test (Ann, Bea)_000012.jpg")
+                == "2026-10-25 [42] Mountain Hike - Test (Ann, Bea)_000012.jpg")
         #expect(FrameNaming.fallbackDirectory(forVideo: named, root: URL(filePath: "/r/")).lastPathComponent
-                == "2026-10-25 [5367369] Hot Blonde - Test (Ann, Bea)")
+                == "2026-10-25 [42] Mountain Hike - Test (Ann, Bea)")
         #expect(SceneInfo(title: "Only").fileStem == "Only")
         #expect(SceneInfo(studio: "S").namingURL(for: stream) == nil)   // nothing to name it by: the stream's own name
         #expect(full.namingURL(for: URL(filePath: "/v/a.mp4")) == nil)   // a file keeps its own name, as a Stash scene's does
