@@ -361,11 +361,17 @@ under a compiler check (`#if compiler(>=…)`), so the Xcode 26 build still comp
 
 ```sh
 brew install meson ninja pkgconf
+scripts/make-app.sh                # → build/FrameScrub Preview.app
 scripts/make-app.sh --install      # → ~/Applications/FrameScrub.app
 scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homebrew's ffmpeg tool)
 ```
 
 A plain `swift build` or `swift run` finds Homebrew's FFmpeg instead, if any: the scripts point SwiftPM at FrameScrub's.
+
+The default preview build has its own bundle identifier and stays out of the macOS URL and file handler lists.
+Use `--install` to update the installed handler for `framescrub://`, or `--release` to package
+`build/FrameScrub.app` for distribution. Confirm the handler change if macOS asks. Keep backups of
+release builds in ZIP archives so macOS only sees the copy you installed.
 
 `make-app.sh` writes which build it is into the app (branch, commit, its date, uncommitted changes, build date):
 About FrameScrub and the bottom of Settings › General show it, with a button that copies it.

@@ -1,12 +1,28 @@
 #!/usr/bin/env bash
-# Builds build/FrameScrub.app (release, for $DEPS_ARCH: the Mac's own architecture unless set, scripts/deps-env.sh).
+# Packages FrameScrub for $DEPS_ARCH (the Mac's architecture unless set, scripts/deps-env.sh).
 # FFmpeg is FrameScrub's own, linked in statically (scripts/build-deps.sh): the app needs no Homebrew.
-# Usage: scripts/make-app.sh [--install]   (--install copies the app to ~/Applications)
+# Usage: scripts/make-app.sh [--preview | --release | --install]
 set -euo pipefail
+mode=${1:---preview}
+if [[ $# -gt 1 || ( "$mode" != --preview && "$mode" != --release && "$mode" != --install ) ]]; then
+    echo "Usage: $0 [--preview | --release | --install]" >&2
+    exit 2
+fi
 cd "$(dirname "$0")/.."
 . scripts/deps-env.sh
 swift build -c release --triple "$DEPS_TRIPLE"
-app=build/FrameScrub.app
+name=FrameScrub
+if [[ "$mode" == --preview ]]; then
+    name="FrameScrub Preview"
+fi
+app="$PWD/build/$name.app"
+if [[ "$mode" == --install ]]; then
+    install_dir="$HOME/Applications"
+    mkdir -p "$install_dir"
+    stage=$(mktemp -d "$install_dir/.framescrub-install.XXXXXX")
+    trap 'if [[ ! -e "$stage/previous" && ! -L "$stage/previous" ]]; then rm -rf "$stage"; fi' EXIT
+    app="$stage/FrameScrub.app"
+fi
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 bin=$app/Contents/MacOS/FrameScrub
@@ -14,15 +30,25 @@ built=$(swift build -c release --triple "$DEPS_TRIPLE" --show-bin-path)/FrameScr
 cp "$built" "$bin"
 # Include Core's prepared grain banks; never rely on the developer's build directory.
 cp -R "$(dirname "$built")/FrameScrub_FrameScrubCore.bundle" "$app/Contents/Resources/"
-# The symbols go to build/FrameScrub.dSYM, for symbolicating crash reports, not into the app (~6 MB less).
-rm -rf build/FrameScrub.dSYM
-dsymutil "$built" -o build/FrameScrub.dSYM >/dev/null 2>&1 || echo "warning: no build/FrameScrub.dSYM (dsymutil failed)" >&2
+# Keep debug symbols next to the bundle for symbolicating crash reports.
+symbols="build/$name.dSYM"
+mkdir -p build
+rm -rf "$symbols"
+dsymutil "$built" -o "$symbols" >/dev/null 2>&1 || echo "warning: no $symbols (dsymutil failed)" >&2
 strip "$bin"
 [[ $(lipo -archs "$bin") == "$DEPS_ARCH" ]] || { echo "error: FrameScrub is $(lipo -archs "$bin"), not $DEPS_ARCH" >&2; exit 1; }
 # The app must run on a Mac without Homebrew: the binary links system libraries only.
 outside=$(otool -L "$bin" | tail -n +2 | sed -E 's/^[[:space:]]+//; s/ \(compatibility.*$//' | grep -vE '^(/usr/lib/|/System/)' || true)
 [[ -z "$outside" ]] || { echo "error: FrameScrub links outside the system:"$'\n'"$outside" >&2; exit 1; }
 cp Resources/Info.plist "$app/Contents/Info.plist"
+if [[ "$mode" == --preview ]]; then
+    plist="$app/Contents/Info.plist"
+    plutil -replace CFBundleIdentifier -string local.framescrub.preview "$plist"
+    plutil -replace CFBundleName -string "$name" "$plist"
+    plutil -replace CFBundleDisplayName -string "$name" "$plist"
+    plutil -remove CFBundleURLTypes "$plist"
+    plutil -remove CFBundleDocumentTypes "$plist"
+fi
 # Which build this is (About FrameScrub, Settings › General; BuildInfo): the commit, its branch and date, whether the
 # tree had uncommitted changes, and when it was built.
 bake() { plutil -insert "$1" -string "$2" "$app/Contents/Info.plist"; }
@@ -37,7 +63,7 @@ bake FSBuildDate "$(date '+%Y-%m-%d %H:%M')"
 if xcrun --find actool >/dev/null 2>&1; then
     icon_tmp=$(mktemp -d)
     # Absolute paths: actool runs in a long-lived helper that resolves relative paths against its own directory.
-    xcrun actool "$PWD/Resources/Icons/AppIcon.icon" --compile "$PWD/$app/Contents/Resources" --platform macosx \
+    xcrun actool "$PWD/Resources/Icons/AppIcon.icon" --compile "$app/Contents/Resources" --platform macosx \
         --minimum-deployment-target 15.0 --app-icon AppIcon \
         --output-partial-info-plist "$icon_tmp/partial.plist" >"$icon_tmp/actool.log" 2>&1 \
         || { cat "$icon_tmp/actool.log" >&2; echo "error: actool failed to compile the app icon" >&2; exit 1; }
@@ -77,10 +103,20 @@ else
     echo "warning: no \"Local Code Signing\" identity: signed ad hoc, TCC grants must be given again" >&2
     codesign --force --sign - "$app"
 fi
-echo "Built $app"
-if [[ "${1:-}" == "--install" ]]; then
-    mkdir -p "$HOME/Applications"
-    rm -rf "$HOME/Applications/FrameScrub.app"
-    cp -R "$app" "$HOME/Applications/"
-    echo "Installed to ~/Applications/FrameScrub.app"
+if [[ "$mode" == --install ]]; then
+    installed="$install_dir/FrameScrub.app"
+    if [[ -e "$installed" || -L "$installed" ]]; then
+        mv "$installed" "$stage/previous"
+    fi
+    if ! mv "$app" "$installed"; then
+        if [[ -e "$stage/previous" || -L "$stage/previous" ]]; then
+            mv "$stage/previous" "$installed" || echo "Previous installation is at $stage/previous" >&2
+        fi
+        exit 1
+    fi
+    rm -rf "$stage/previous"
+    echo "Installed to $installed"
+    swift scripts/set-url-handler.swift "$installed"
+else
+    echo "Built $app"
 fi
