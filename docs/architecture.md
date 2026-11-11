@@ -165,6 +165,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  The playlist capsule's options menu changes `playlist-view` through the shared `PreferencesStore`.
+  Configuration application switches the existing list/strip views and keeps the menu and Settings in sync.
   Showing Home disables the shared slot host; returning to the player restores its presentation. Hidden slots
   neither reveal at the browser's edges nor intercept its scroller, and their saved configuration stays intact.
   Folder/Recent listing streams stay open for coalesced metadata updates; new durations update that subscription

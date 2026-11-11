@@ -1794,6 +1794,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             updateTitle(url)
         }
         playlistPanel.onSort = { [weak self] in self?.setPlaylistSort($0) }
+        playlistPanel.onMode = { [weak self] mode in
+            guard let self else { return }
+            do { try preferences.update(["playlist-view"]) { $0.playlistView = mode } } catch {
+                showMessage("Cannot save settings: \(error)", duration: 4)
+            }
+        }
         playlistPanel.onSubmitFilter = { [weak self] in
             guard let self else { return }
             if let listPlaylist {
