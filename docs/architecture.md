@@ -183,6 +183,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   updates and new filesystem events preserve a user pause of thumbnail generation.
 - Plugin page → `PluginPanel` / bridge → core plugin messages/policies/actions → application/player commands.
   Keep external page data separate from trusted application configuration.
+  An open link registers its plugin as a session-only tab choice. It does not reveal a slot, switch tabs,
+  or navigate a configured page.
 - A configured plugin can register a same-origin HTTP cut catalog. `PluginCatalogSource` owns the listing,
   image and cut requests. File View uses its ordinary collection cards and cancels image work when leaving.
   Registration is scoped to the live configured page. The host checks limits, origins, source open policy and

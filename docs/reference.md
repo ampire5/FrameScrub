@@ -403,8 +403,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
 - **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds tabs — the
-  playlist and plugin pages (`plugin=Name | URL`, repeatable; the `plugin=` page of a
-  `framescrub://open` link is a tab of its own for the run, listed as `Plugin`) — or nothing, whose **+** menu fills it.
+  playlist and plugin pages (`plugin=Name | URL`, repeatable) — or nothing, whose **+** menu fills it. A
+  `framescrub://open` link with `plugin=` offers that page as **Plugin** in the **+** menu for this session,
+  without opening a slot.
   A glass capsule over the slot's top holds the tabs, the shown view's tools (the playlist's filter and order) and pin,
   backdrop and hide; pages may read `--slot-top-inset` to keep clear of it. A slot is pinned (takes room from the video) or lies
   over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when

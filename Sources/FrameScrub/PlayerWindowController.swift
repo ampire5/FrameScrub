@@ -358,7 +358,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// segment and plugin page. A scene's open is asynchronous.
     func open(_ target: OpenLink.Target) {
         guard !isTerminating else { return }
-        if let plugin = target.plugin { showLinkPlugin(plugin) }
+        if let plugin = target.plugin { registerLinkPlugin(plugin) }
         switch target.subject {
         case let .file(url):
             open(url, landing: target.landing)
@@ -3890,12 +3890,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func clearCurrentSlot() { slots.clearCurrent() }
 
     /// A link's `plugin=` page; one the link may not load (a `file:` page) is refused with a notice.
-    private func showLinkPlugin(_ url: URL) {
+    private func registerLinkPlugin(_ url: URL) {
         pluginPolicy.trust(url)
         applyPluginTrust()
-        guard slots.showLinkPage(url) else {
-            showMessage("Cannot show the plugin page: \(url.absoluteString)", duration: 4)
-            return
+        if !slots.registerLinkPage(url) {
+            showMessage("Cannot load the plugin page: \(url.absoluteString)", duration: 4)
         }
     }
 

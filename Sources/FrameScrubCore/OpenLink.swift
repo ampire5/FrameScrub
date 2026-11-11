@@ -7,7 +7,7 @@ import Foundation
 ///   start unless `t` says otherwise; one malformed item drops the whole list;
 /// - `lock=0|1`: whether the segments lock playback (default 1);
 /// - `adv=repeat|next`: at a segment's end, play it again or go to the next one (default from the configuration);
-/// - `plugin=<http(s) URL>`: show that page in the plugin panel.
+/// - `plugin=<http(s) URL>`: offer that page in the slot's add menu for this session.
 public enum OpenLink {
     /// What a link names: a file, or a Stash scene by id.
     public enum Subject: Equatable, Sendable {
