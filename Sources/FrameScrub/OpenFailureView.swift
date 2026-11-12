@@ -12,21 +12,21 @@ final class OpenFailureView: NSView {
         super.init(frame: frame)
         appearance = NSAppearance(named: .darkAqua)   // over the black video area, whatever the system's
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.cgColor
-        title.font = .systemFont(ofSize: 17, weight: .semibold)
+        layer?.backgroundColor = NSColor(srgbRed: 0.07, green: 0.07, blue: 0.075, alpha: 1).cgColor
+        title.font = .systemFont(ofSize: 20, weight: .medium)
         reason.font = .systemFont(ofSize: 13)
         reason.textColor = .secondaryLabelColor
         detail.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        detail.textColor = .tertiaryLabelColor
+        detail.textColor = .secondaryLabelColor
         detail.isSelectable = true   // a path to copy
         hints.font = .systemFont(ofSize: 12)
-        hints.textColor = .tertiaryLabelColor
+        hints.textColor = .secondaryLabelColor
         hints.maximumNumberOfLines = 0
         for field in [title, reason, detail, hints] { field.alignment = .center }
         let stack = NSStackView(views: [title, reason, detail, hints])
         stack.orientation = .vertical
         stack.spacing = 8
-        stack.setCustomSpacing(18, after: detail)
+        stack.setCustomSpacing(16, after: detail)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
         NSLayoutConstraint.activate([

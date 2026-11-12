@@ -378,6 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func openDocument(_ sender: Any?) {
         let panel = NSOpenPanel()
+        panel.prompt = "Open Video"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }

@@ -1,4 +1,5 @@
 import AppKit
+import HomeChrome
 import InfoPanelKit
 
 /// The ⌘G field (backlog 4.3): a small glass box at the top of the video. Enter submits, Esc or clicking
@@ -13,6 +14,7 @@ final class GoToField: NSView, NSTextFieldDelegate {
         super.init(frame: frame)
         wantsLayer = true
         isHidden = true
+        Chrome.Palette.overMedia.apply(to: self)
         let backdrop = GlassBackdrop(cornerRadius: 12)
         backdrop.autoresizingMask = [.width, .height]
         addSubview(backdrop)
@@ -20,11 +22,12 @@ final class GoToField: NSView, NSTextFieldDelegate {
         textField.drawsBackground = false
         textField.focusRingType = .none
         textField.font = .monospacedDigitSystemFont(ofSize: 17, weight: .medium)
-        textField.textColor = .white
+        textField.textColor = Chrome.Palette.overMedia.text
+        textField.setAccessibilityLabel("Go to time or frame")
         textField.alignment = .center
         textField.placeholderAttributedString = NSAttributedString(
             string: "1:23.5   83.4   f1234",
-            attributes: [.foregroundColor: NSColor(white: 1, alpha: 0.4), .font: textField.font!])
+            attributes: [.foregroundColor: Chrome.Palette.overMedia.secondaryText, .font: textField.font!])
         textField.cell?.isScrollable = true
         textField.delegate = self
         textField.translatesAutoresizingMaskIntoConstraints = false
@@ -32,8 +35,8 @@ final class GoToField: NSView, NSTextFieldDelegate {
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: 260),
             heightAnchor.constraint(equalToConstant: 40),
-            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
-            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            textField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            textField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
             textField.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -72,6 +75,7 @@ final class GoToField: NSView, NSTextFieldDelegate {
     }
 
     private func shake() {
+        guard !Chrome.Motion.reduced else { return }
         let shake = CAKeyframeAnimation(keyPath: "transform.translation.x")
         shake.values = [0, -8, 8, -6, 6, -3, 3, 0]
         shake.duration = 0.35

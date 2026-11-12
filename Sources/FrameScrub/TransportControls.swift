@@ -96,17 +96,19 @@ final class TransportControls: NSView, NSPopoverDelegate {
     private static func plate() -> NSView {
         let glass = NSVisualEffectView()
         glass.material = .hudWindow; glass.blendingMode = .withinWindow; glass.state = .active
-        glass.wantsLayer = true; glass.layer?.cornerRadius = Chrome.Radius.panel
+        glass.wantsLayer = true; glass.layer?.cornerRadius = 12
+        glass.layer?.borderWidth = 1
+        glass.layer?.borderColor = Chrome.Palette.overMedia.rim.cgColor
         glass.layer?.cornerCurve = .continuous
         glass.layer?.masksToBounds = true
         let veil = NSView(frame: glass.bounds); veil.wantsLayer = true
-        veil.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        veil.layer?.backgroundColor = Chrome.Palette.overMedia.glassTint.cgColor
         veil.autoresizingMask = [.width, .height]
         glass.addSubview(veil)
         return glass
     }
     private static func image(_ symbol: String, _ label: String) -> NSImage {
-        Icons.symbol(symbol, pointSize: 13, weight: .medium, description: label) ?? NSImage()
+        Icons.symbol(symbol, pointSize: 14, weight: .medium, description: label) ?? NSImage()
     }
     private static func button(_ symbol: String, _ label: String) -> NSButton {
         let button = NSButton(image: image(symbol, label), target: nil, action: nil)

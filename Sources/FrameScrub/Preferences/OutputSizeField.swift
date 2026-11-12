@@ -46,17 +46,19 @@ struct OutputSizeField: View {
     }
 
     var body: some View {
-        HStack {
-            Picker("", selection: Binding(get: { kind }, set: { choose($0) })) {
+        HStack(spacing: 8) {
+            Picker("Output size", selection: Binding(get: { kind }, set: { choose($0) })) {
                 ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
             }
             .labelsHidden()
             .fixedSize()
             if kind == .width || kind == .height {
-                TextField("px", text: Binding(get: { typed.text }, set: { typed.text = $0; typePixels($0) }))
+                TextField("Pixels", text: Binding(get: { typed.text }, set: { typed.text = $0; typePixels($0) }))
                     .onSubmit { typed.text = String(pixels) }
-                    .frame(width: 70)
-                Text("px")
+                    .multilineTextAlignment(.trailing)
+                    .font(.body.monospacedDigit())
+                    .frame(width: 64)
+                Text("px").foregroundStyle(.secondary)
             }
         }
         // Follow changes made elsewhere (the typed text itself already equals `selection` while typing).

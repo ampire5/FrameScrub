@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import HomeChrome
 
 /// The thumbnail, the keyframe lens and the timecode above the seek bar. Never takes clicks.
 final class PreviewView: NSView {
@@ -13,14 +14,16 @@ final class PreviewView: NSView {
     init() {
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0, alpha: 0.75).cgColor
-        layer?.cornerRadius = 6
+        layer?.backgroundColor = Chrome.Palette.overMedia.glassTint.withAlphaComponent(0.92).cgColor
+        layer?.cornerRadius = 8
+        layer?.borderWidth = 1
+        layer?.borderColor = Chrome.Palette.overMedia.rim.cgColor
         imageView.imageScaling = .scaleNone
         imageView.wantsLayer = true
-        imageView.layer?.cornerRadius = 3
+        imageView.layer?.cornerRadius = 4
         imageView.layer?.masksToBounds = true
         label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        label.textColor = .white
+        label.textColor = Chrome.Palette.overMedia.text
         label.maximumNumberOfLines = 0
         stack.orientation = .vertical
         stack.spacing = 4

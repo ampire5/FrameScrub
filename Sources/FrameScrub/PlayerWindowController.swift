@@ -3406,7 +3406,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 let alert = NSAlert()
                 alert.messageText = pending == 1 ? "1 clip from this file is still being saved"
                                                  : "\(pending) clips from this file are still being saved"
-                alert.addButton(withTitle: "Don't Delete")                           // Return: the safe answer
+                alert.addButton(withTitle: "Keep File")                           // Return: the safe answer
                 let delete = alert.addButton(withTitle: "Delete and Cancel Clips")   // no key equivalent
                 delete.hasDestructiveAction = true
                 guard alert.runModal() == .alertSecondButtonReturn else { return }
@@ -3458,7 +3458,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func deleteStashScene(_ sceneID: String, url: URL) {
         guard let stashSession else { return }
         let alert = NSAlert()
-        alert.messageText = "Delete the scene and its file from Stash?"
+        alert.messageText = "Delete this Stash scene and its file?"
         alert.informativeText = stashScene?.paths.first ?? url.path
         alert.addButton(withTitle: "Cancel")                // Return and Esc: the safe answer
         let delete = alert.addButton(withTitle: "Delete")   // no key equivalent
@@ -3521,7 +3521,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func confirmPermanentDelete(_ url: URL) -> Bool {
         let alert = NSAlert()
         alert.messageText = "Delete “\(url.lastPathComponent)” permanently?"
-        alert.informativeText = "This volume has no Trash. The file will be deleted immediately and cannot be restored."
+        alert.informativeText = "This volume has no Trash. Deleting the file cannot be undone."
         alert.alertStyle = .warning
         let delete = alert.addButton(withTitle: "Delete")   // Return
         delete.hasDestructiveAction = true
@@ -4201,7 +4201,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                                 then allowed: @escaping () -> Void) {
         let alert = NSAlert()
         alert.messageText = PluginPolicy.consentQuestion(for: origin)
-        alert.informativeText = "The page asked \(asked). Your answer is remembered for this page."
+        alert.informativeText = "The page requested \(asked). FrameScrub remembers this choice for this site."
         alert.addButton(withTitle: "Allow")
         alert.addButton(withTitle: "Don't Allow")
         let decide = { [weak self] (response: NSApplication.ModalResponse) in

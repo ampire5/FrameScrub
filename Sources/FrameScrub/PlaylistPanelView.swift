@@ -37,7 +37,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     var fontSize: CGFloat = 14 {
         didSet {
             guard fontSize != oldValue else { return }
-            table.rowHeight = (fontSize * 1.8).rounded()
+            table.rowHeight = max(28, (fontSize * 2).rounded())
             table.reloadData()
             if rows.indices.contains(table.selectedRow) { table.scrollRowToVisible(table.selectedRow) }
         }
@@ -68,7 +68,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         table.addTableColumn(column)
         table.headerView = nil
         table.backgroundColor = .clear
-        table.rowHeight = (fontSize * 1.8).rounded()
+        table.rowHeight = max(28, (fontSize * 2).rounded())
         table.style = .plain
         table.intercellSpacing = .zero   // rows touch: the stripes and the selection fill the whole row
         table.refusesFirstResponder = true   // clicks still select, but keys keep going to the video view

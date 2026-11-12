@@ -99,44 +99,68 @@ struct ExportSheetView: View {
     private var files: Int { count(selection) ?? 0 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Export range").font(.headline)
-            Picker("Frames", selection: $choices.mode) {
-                ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
+        VStack(alignment: .leading, spacing: 16) {
+            SheetHeading(title: "Export frames", detail: rangeText)
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Frame sampling", selection: $choices.mode) {
+                    Text("All frames").tag(Mode.all)
+                    Text("Every N frames").tag(Mode.every)
+                    Text("Frames per second").tag(Mode.perSecond)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                switch choices.mode {
+                case .all: EmptyView()
+                case .every:
+                    LabeledContent("Frame interval") {
+                        numberField("Frames", text: $choices.everyText)
+                    }
+                case .perSecond:
+                    LabeledContent("Frames per second") {
+                        numberField("Frames per second", text: $choices.fpsText)
+                    }
+                }
+                Toggle("Keep the sharpest frame per interval", isOn: $choices.sharpest)
+                    .disabled(choices.mode == .all)
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            switch choices.mode {
-            case .all: EmptyView()
-            case .every:
-                HStack { Text("Every"); TextField("N", text: $choices.everyText).frame(width: 70); Text("frames") }
-            case .perSecond:
-                HStack { TextField("N", text: $choices.fpsText).frame(width: 70); Text("frames per second") }
+            Divider()
+            VStack(alignment: .leading, spacing: 8) {
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow {
+                        Toggle("Skip blurry frames", isOn: $choices.skipBlurry)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        numberField("Sharpness threshold", text: $choices.thresholdText)
+                            .disabled(!choices.skipBlurry)
+                        Text("% of nearby sharpness").foregroundStyle(.secondary)
+                    }
+                    GridRow {
+                        Toggle("Skip near duplicates", isOn: $choices.skipDuplicates)
+                        numberField("Minimum picture change", text: $choices.changeText)
+                            .disabled(!choices.skipDuplicates)
+                        Text("% minimum change").foregroundStyle(.secondary)
+                    }
+                }
+                LabeledContent("Output size") { OutputSizeField(selection: $choices.size) }
             }
-            Toggle("Sharpest frame of each window", isOn: $choices.sharpest)
-                .disabled(choices.mode == .all)   // a window of one frame
-            HStack {
-                Toggle("Skip blurry: below", isOn: $choices.skipBlurry)
-                TextField("80", text: $choices.thresholdText).frame(width: 50).disabled(!choices.skipBlurry)
-                Text("% of the neighbours' sharpness")
-            }
-            HStack {
-                Toggle("Skip near-duplicates: save when", isOn: $choices.skipDuplicates)
-                TextField("\(DuplicateFilter.defaultChange)", text: $choices.changeText).frame(width: 50).disabled(!choices.skipDuplicates)
-                Text("% of the picture changed")
-            }
-            HStack { Text("Size"); OutputSizeField(selection: $choices.size) }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(choices.skipBlurry || choices.skipDuplicates
-                     ? "Will save up to \(files) files (\(rangeText))" : "Will save \(files) files (\(rangeText))")
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
-                Button("Export") { onStart(selection, choices.size, choices.filters) }.keyboardShortcut(.defaultAction).disabled(files == 0)
+            Text(choices.skipBlurry || choices.skipDuplicates
+                 ? "Up to \(files) image files" : "\(files) image files")
+                .font(.callout.monospacedDigit())
+                .foregroundStyle(.secondary)
+            SheetActions(onCancel: onCancel) {
+                Button("Export") { onStart(selection, choices.size, choices.filters) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(files == 0)
             }
         }
-        .padding(20)
-        .frame(width: 460)
+        .padding(24)
+        .frame(width: 480)
+    }
+
+    private func numberField(_ label: String, text: Binding<String>) -> some View {
+        TextField("", text: text)
+            .accessibilityLabel(label)
+            .multilineTextAlignment(.trailing)
+            .font(.body.monospacedDigit())
+            .frame(width: 56)
     }
 }

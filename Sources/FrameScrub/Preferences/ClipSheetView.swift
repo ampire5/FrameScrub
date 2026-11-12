@@ -48,9 +48,9 @@ struct ClipSheetView: View {
             let clips = summary.separateClips == 1 ? "1 clip" : "\(summary.separateClips) clips"
             return "\(clips), \(Self.duration(summary.separateSeconds))" + leadIn(summary.separateLeadIn)
         case .joined:
-            return summary.joinedSeconds.map { Self.duration($0) + leadIn(summary.joinedLeadIn) } ?? "wait for the index"
+            return summary.joinedSeconds.map { Self.duration($0) + leadIn(summary.joinedLeadIn) } ?? "Available after indexing"
         case .inverted:
-            return summary.invertedSeconds.map(Self.duration) ?? "wait for the index"
+            return summary.invertedSeconds.map(Self.duration) ?? "Available after indexing"
         }
     }
 
@@ -64,35 +64,48 @@ struct ClipSheetView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(summary.segments == 1 ? "Save 1 mark as clips" : "Save \(summary.segments) marks as clips").font(.headline)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 16) {
+            SheetHeading(title: "Save clips", detail: summary.segments == 1 ? "1 marked range" : "\(summary.segments) marked ranges")
+            VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(ClipMode.allCases.enumerated()), id: \.element) { number, mode in
                     Button { onChoose(mode) } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
-                            Text("\(number + 1)").monospacedDigit().foregroundStyle(.secondary)
-                            Text(mode.title)
-                            Text(detail(mode)).foregroundStyle(.secondary)
+                        HStack(spacing: 12) {
+                            Text("\(number + 1)")
+                                .font(.system(.caption, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, height: 24)
+                                .background(.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 4))
+                                .accessibilityHidden(true)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mode.title).font(.body.weight(.medium))
+                                Text(detail(mode)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                            }
                             Spacer(minLength: 0)
+                            if choice.mode == mode {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(Color.accentColor)
+                                    .accessibilityHidden(true)
+                            }
                         }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .frame(minHeight: 48)
+                        .background(.primary.opacity(choice.mode == mode ? 0.08 : 0.025),
+                                    in: RoundedRectangle(cornerRadius: 8))
                         .contentShape(Rectangle())
-                        .background(RoundedRectangle(cornerRadius: 5)
-                            .fill(choice.mode == mode ? Color.accentColor.opacity(0.25) : Color.clear))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityAddTraits(choice.mode == mode ? .isSelected : [])
                     .disabled(!available(mode))
                     .keyboardShortcut(KeyEquivalent(Character("\(number + 1)")), modifiers: [])
                 }
             }
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel).keyboardShortcut(.cancelAction)
+            SheetActions(onCancel: onCancel) {
                 Button("Save") { onChoose(choice.mode) }.keyboardShortcut(.defaultAction)
             }
         }
-        .padding(16)
+        .padding(24)
         .frame(width: 480)
         .focusable()
         .focusEffectDisabled()
