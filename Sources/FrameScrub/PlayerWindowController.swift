@@ -1327,6 +1327,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         core.close()
         await finishSession?()
         await core.flushUserState()
+        await preferences.flushCoalescedWrites()
         if let fileSession {
             let data = await Task.detached(priority: .utility) { try? JSONEncoder().encode(fileSession) }.value
             if let data { UserDefaults.standard.set(data, forKey: Self.fileTabSessionKey) }
@@ -1399,7 +1400,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// framescrub.conf changed (Preferences, menus, a reload, a default colour save).
     func applyConfig(_ global: Config) {
+        var previous = globalConfig
         globalConfig = global
+        if previous.artifactFilters.strength != global.artifactFilters.strength {
+            previous.artifactFilters.strength = global.artifactFilters.strength
+            if previous == global {
+                core.applyArtifactFilters(global.artifactFilters)
+                videoView.artifactSettings = global.artifactFilters
+                artifactFilterPanel?.refreshStrength(global.artifactFilters.strength)
+                return
+            }
+        }
         applyEffectiveConfig()
     }
 
@@ -2278,6 +2289,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             break
         case let .addAutoColorStrength(delta):
             addAutoColorStrength(delta)
+        case let .addArtifactStrength(delta):
+            addArtifactStrength(delta)
         case .scrubEdge:
             break   // a wheel binding (`perform`); a key has no wheel to drag the edge with
         case .playlistPrev:
@@ -2405,6 +2418,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `.limit` at an end, `.detent` on or past 0.25 / 0.5 / 0.75, else `.step`.
     private func addAutoColorStrength(_ delta: Double) {
         runColorOutcome(colorMemory.addStrength(delta, global: globalConfig))
+    }
+
+    private func addArtifactStrength(_ delta: Double) {
+        let settings = preferences.config.artifactFilters
+        let (value, event) = AdjustStep.apply(settings.strength, by: delta, step: 0.05, range: 0...1,
+                                              detents: [0.25, 0.5, 0.75])
+        preferences.updateCoalesced(["artifact-strength"], onError: { [weak self] error in
+            self?.showMessage("Cannot save settings: \(error)", duration: 4)
+        }) { $0.artifactFilters.strength = value }
+        haptics.play(event)
+        let bypassed = !settings.enabled || settings.comparison == .bypass
+        showMessage("Filter strength \(Int((value * 100).rounded()))%" + (bypassed ? " (bypassed)" : ""))
     }
 
     /// Commands that move the position or change the file: they end a scene search that is still waiting.

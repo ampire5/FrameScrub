@@ -434,6 +434,10 @@ public final class PlayerCore {
         rebuildExporter()
     }
 
+    public func applyArtifactFilters(_ filters: ArtifactFilterSettings) {
+        config.artifactFilters = filters
+    }
+
     private func rebuildExporter() {
         guard let url, let info else { return }
         exporter = FrameExporter(videoURL: url, nameURL: sceneInfo?.namingURL(for: url), folder: frameFolder,
@@ -913,7 +917,7 @@ public final class PlayerCore {
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .showInFolder, .cycleABLoopMode, .toggleArtifactFilters, .toggleArtifactFilterPanel, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .toggleSubjectFocus, .cycleSubjectFocus, .toggleSubjectFocusPanel, .cycleAspect, .windowScale, .windowFit,
-             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
+             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .addArtifactStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
         case .shuttleForward: shuttle(.forward)

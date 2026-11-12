@@ -147,6 +147,14 @@ import HomeChrome
             control.doubleValue = read(s); value.stringValue = String(format: "%.4g", read(s))
         }
     }
+
+    func refreshStrength(_ strength: Double) {
+        guard built, let index = edits.firstIndex(where: { $0.0 == "artifact-strength" }) else { return }
+        let (slider, value, _) = sliders[index]
+        slider.doubleValue = strength
+        value.stringValue = String(format: "%.4g", strength)
+    }
+
     private var choices: [(NSPopUpButton, (ArtifactFilterSettings) -> Int, (inout ArtifactFilterSettings, Int) -> Void)] = []
     private var choiceKeys: [String] = []
     private func addChoice(_ title: String, _ titles: [String], _ key: String,

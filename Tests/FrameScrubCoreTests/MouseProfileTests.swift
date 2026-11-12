@@ -36,9 +36,18 @@ import Testing
         #expect(command(viewing, "MBTN_BACK") == .stats)
         #expect(command(viewing, "MBTN_FORWARD") == .toggleArtifactFilters)
         for gone in ["MBTN_BACK_LONG", "MBTN_FORWARD_LONG"] { #expect(command(viewing, gone) == nil, "\(gone)") }
-        for gone in ["MBTN_BACK+WHEEL_UP", "MBTN_BACK+WHEEL_DOWN", "MBTN_FORWARD+WHEEL_UP", "MBTN_FORWARD+WHEEL_DOWN"] {
+        for gone in ["MBTN_BACK+WHEEL_UP", "MBTN_BACK+WHEEL_DOWN"] {
             #expect(chord(viewing, gone) == nil, "\(gone)")
         }
+        for (wheel, delta) in [("WHEEL_UP", 0.05), ("WHEEL_DOWN", -0.05)] {
+            let binding = "MBTN_FORWARD+\(wheel)"
+            #expect(chord(viewing, binding)?.configText == "add artifact-strength \(delta)")
+        }
+
+        var gestures = ButtonGestures(map: viewing, longPress: 0.4, doubleInterval: 0.3)
+        #expect(gestures.press(.forward, keys: [], rightHeld: false, at: 1).isEmpty)
+        #expect(gestures.wheel(hasDelta: true, momentum: false, at: 1.1) == .forwardButton)
+        #expect(gestures.release(.forward, at: 1.2).isEmpty)
     }
 
     /// input.conf, then the profile's own lines, then the user's input-<profile>.conf.

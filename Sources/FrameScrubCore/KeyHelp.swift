@@ -114,6 +114,8 @@ public enum KeyHelp {
         case let .saveVibrance(folder): return (.picture, folder ? 10 : 9, folder ? "Save vibrance for the folder" : "Save vibrance as default")
         case let .resetColor(level): return (.picture, level == .file ? 11 : 12, level == .file ? "Reset file colour" : "Reset folder colour")
         case .toggleArtifactFilters: return (.picture, 14, "Artifact filters on / off")
+        case let .addArtifactStrength(delta):
+            return (.picture, delta < 0 ? 16 : 17, "Artifact filter strength \(delta < 0 ? "−" : "+")\(formatNumber(abs(delta)))")
         case .toggleArtifactFilterPanel: return (.picture, 15, "Artifact filter panel")
         case .toggleUpscaler: return (.picture, 2, "Apple LL super resolution on / off")
         case .cycleUpscaler: return (.picture, 3, "Cycle Apple LL SR factor")

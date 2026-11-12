@@ -115,6 +115,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   It uses the same PreferencesStore as Settings/menu, refreshes through existing config application,
   and commits sliders on release / numeric fields on editing end. Shared slot typing detection
   keeps it visible during numeric editing. Cleanup profiles preserve grain and introduce no new passes. N toggles filters; Option-N opens the panel via remappable input commands.
+  Viewing profile Forward toggles filters and Forward + wheel adjusts Overall effect. Wheel steps update the
+  shared PreferencesStore in memory and coalesce config writes off the main thread.
   No auto-activation policy is installed.
   HDR bypasses encoded-SDR filters. Config/Display settings and `ArtifactFilterMenu` share
   the existing store; decoder/cache/export ownership is unchanged. `filters-pipeline` measures

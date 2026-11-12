@@ -29,6 +29,7 @@ The mouse and trackpad work the same in both.
 | Double click | Show the video in its folder (Home's Folders, the video selected; as ↩ and ⌘↑) |
 | Middle click | Full screen |
 | Side button Forward (Viewing profile) | Artifact filters on / off |
+| Hold Forward + wheel (Viewing profile) | Artifact filter strength ±5 percentage points |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
 | … gesture button tap / hold | Save a frame / save the clips |
@@ -908,7 +909,8 @@ iterations (0.765 RGB8 codes, 16 pixels, one iteration), strength 1, with grain 
 ### Compact filter controls
 
 N and the Forward side button in the Viewing mouse profile toggle experimental filters.
-Option-N opens the Filters tab in the shared side slot. Both commands are remappable
+Hold Forward and turn the vertical wheel to change Overall effect by 5 percentage points per notch
+(`add artifact-strength ±0.05`). Option-N opens the Filters tab in the shared side slot. Both commands are remappable
 (`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
 left-hand B / Shift-B clip commands are unchanged. Auto activation remains deferred.
 The panel and Settings edit the same saved values. Sliders commit on release.

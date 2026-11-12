@@ -21,7 +21,7 @@ public enum MouseProfile: String, CaseIterable, Sendable {
 
     /// The profile's own lines. Editing has none: the layout's buttons, marks and their edges under back and forward.
     /// In Viewing (the default), Back shows the file's info and Forward toggles artifact filters.
-    /// The gesture, panel and middle buttons use the layout's bindings in both profiles.
+    /// Forward + wheel adjusts the overall filter strength. The gesture, panel and middle buttons use the layout's bindings in both profiles.
     public var defaultConfig: String {
         switch self {
         case .viewing:
@@ -32,8 +32,8 @@ public enum MouseProfile: String, CaseIterable, Sendable {
             MBTN_BACK+WHEEL_DOWN ignore
             MBTN_FORWARD toggle-artifact-filters
             MBTN_FORWARD_LONG ignore
-            MBTN_FORWARD+WHEEL_UP ignore
-            MBTN_FORWARD+WHEEL_DOWN ignore
+            MBTN_FORWARD+WHEEL_UP add artifact-strength 0.05
+            MBTN_FORWARD+WHEEL_DOWN add artifact-strength -0.05
             """
         case .editing:
             ""
