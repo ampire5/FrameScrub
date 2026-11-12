@@ -21,6 +21,23 @@ import Testing
         #expect(await eventually { handled.value == [1, 10] })
     }
 
+    @Test func aNewListingCanRunWhileTheOldListingIsBlocked() async {
+        let release = DispatchSemaphore(value: 0)
+        let started = Locked<[String]>([])
+        let worker = LatestOnlyWorker<String>(label: "test.folder-listing", limit: 2,
+                                              canRunTogether: { $0 != $1 }) { value in
+            started.mutate { $0.append(value) }
+            if value == "old" { release.wait() }
+        }
+        worker.submit("old")
+        #expect(await eventually { started.value == ["old"] })
+        worker.submit("old")
+        worker.submit("new")
+        let newStarted = await eventually { started.value == ["old", "new"] }
+        release.signal()
+        #expect(newStarted)
+    }
+
     // MARK: LRUCache
 
     @Test func theLeastRecentlyUsedEntryIsEvicted() {

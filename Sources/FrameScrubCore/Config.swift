@@ -89,6 +89,12 @@ public enum HomeTab: String, CaseIterable, Sendable {
     case stash
 }
 
+/// What FrameScrub shows when launched without a video.
+public enum SessionRestore: String, Sendable {
+    case home = "none"
+    case last
+}
+
 /// `hwdec` (as in mpv): VideoToolbox or FFmpeg's software decoders for playback and scrubbing.
 public enum HardwareDecoding: String, Sendable {
     case auto, yes, no
@@ -155,6 +161,8 @@ public struct Config: Equatable, Sendable {
     public var recentCount = 50
     /// `home-sidebar`: whether Home shows its sidebar (⌃⌘S).
     public var homeSidebar = true
+    /// `session-restore`: Home or the saved File View tabs at launch.
+    public var sessionRestore = SessionRestore.home
     /// `icon-set`: the line icons, Lucide or SF Symbols (read at launch).
     public var iconSet = IconSet.sf
     public var singleInstance = false
@@ -281,7 +289,7 @@ public struct Config: Equatable, Sendable {
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
         "tourbox", "tourbox-frames-per-pulse", "tourbox-accel", "tourbox-accel-start", "tourbox-scroll-points",
-        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
+        "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "session-restore", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel",
         "scrub-trackpad-momentum", "scrub-trackpad-momentum-distance", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
         "mouse-long-press", "mouse-haptics", "haptic-step", "haptic-detent", "haptic-limit", "haptic-long-armed", "haptic-toggle", "haptic-end", "haptic-keyframe", "haptic-mark", "haptic-done", "haptic-error", "haptic-strong-strength", "mx-side-buttons",
@@ -314,6 +322,7 @@ public struct Config: Equatable, Sendable {
         case "home-card-size": return formatNumber(homeCardSize)
         case "recent-count": return String(recentCount)
         case "home-sidebar": return yesNo(homeSidebar)
+        case "session-restore": return sessionRestore.rawValue
         case "icon-set": return iconSet.rawValue
         case "single-instance": return yesNo(singleInstance)
         case "home-tab": return homeTab.rawValue
@@ -537,6 +546,7 @@ public struct Config: Equatable, Sendable {
         case "home-card-size": guard let v = double(60...480) else { return false }; homeCardSize = v
         case "recent-count": guard let v = int(1...200) else { return false }; recentCount = v
         case "home-sidebar": guard let v = bool() else { return false }; homeSidebar = v
+        case "session-restore": guard let v = SessionRestore(rawValue: value.lowercased()) else { return false }; sessionRestore = v
         case "icon-set": guard let v = IconSet(rawValue: value.lowercased()) else { return false }; iconSet = v
         case "single-instance": guard let v = bool() else { return false }; singleInstance = v
         case "home-tab": guard let v = HomeTab(rawValue: value.lowercased()) else { return false }; homeTab = v

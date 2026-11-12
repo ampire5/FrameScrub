@@ -52,12 +52,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var home: HomeView?
     /// Home's source (the view holds it weakly).
     private var homeSource: FrameScrubHomeSource?
+    private var homeVolumeObservers: [NSObjectProtocol] = []
+    private static let fileTabSessionKey = "lastFileTabSession"
+    /// The previous run's session remains the target of the manual action throughout this run.
+    private let lastFileTabSessionData = UserDefaults.standard.data(forKey: PlayerWindowController.fileTabSessionKey)
+    private lazy var lastFileTabSession = Task.detached(priority: .userInitiated) { [lastFileTabSessionData] in
+        lastFileTabSessionData.flatMap { try? JSONDecoder().decode(FileTabSession.self, from: $0) }
+    }
     /// The window's title while Home has the window, put back when it goes.
     private var titleBeforeHome: String?
     private var hasShownHome = false
     /// The folder a video was opened from in Home and that video: Home goes back to it, the file selected.
     /// The order is Home's sort of that folder, which its playlist follows while the folder is the playlist.
     private var folderReturn: (folder: URL, file: URL)?
+    private var returnFileTabID: UUID?
     /// Each folder's order, shared with Home's grid.
     private let folderSorts: FolderSorts
     /// The videos the decoders could not read in this run: Home draws them faint, the folder's steps go past them.
@@ -371,13 +379,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Opens a file from outside the folder (Finder, ⌘O, Recent, a link): closing it goes back to Recent. `landing`:
     /// where a link asked to land in it; `then`: what became of the open.
-    /// `homeFolder`: the folder it was opened from in Home (closing goes back there).
-    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil,
+    /// For a video card in File View, `homeFolder` supplies the playlist order and `homeFileTabID` the return tab.
+    func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil, homeFileTabID: UUID? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
         guard !isTerminating else { done?(.superseded); return }
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
         folderReturn = homeFolder.map { (folder: $0, file: url) }
+        returnFileTabID = homeFileTabID
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
@@ -666,6 +675,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         gestures.cancelScrubMomentum()
         rememberVirtualCut()
         defer { leaveVirtualCut() }
+        if let back = folderReturn, let file = failedURL ?? openingURL ?? core.url,
+           file.isFileURL, folder(of: file) == back.folder {
+            folderReturn = (back.folder, file)
+        }
         abandonOpening()
         folderWait.cancel()
         recentThumbnailer.cancel()
@@ -685,7 +698,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         deletingScene = false   // a delete still running finishes without opening anything
         queueGate.cancel()
         origin = .plain
-        showHome(tab: virtualCut == nil ? returnTab : nil)
+        presentHome(tab: virtualCut == nil ? returnTab : nil, playback: .returning)
     }
 
     private var failureHint: String? { returnTab == .stash ? "⌘W — back to Stash" : nil }
@@ -741,6 +754,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             return
         }
         returnTab = .stash
+        folderReturn = nil
+        returnFileTabID = nil
         stashOpens += 1
         let open = stashOpens
         stashSession.resolve(scene) { [weak self] result in
@@ -898,11 +913,39 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if window?.title != title { window?.title = title }
     }
 
+    func showInitialHome() {
+        if core.config.sessionRestore == .last { restoreLastFileSession(atLaunch: true) }
+        else { showHome() }
+    }
+
+    var canRestoreLastFileSession: Bool { showsHome && lastFileTabSessionData != nil }
+
+    func restoreLastFileSession(atLaunch: Bool = false) {
+        guard atLaunch || canRestoreLastFileSession else { return }
+        guard lastFileTabSessionData != nil else { showHome(); return }
+        let load = lastFileTabSession
+        let fileOpens = fileOpens, stashOpens = stashOpens
+        Task { [weak self] in
+            let session = await load.value
+            guard let self, !isTerminating, self.fileOpens == fileOpens, self.stashOpens == stashOpens,
+                  atLaunch ? !showsHome : showsHome else { return }
+            if let session { presentHome(restoring: session) }
+            else if atLaunch { showHome() }
+        }
+    }
+
     /// Home (Home spec, Window): Recent or the Stash library (`tab`, else `home-tab`; Stash only with `stash-url`) in
     /// place of the video. A file on screen is paused and stays open, so ⌘[ / Esc come back to it at once; with none,
     /// the window is the start screen. Home is made the first time and only hidden after that.
-    func showHome(tab: HomeTab? = nil) {
+    func showHome(tab: HomeTab? = nil) { presentHome(tab: tab) }
+
+    private enum HomePlaybackNavigation { case automatic, returning, showFolder }
+
+    private func presentHome(tab: HomeTab? = nil, restoring session: FileTabSession? = nil,
+                             playback: HomePlaybackNavigation = .automatic) {
         guard let window else { return }
+        let returningToPlaybackOrigin = playback == .returning || (playback == .automatic && homeHost.isHidden)
+        let showPlaybackFolder = returningToPlaybackOrigin || playback == .showFolder
         seekBar.cancelCutEdgeGesture()
         slots.isEnabled = false
         virtualCut?.playback.wantsPlayback = false
@@ -947,7 +990,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
         let back = core.url.flatMap { $0.isFileURL ? (folder: folder(of: $0), file: $0) : nil } ?? folderReturn
-        let wanted = tab ?? (folderReturn != nil && core.url != nil ? .folders : config.homeTab)
+        let returningToFolder = folderReturn != nil && showPlaybackFolder
+        let wanted = tab ?? (returningToFolder ? .folders : config.homeTab)
         let shown = HomeRecent.shownTab(wanted, stashEnabled: config.stashEnabled)
         var selecting: String?
         let location: BrowserLocation
@@ -956,17 +1000,33 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             selecting = cut.card
         } else if let place = HomeRecent.location(of: shown) {
             location = place
-        } else if let back {
+        } else if showPlaybackFolder, let back {
             location = .folder(back.folder)
             selecting = back.file.path
         } else {
             location = view.browser.lastBrowsed
         }
-        if shown == .folders, let selecting { view.browser.lastOpenedID = selecting }
-        if view.browser.location == location, hasShownHome, selecting == nil {
-            view.browser.reload()
+        if let session {
+            view.restoreFileTabSession(session)
         } else {
-            view.browser.show(location, selecting: selecting)
+            if shown == .folders, let selecting { view.browser.lastOpenedID = selecting }
+            let tabToResume: UUID?
+            if shown == .folders, virtualCut == nil, returningToPlaybackOrigin {
+                tabToResume = returnFileTabID
+            } else if shown == .folders, !showPlaybackFolder, hasShownHome {
+                tabToResume = view.selectedFileTabID
+            } else {
+                tabToResume = nil
+            }
+            if let tabToResume, view.selectFileTab(tabToResume, selecting: selecting) {
+                if returningToPlaybackOrigin, selecting != nil, view.browser.location != location {
+                    view.browser.show(location, selecting: selecting)
+                }
+            } else if view.browser.location == location, hasShownHome, selecting == nil {
+                view.browser.reload()
+            } else {
+                view.browser.show(location, selecting: selecting)
+            }
         }
         hasShownHome = true
         homeSource?.setWatchingVisible(window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible))
@@ -977,7 +1037,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             window.representedURL = nil
             applyStartScreenFrame()
         }
-        if shown == .stash { stashLibrary?.focusPage() } else { window.makeFirstResponder(view.browser) }
+        if view.browser.location == HomeRecent.location(of: .stash) {
+            stashLibrary?.focusPage()
+        } else {
+            window.makeFirstResponder(view.browser)
+        }
         if StartupTrace.enabled {   // the bench: the layout and drawing this pass would leave to the run loop, counted here
             window.layoutIfNeeded()
             window.displayIfNeeded()
@@ -1046,11 +1110,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         source.onCut = { [weak self] in self?.chooseCatalogCut($0, id: $1, edit: $2) }
         source.onCatalogNavigation = { [weak self] in self?.catalogOpen?.cancel() }
         source.view = view.browser
+        source.onSidebarChange = { [weak view] in view?.reloadSidebar() }
+        view.fileTabsEnabled = true
         view.browser.unreadable = unreadable
-        source.onOpen = { [weak self] url, location, sort in   // not looked up: a share answers over the network
+        source.onOpen = { [weak self, weak view] url, location, _ in   // not looked up: a share answers over the network
             guard let self else { return }
             if case .folder(let folder) = location {
-                self.open(url, homeFolder: folder)   // the playlist in the grid's order: the folder's own (FolderSorts)
+                // The playlist follows the grid's order (FolderSorts).
+                self.open(url, homeFolder: folder, homeFileTabID: view?.selectedFileTabID)
             } else {
                 self.open(url)
             }
@@ -1119,6 +1186,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         home = view
         homeSource = source
+        let workspace = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            homeVolumeObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak source] _ in
+                MainActor.assumeIsolated { source?.refreshSidebar() }
+            })
+        }
         return view
     }
 
@@ -1240,6 +1313,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// user state must reach its worker before applicationWillTerminate can exit the process.
     func prepareUserStateForTermination() async {
         isTerminating = true
+        let fileSession = home?.fileTabSession()
         core.setViewingVisible(false)
         stashOpens += 1
         queueGate.cancel()
@@ -1253,6 +1327,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         core.close()
         await finishSession?()
         await core.flushUserState()
+        if let fileSession {
+            let data = await Task.detached(priority: .utility) { try? JSONEncoder().encode(fileSession) }.value
+            if let data { UserDefaults.standard.set(data, forKey: Self.fileTabSessionKey) }
+        }
     }
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
@@ -1264,6 +1342,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         for write in slotWrites.values where write.isValid { write.fire() }   // a slot changed just before quitting
         slotWrites = [:]
         homeSource?.stopImages()
+        let workspace = NSWorkspace.shared.notificationCenter
+        for observer in homeVolumeObservers { workspace.removeObserver(observer) }
+        homeVolumeObservers.removeAll()
         recentThumbnailer.cancel()
         saveThumbnail(wait: true)
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)
@@ -1370,7 +1451,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             stashSession = nil
         }
         if stashChanged {
-            home?.reloadSidebar()   // Stash's row comes or goes
+            homeSource?.refreshSidebar()   // Stash's row comes or goes
             if showsHome, home?.browser.location == HomeRecent.location(of: .stash) { showHome() }
         }
         statsPanel.fontSize = CGFloat(config.statsFontSize)
@@ -3283,6 +3364,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch item {
         case let .file(url, _, _), let .stream(url, _, _):
             returnTab = .recent
+            folderReturn = nil
+            returnFileTabID = nil
             stashScene = nil
             stashOpens += 1   // a scene still being looked for must not replace this file
             queueGate.cancel()
@@ -4664,8 +4747,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func showInFolder() {
         guard let url = core.url, url.isFileURL else { showMessage("No video open"); return }
         returnTab = .folders
-        folderReturn = (folder: folder(of: url), file: url)
-        showHome(tab: .folders)
+        let folder = folder(of: url)
+        folderReturn = (folder: folder, file: url)
+        presentHome(tab: .folders, playback: .showFolder)
+        returnFileTabID = home?.selectedFileTabID
     }
 
     private func revealFrames() {
@@ -5153,7 +5238,7 @@ extension PlayerWindowController {
             if homeSource?.catalogs[id] == nil { browser.show(.source(HomeRecent.source), selecting: nil) }
             else if showsHome { browser.reload() }
         }
-        home?.reloadSidebar()
+        homeSource?.refreshSidebar()
     }
 
     private func chooseCatalogCut(_ catalog: PluginCatalogSource, id: String, edit: Bool) {

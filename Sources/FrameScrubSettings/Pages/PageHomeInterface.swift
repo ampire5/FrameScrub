@@ -6,6 +6,9 @@ extension SettingsPanel {
     static var home: SettingsPage {
         SettingsPage("home", "Home & Interface", symbol: "house", sections: [
             SettingsSection("Home", rows: [
+                .choice("session-restore", "At launch", [("none", "Home"), ("last", "Last Session")],
+                        symbol: "rectangle.stack.badge.play",
+                        description: "When launched without a video, open Home or restore the saved File View tabs. Default Home."),
                 .number("home-card-size", "Card size (⌘= / ⌘−)", unit: "pt", step: 20, symbol: "square.grid.2x2",
                         description: "60–480, default 220."),
                 .toggle("home-sidebar", "Sidebar (⌃⌘S)", symbol: "sidebar.left", description: "Default on."),

@@ -439,6 +439,15 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   path. The pictures are JPEGs of up to 1280 pixels in the SQLite media cache
   (`~/Library/Caches/FrameScrub/media.sqlite`, the newest 200 last frames), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
   the background while Recent is up.
+- **Favorites** keeps folders above Places. Use a folder card or sidebar row's context menu to add or remove it.
+  Drag favorites to reorder them or use **Move Up** and **Move Down** in the context menu. Unavailable folders
+  stay in the list and can be removed or reordered.
+- **File View tabs** keep each folder's navigation history, selection and scroll position. Use **+** for another
+  tab at the current folder, or **Open in New Tab** from a folder's context menu. The tabs stay available above
+  Recent and Stash. Closing a video opened from a folder returns to its tab. In **Settings → Home & Interface**,
+  set **At launch** to **Last Session** to reopen the saved tabs when starting without a video. **File → Last
+  Session** replaces the current tabs from Home. The saved session includes the active tab, selections and scroll
+  positions.
 - **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
   its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
   the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
@@ -599,7 +608,8 @@ recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
 icon-set=sf                     # the line icons: lucide | sf (SF Symbols); read at launch
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
-home-tab=recent                 # where Home opens at launch: recent | folders | stash
+home-tab=recent                 # where Home opens: recent | folders | stash
+session-restore=none             # At launch without a video: none (Home) | last (Last Session)
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares

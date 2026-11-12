@@ -165,6 +165,13 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  `FrameScrubHomeSource` builds Favorites rows from `FolderFavorites` (ordered paths in FrameScrub's defaults).
+  Folder renames update favorite descendants. Mount changes and Refresh recheck availability with a bounded utility worker pool
+  and repaint the sidebar without changing the browser's location.
+  HomeScreenKit owns the opt-in File View tab histories. `PlayerWindowController` records the opening tab ID
+  for playback return and saves a versioned tab snapshot in the user-state termination flush. At launch or on
+  File › Last Session, the previous run's snapshot supplies the tabs to restore. Explicit file opens use the same
+  player and take precedence over session restore.
   The playlist capsule's options menu changes `playlist-view` through the shared `PreferencesStore`.
   Configuration application switches the existing list/strip views and keeps the menu and Settings in sync.
   Showing Home disables the shared slot host; returning to the player restores its presentation. Hidden slots
@@ -177,8 +184,9 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   consumes AppKit's copy; Home visibility changes cancel pending taps. Web pages retain their own swipe handling.
   `FolderChangeMonitor` opens an event-only directory descriptor off the main thread and coalesces native directory
   events (including SMB) without polling. It reconciles the descriptor-open race once, stops while Home/window is
-  hidden, and reconciles again on return. Folder enumeration/metadata reads use one utility `LatestOnlyWorker`
-  with one replaceable pending read; stale results are discarded. View › Refresh (⌘R) uses the same listing stream.
+  hidden, and reconciles again on return. Folder enumeration and metadata use up to two utility reads so a blocked
+  stale read can yield to the selected tab. There is one replaceable pending request, reads for a listing are serial,
+  and stale results are discarded. View › Refresh (⌘R) uses the same listing stream.
   Thumbnail workers report failure as well as success. `PictureQueue` finishes failed jobs and suppresses repeated
   attempts until refresh; confirmed damaged versions are marked in shared `UnreadableFiles` and omitted from Home.
   Failure stamps come from the attempted file identity; network/read errors do not mark files damaged. Source

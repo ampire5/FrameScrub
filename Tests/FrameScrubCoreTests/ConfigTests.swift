@@ -35,6 +35,16 @@ import Testing
         #expect(c.statsFontSize == 12)
     }
 
+    @Test func lastSessionIsAnOptInLaunchPreference() {
+        #expect(Config().text(forKey: "session-restore") == "none")
+        let (restoring, warnings) = Config.parse("session-restore=last")
+        #expect(warnings.isEmpty)
+        #expect(restoring.text(forKey: "session-restore") == "last")
+        let (fallback, badWarnings) = Config.parse("session-restore=video")
+        #expect(badWarnings.count == 1)
+        #expect(fallback == Config())
+    }
+
     @Test func parsesStashKeys() {
         let (c, warnings) = Config.parse(#"""
         stash-url=http://192.0.2.10:9999

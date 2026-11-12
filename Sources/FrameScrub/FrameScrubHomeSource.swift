@@ -11,6 +11,7 @@ import HomeScreenModel
     var catalogs: [String: PluginCatalogSource] = [:]
     var onCut: ((PluginCatalogSource, String, Bool) -> Void)?
     var onCatalogNavigation: (() -> Void)?
+    var onSidebarChange: (() -> Void)?
 
     private func catalog(_ location: BrowserLocation) -> PluginCatalogSource? {
         guard case let .source(id) = location else { return nil }
@@ -27,6 +28,7 @@ import HomeScreenModel
     private let hasStash: () -> Bool
     private let unreadable: UnreadableFiles
     private let folderMonitor = FolderChangeMonitor()
+    private let favorites = FolderFavorites()
     private var watchingVisible = true
     private var thumbnailsPaused = false
     /// Recent's pictures: the last frame seen in each file (`ThumbnailStore`), a keyframe where it was left for those
@@ -156,8 +158,11 @@ import HomeScreenModel
         let flag: CancellationFlag
     }
 
-    /// A stalled SMB listing holds one utility worker; rapid changes/navigation replace its one pending request.
-    private lazy var folderReader = LatestOnlyWorker<FolderRead>(label: "framescrub.home-listing", qos: .utility) { [weak self] request in
+    /// A stale SMB read can hold one slot while the current tab reads in the other. Further requests replace
+    /// one pending read, and changes to one listing never read it twice at the same time.
+    private lazy var folderReader = LatestOnlyWorker<FolderRead>(
+        label: "framescrub.home-listing", qos: .utility, limit: 2, canRunTogether: { $0.id != $1.id }
+    ) { [weak self] request in
         guard !request.flag.isCancelled else { return }
         do {
             let entries = try HomeFolders.entries(in: request.folder)
@@ -241,6 +246,7 @@ import HomeScreenModel
 
     /// Explicit refresh and filesystem events use the same subscription: no empty grid or lost pictures.
     func refresh() {
+        refreshSidebar()
         recentPictures.retryFailures()
         if let active = activeListing, case .folder(let folder) = active.location {
             readFolder(folder, id: active.id)
@@ -515,6 +521,7 @@ import HomeScreenModel
         var items = [HomeMenuItem(id: "information", title: "File Information…"),
                      HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
         if !entry.isFile { items.removeAll { $0.id == "information" } }
+        if entry.kind == .folder || entry.kind == .place { items.append(favoriteMenu(for: entry.url)) }
         if location == .source(HomeRecent.source) { items.append(HomeMenuItem(id: "remove", title: "Remove from Recent")) }
         return items
     }
@@ -524,6 +531,7 @@ import HomeScreenModel
             if item == "edit-virtual-cut" { onCut?(catalog, entry.id, true) }
             return
         }
+        if entry.kind == .folder || entry.kind == .place, performFavoriteMenu(item, for: entry.url) { return }
         if item == "information", entry.isFile {
             if metadataInspector == nil { metadataInspector = MediaMetadataInspector() }
             metadataInspector?.show(entry)
@@ -540,6 +548,7 @@ import HomeScreenModel
         let target = entry.url.deletingLastPathComponent().appendingPathComponent(name)
         try await Task.detached(priority: .userInitiated) { try FileManager.default.moveItem(at: entry.url, to: target) }.value
         listings[entry.url.deletingLastPathComponent()] = nil
+        if entry.kind == .folder, favorites.rename(entry.url, to: target) { refreshSidebar() }
         var renamed = entry
         renamed.url = target
         renamed.name = name
@@ -576,8 +585,81 @@ import HomeScreenModel
                              emptyHint: "Drop a video here or press ⌘O to open one")
     }
 
-    /// Recent; the places, each opening as a tree; Stash's library when `stash-url` is set.
+    // MARK: Favorites and sidebar
+
+    func sidebarMenu(for row: HomeSidebarRow) -> [HomeMenuItem] {
+        guard case .folder(let folder) = row.location,
+              row.expandable || favorites.contains(folder) else { return [] }
+        return [favoriteMenu(for: folder)]
+    }
+
+    func performSidebar(_ item: String, on row: HomeSidebarRow) {
+        guard case .folder(let folder) = row.location,
+              row.expandable || favorites.contains(folder) else { return }
+        _ = performFavoriteMenu(item, for: folder)
+    }
+
+    func moveFavoriteFolder(_ folder: URL, before other: URL?) {
+        if favorites.move(folder, before: other) { onSidebarChange?() }
+    }
+
+    private func favoriteMenu(for folder: URL) -> HomeMenuItem {
+        favorites.contains(folder)
+            ? HomeMenuItem(id: "favorite-remove", title: "Remove from Favorites")
+            : HomeMenuItem(id: "favorite-add", title: "Add to Favorites")
+    }
+
+    private func performFavoriteMenu(_ item: String, for folder: URL) -> Bool {
+        switch item {
+        case "favorite-add":
+            if favorites.add(folder) { refreshSidebar() }
+        case "favorite-remove":
+            if favorites.remove(folder) { refreshSidebar() }
+        default: return false
+        }
+        return true
+    }
+
+    private var favoriteAvailabilityTask: Task<Void, Never>?
+    private var favoriteRefreshPending = false
+    private var hasRequestedFavoriteAvailability = false
+    private var unavailableFavorites: Set<URL> = []
+
+    private func checkFavoriteAvailability() {
+        hasRequestedFavoriteAvailability = true
+        let folders = favorites.folders
+        unavailableFavorites.formIntersection(folders)
+        if favoriteAvailabilityTask != nil {
+            favoriteRefreshPending = true
+            return
+        }
+        guard !folders.isEmpty else { return }
+        favoriteAvailabilityTask = Task { [weak self] in
+            let answers = await PathAvailability.checkDirectories(folders.map(\.path), timeout: .seconds(1))
+            guard let self else { return }
+            favoriteAvailabilityTask = nil
+            let old = unavailableFavorites
+            for folder in favorites.folders {
+                guard let available = answers[folder.path] else { continue }
+                if available { unavailableFavorites.remove(folder) }
+                else { unavailableFavorites.insert(folder) }
+            }
+            if old != unavailableFavorites { onSidebarChange?() }
+            if favoriteRefreshPending {
+                favoriteRefreshPending = false
+                checkFavoriteAvailability()
+            }
+        }
+    }
+
+    func refreshSidebar() {
+        checkFavoriteAvailability()
+        onSidebarChange?()
+    }
+
+    /// Recent; Favorites and Places, each opening as a tree; Stash's library when `stash-url` is set.
     func sidebar() async -> [HomeSidebarSection] {
+        if !hasRequestedFavoriteAvailability { checkFavoriteAvailability() }
         let places = await places().map {
             HomeSidebarRow(id: $0.id, title: $0.name, symbol: symbol(for: $0), location: .folder($0.url), expandable: true)
         }
@@ -587,6 +669,12 @@ import HomeScreenModel
             ]),
             HomeSidebarSection(id: "places", title: "Places", rows: places),
         ]
+        let favoriteRows = favorites.folders.map { folder in
+            let available = !unavailableFavorites.contains(folder)
+            return HomeSidebarRow(id: "favorite:" + folder.path, title: folder.path == "/" ? "/" : folder.lastPathComponent,
+                                  symbol: "folder", location: .folder(folder), expandable: available, isDimmed: !available)
+        }
+        if !favoriteRows.isEmpty { sections.insert(.favorites(favoriteRows), at: 1) }
         if hasStash() {
             sections.append(HomeSidebarSection(id: "stash", title: "Stash", rows: [
                 HomeSidebarRow(id: HomeRecent.stash, title: "Library", symbol: "server.rack", location: .source(HomeRecent.stash)),
