@@ -51,18 +51,23 @@ import HomeScreenModel
     private var folderFacts: [URL: (summary: CardSummary, cover: [URL])] = [:]
     private var factsTask: Task<Void, Never>?
     private var folderCardIDs: [String] = []
+    private var favoriteCoverEntries: [BrowserEntry] = []
+    private var coverGeneration = 0
     /// A video whose poster is being made for a folder's cover, and that folder card's id.
     private var coverFor: [String: (id: String, folder: URL)] = [:]
     private typealias ListingContinuation = AsyncThrowingStream<BrowserListing, Error>.Continuation
     /// Metadata updates go through the existing subscription, keeping the grid, pictures and scroll alive.
-    private var activeListing: (id: UUID, location: BrowserLocation, continuation: ListingContinuation, flag: CancellationFlag, needsPictures: Bool)?
+    private var activeListing: (id: UUID, location: BrowserLocation, continuation: ListingContinuation, flag: CancellationFlag, needsPictures: Bool, recursive: Bool)?
+    private var recursiveEntries: [BrowserEntry]?
     private var recentDimmed: Set<String> = []
     private var relist: DispatchWorkItem?
 
-    private func keepListing(_ continuation: ListingContinuation, at location: BrowserLocation) -> UUID {
+    private func keepListing(_ continuation: ListingContinuation, at location: BrowserLocation, recursive: Bool = false) -> UUID {
         let old = activeListing
+        if old?.location == location, old?.recursive != recursive { stopImages(keepingListing: true) }
         let id = UUID()
-        activeListing = (id, location, continuation, CancellationFlag(), true)
+        activeListing = (id, location, continuation, CancellationFlag(), true, recursive)
+        recursiveEntries = nil
         folderMonitor.stop()
         old?.flag.cancel()
         old?.continuation.finish()
@@ -120,6 +125,26 @@ import HomeScreenModel
     func list(_ location: BrowserLocation) -> AsyncThrowingStream<BrowserListing, Error> {
         switch location {
         case .source(HomeRecent.source): return listRecent()
+        case .source(HomeFavorites.sourceID):
+            stopImages(keepingListing: true)
+            favoriteCoverEntries = []
+            return AsyncThrowingStream { continuation in
+                let id = keepListing(continuation, at: location)
+                let task = Task { [weak self] in
+                    guard let self else { continuation.finish(); return }
+                    let rows = await favoriteRows()
+                    guard !Task.isCancelled, activeListing?.id == id else { return }
+                    let entries = HomeFavorites.entries(from: rows)
+                    favoriteCoverEntries = entries
+                    for entry in entries { folderFacts[entry.url] = nil }
+                    continuation.yield(BrowserListing(entries: entries, complete: true))
+                    continuation.finish()
+                }
+                continuation.onTermination = { [weak self] _ in
+                    task.cancel()
+                    Task { @MainActor in self?.endListing(id) }
+                }
+            }
         case .source: return catalog(location)?.listing() ?? AsyncThrowingStream { $0.finish() }
         case .places:
             return AsyncThrowingStream { continuation in
@@ -133,12 +158,18 @@ import HomeScreenModel
         }
     }
 
+    func supportsRecursiveListing(in folder: URL) -> Bool { folder.isFileURL }
+
+    func listRecursively(in folder: URL) -> AsyncThrowingStream<BrowserListing, Error> {
+        listFolder(folder, recursive: true)
+    }
+
     /// The kept listing at once (marked provisional), then the folder as read now, off the main thread.
     /// The stream stays open for metadata updates until the browser leaves or explicitly reloads it.
-    private func listFolder(_ folder: URL) -> AsyncThrowingStream<BrowserListing, Error> {
-        let kept = listings[folder]
+    private func listFolder(_ folder: URL, recursive: Bool = false) -> AsyncThrowingStream<BrowserListing, Error> {
+        let kept = recursive ? nil : listings[folder]
         return AsyncThrowingStream { continuation in
-            let id = self.keepListing(continuation, at: .folder(folder))
+            let id = self.keepListing(continuation, at: .folder(folder), recursive: recursive)
             if let kept {
                 var listing = BrowserListing(entries: self.withFacts(kept), complete: false)
                 listing.isProvisional = true
@@ -156,6 +187,7 @@ import HomeScreenModel
         let folder: URL
         let id: UUID
         let flag: CancellationFlag
+        let recursive: Bool
     }
 
     /// A stale SMB read can hold one slot while the current tab reads in the other. Further requests replace
@@ -164,11 +196,32 @@ import HomeScreenModel
         label: "framescrub.home-listing", qos: .utility, limit: 2, canRunTogether: { $0.id != $1.id }
     ) { [weak self] request in
         guard !request.flag.isCancelled else { return }
+        if request.recursive, let cached = try? MediaCatalog.shared.recursiveListing(in: request.folder),
+           !request.flag.isCancelled {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, self.activeListing?.id == request.id, self.recursiveEntries == nil,
+                          !request.flag.isCancelled else { return }
+                    self.activeListing?.continuation.yield(
+                        BrowserListing(entries: self.withFacts(cached), complete: true, isProvisional: true))
+                }
+            }
+        }
+        guard !request.flag.isCancelled else { return }
+        let scannedAt = Date()
         do {
-            let entries = try HomeFolders.entries(in: request.folder)
+            let entries = if request.recursive {
+                try RecursiveFolderFiles.read(in: request.folder, extensions: Playlist.videoExtensions,
+                                              cancelled: { request.flag.isCancelled })
+            } else {
+                try HomeFolders.entries(in: request.folder)
+            }
             guard !request.flag.isCancelled else { return }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.folderEntries(entries, request: request) }
+            }
+            if request.recursive {
+                try? MediaCatalog.shared.storeRecursiveListing(entries, in: request.folder, scannedAt: scannedAt)
             }
             let urls = entries.filter(\.isFile).map(\.url)
             let resume = ResumeStore()
@@ -193,7 +246,7 @@ import HomeScreenModel
 
     private func readFolder(_ folder: URL, id: UUID) {
         guard let active = activeListing, active.id == id else { return }
-        folderReader.submit(FolderRead(folder: folder, id: id, flag: active.flag))
+        folderReader.submit(FolderRead(folder: folder, id: id, flag: active.flag, recursive: active.recursive))
     }
 
     private func watchFolder(_ folder: URL, id: UUID) {
@@ -207,9 +260,14 @@ import HomeScreenModel
         guard activeListing?.id == request.id, !request.flag.isCancelled else { return }
         let first = activeListing?.needsPictures == true
         activeListing?.needsPictures = false
-        let old = Dictionary((listings[request.folder] ?? []).map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
-        listings[request.folder] = entries
-        folderFacts[request.folder] = nil
+        let previous = request.recursive ? recursiveEntries : listings[request.folder]
+        let old = Dictionary((previous ?? []).map { ($0.url, $0) }, uniquingKeysWith: { a, _ in a })
+        if request.recursive {
+            recursiveEntries = entries
+        } else {
+            listings[request.folder] = entries
+            folderFacts[request.folder] = nil
+        }
         folderVideos = withFacts(entries).filter(\.isFile).map(\.url)
         let current = Set(folderVideos)
         let retries = folderPictures.retryFailures().intersection(current)
@@ -306,9 +364,11 @@ import HomeScreenModel
         }
         if view?.location == .source(HomeRecent.source) {
             recentPictures.want(ids)
+        } else if view?.location == .source(HomeFavorites.sourceID) {
+            wantFolderCards(ids, entries: favoriteCoverEntries)
         } else {
             guard case .folder(let folder)? = view?.location else { return }
-            let videos = withFacts(listings[folder] ?? []).filter(\.isFile).map(\.url)
+            let videos = withFacts(shownEntries(in: folder) ?? []).filter(\.isFile).map(\.url)
             let inView = ids.filter { $0.hasPrefix("/") }.map { URL(filePath: $0, directoryHint: .notDirectory) }
                 .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
             if progressFolder != folder {
@@ -339,7 +399,7 @@ import HomeScreenModel
     /// The folder's posters: those in view first, then the rest; the pill lights only after a second of work.
     private func showProgress(paused suppliedPause: Bool? = nil) {
         let paused = suppliedPause ?? thumbnailsPaused
-        guard let view else { return }
+        guard let view, case .folder = view.location else { return }
         guard !folderVideos.isEmpty else { view.setProgress(nil, delay: .zero); return }
         let current = Set(folderVideos)
         let visible = inViewVideos.filter { current.contains($0) }
@@ -378,6 +438,7 @@ import HomeScreenModel
     /// Home hidden: stop its subscription too, so returning re-reads files and saved playback progress.
     /// A location change has already subscribed to the new place before `moved` arrives: keep that subscription.
     func stopImages(keepingListing: Bool = false) {
+        coverGeneration += 1
         for catalog in catalogs.values { catalog.stop() }
         if !keepingListing {
             let listing = activeListing
@@ -399,9 +460,13 @@ import HomeScreenModel
     /// thread one at a time, its facts on the card, then its cover from posters already made; a folder whose videos
     /// have none yet shows its symbol, and its first video's poster is queued (the cover follows when it is in).
     private func wantFolderCards(_ ids: [String], in folder: URL) {
-        guard let entries = listings[folder] else { return }
+        guard activeListing?.recursive != true, let entries = listings[folder] else { return }
+        wantFolderCards(ids, entries: entries)
+    }
+
+    private func wantFolderCards(_ ids: [String], entries: [BrowserEntry]) {
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder }
+        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder && !$0.isDimmed }
         folderCardIDs = folders.map(\.id)
         factsTask?.cancel()
         factsTask = Task { @MainActor [weak self] in
@@ -436,9 +501,10 @@ import HomeScreenModel
     /// video's poster queued.
     private func makeCover(_ id: String, folder: URL, from videos: [URL]) async {
         guard let view else { return }
+        let generation = coverGeneration
         let store = folderPictures.store
         let pictures = await Task.detached(priority: .utility) { videos.compactMap { store.image(for: $0) } }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, coverGeneration == generation else { return }
         guard !pictures.isEmpty else {
             view.stopWaiting(for: [id])
             if !thumbnailsPaused, let first = videos.first, coverFor[first.path] == nil {
@@ -448,11 +514,12 @@ import HomeScreenModel
             return
         }
         let width = view.coverWidth, scale = view.window?.backingScaleFactor ?? 2
+        let height = view.location == .source(HomeFavorites.sourceID) ? (width / view.files.aspect).rounded() : width
         let mosaic = await Task.detached(priority: .utility) {
-            HomeMosaic.make(pictures, size: CGSize(width: width, height: width), layout: pictures.count > 1 ? .grid : .single,
+            HomeMosaic.make(pictures, size: CGSize(width: width, height: height), layout: pictures.count > 1 ? .grid : .single,
                             scale: scale)
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, coverGeneration == generation, view.coverWidth == width else { return }
         if let mosaic { view.setImage(mosaic, for: id) } else { view.stopWaiting(for: [id]) }
     }
 
@@ -481,12 +548,16 @@ import HomeScreenModel
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
+    private func shownEntries(in folder: URL) -> [BrowserEntry]? {
+        activeListing?.recursive == true ? recursiveEntries : listings[folder]
+    }
+
     private func publishListing() {
         guard let active = activeListing, view?.location == active.location else { return }
         let entries: [BrowserEntry]
         switch active.location {
         case .folder(let folder):
-            guard let kept = listings[folder] else { return }
+            guard let kept = shownEntries(in: folder) else { return }
             entries = withFacts(kept)
             folderVideos = entries.filter(\.isFile).map(\.url)
         case .source(HomeRecent.source):
@@ -499,7 +570,8 @@ import HomeScreenModel
 
     private func pictureFailed(_ url: URL, _ failure: RecentThumbnailer.Failure) {
         if failure.marksUnreadable, let identity = failure.identity {
-            let entry = listings[url.deletingLastPathComponent()]?.first { $0.url == url }
+            let candidates = activeListing?.recursive == true ? recursiveEntries : listings[url.deletingLastPathComponent()]
+            let entry = candidates?.first { $0.url == url }
             let sameSize = entry?.size.map { $0 == identity.size } ?? true
             let sameDate = entry?.date.map { $0 == identity.modificationDate } ?? true
             if sameSize && sameDate {
@@ -575,6 +647,9 @@ import HomeScreenModel
     }
 
     func info(for source: String) -> HomeSourceInfo {
+        if source == HomeFavorites.sourceID {
+            return HomeSourceInfo(title: "Favorites", noun: "folder", emptyHint: "Choose Add to Favorites from a folder’s menu", preservesOrder: true)
+        }
         if let catalog = catalogs[source] {
             return HomeSourceInfo(title: catalog.descriptor.title, sortKeys: [.name], noun: "cut",
                                   emptyHint: "Saved cuts appear here")
@@ -657,6 +732,30 @@ import HomeScreenModel
         onSidebarChange?()
     }
 
+    private func favoriteRows() async -> [HomeSidebarRow] {
+        await favoriteRows(places: places().map {
+            HomeSidebarRow(id: $0.id, title: $0.name, symbol: symbol(for: $0), location: .folder($0.url))
+        })
+    }
+
+    private func favoriteRows(places: [HomeSidebarRow]) async -> [HomeSidebarRow] {
+        let startupDisk = await Task.detached(priority: .utility) {
+            FileManager.default.displayName(atPath: "/")
+        }.value
+        let volumes = places.compactMap { row -> (URL, String)? in
+            guard case .folder(let url) = row.location, row.symbol == "externaldrive" else { return nil }
+            return (url, row.title)
+        }
+        let folders = favorites.folders
+        let hints = HomeFavorites.locationHints(for: folders, volumes: volumes, startupDisk: startupDisk)
+        return folders.map { folder in
+            let available = !unavailableFavorites.contains(folder)
+            return HomeSidebarRow(id: "favorite:" + folder.path, title: folder.path == "/" ? startupDisk : folder.lastPathComponent,
+                                  symbol: "folder", location: .folder(folder), expandable: available, isDimmed: !available,
+                                  locationHint: hints[folder])
+        }
+    }
+
     /// Recent; Favorites and Places, each opening as a tree; Stash's library when `stash-url` is set.
     func sidebar() async -> [HomeSidebarSection] {
         if !hasRequestedFavoriteAvailability { checkFavoriteAvailability() }
@@ -666,14 +765,11 @@ import HomeScreenModel
         var sections = [
             HomeSidebarSection(id: "library", title: nil, rows: [
                 HomeSidebarRow(id: HomeRecent.source, title: "Recent", symbol: "clock", location: .source(HomeRecent.source)),
+                HomeFavorites.sourceRow,
             ]),
             HomeSidebarSection(id: "places", title: "Places", rows: places),
         ]
-        let favoriteRows = favorites.folders.map { folder in
-            let available = !unavailableFavorites.contains(folder)
-            return HomeSidebarRow(id: "favorite:" + folder.path, title: folder.path == "/" ? "/" : folder.lastPathComponent,
-                                  symbol: "folder", location: .folder(folder), expandable: available, isDimmed: !available)
-        }
+        let favoriteRows = await favoriteRows(places: places)
         if !favoriteRows.isEmpty { sections.insert(.favorites(favoriteRows), at: 1) }
         if hasStash() {
             sections.append(HomeSidebarSection(id: "stash", title: "Stash", rows: [

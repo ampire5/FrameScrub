@@ -167,7 +167,10 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
-  `FrameScrubHomeSource` builds Favorites rows from `FolderFavorites` (ordered paths in FrameScrub's defaults).
+  `FrameScrubHomeSource` builds the Favorites source and sidebar shortcuts from `FolderFavorites` (ordered paths
+  in FrameScrub's defaults). Favorites requests the same folder covers as File View. Recursive browsing uses the same bounded listing worker and poster pipeline, with
+  a separate active result and the opening folder tab as the playback return destination. MediaCatalog serves
+  the last successful walk provisionally and replaces it once a fresh walk succeeds.
   Folder renames update favorite descendants. Mount changes and Refresh recheck availability with a bounded utility worker pool
   and repaint the sidebar without changing the browser's location.
   HomeScreenKit owns the opt-in File View tab histories. `PlayerWindowController` records the opening tab ID

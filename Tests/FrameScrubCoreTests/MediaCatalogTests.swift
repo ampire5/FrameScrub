@@ -1,5 +1,6 @@
 import Foundation
 import CSQLite
+import HomeScreenModel
 import Testing
 @testable import FrameScrubCore
 
@@ -20,6 +21,24 @@ import Testing
         #expect(try reopened.records([id], readerVersion: 2)[id]?.payload == Data("{}".utf8))
         #expect(try reopened.records([id], readerVersion: 3).isEmpty)
     }
+    @Test func recursiveListingSurvivesReopeningAndRejectsAnOlderScan() throws {
+        let (db, video) = try setup()
+        let root = video.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let nested = root.appendingPathComponent("nested/clip.mp4")
+        let entry = BrowserEntry(url: nested, name: "clip.mp4", kind: .file, size: 3)
+        let catalog = MediaCatalog(url: db)
+        let time = Date()
+        try catalog.storeRecursiveListing([entry], in: root, scannedAt: time)
+        try catalog.storeRecursiveListing([], in: root, scannedAt: time.addingTimeInterval(-1))
+
+        let reopened = MediaCatalog(url: db)
+        #expect(try reopened.recursiveListing(in: root) == [entry])
+        try reopened.storeRecursiveListing([], in: root, scannedAt: time.addingTimeInterval(1))
+        #expect(try catalog.recursiveListing(in: root) == [])
+        #expect(try catalog.recursiveListing(in: root.appendingPathComponent("nested")) == nil)
+    }
+
     @Test func sameSizeReplacementAndMtimeInvalidate() throws {
         let (db, url) = try setup()
         let old = try #require(MediaFileIdentity.read(url))
