@@ -20,8 +20,8 @@ public enum MouseProfile: String, CaseIterable, Sendable {
     public var fileName: String { "input-\(rawValue).conf" }
 
     /// The profile's own lines. Editing has none: the layout's buttons, marks and their edges under back and forward.
-    /// Viewing (the default) leaves the marks: back shows the file's info, forward does nothing for now; the gesture
-    /// button, the panel and the middle button are the layout's in both.
+    /// In Viewing (the default), Back shows the file's info and Forward toggles artifact filters.
+    /// The gesture, panel and middle buttons use the layout's bindings in both profiles.
     public var defaultConfig: String {
         switch self {
         case .viewing:
@@ -30,7 +30,7 @@ public enum MouseProfile: String, CaseIterable, Sendable {
             MBTN_BACK_LONG ignore
             MBTN_BACK+WHEEL_UP ignore
             MBTN_BACK+WHEEL_DOWN ignore
-            MBTN_FORWARD ignore
+            MBTN_FORWARD toggle-artifact-filters
             MBTN_FORWARD_LONG ignore
             MBTN_FORWARD+WHEEL_UP ignore
             MBTN_FORWARD+WHEEL_DOWN ignore

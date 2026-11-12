@@ -126,6 +126,7 @@ import Testing
 
     @Test func everyActionParses() throws {
         let s = try setup()
+        #expect(s.source.actionGroups().flatMap(\.actions).contains { $0.id == "toggle-artifact-filters" })
         for group in s.source.actionGroups() {
             #expect(!group.actions.isEmpty, "\(group.group)")
             for action in group.actions {

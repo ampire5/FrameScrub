@@ -27,15 +27,15 @@ import Testing
         #expect(editing.command(for: KeyChord(key: "m")) == .cycleMute)   // the keys are the same in both
     }
 
-    /// Viewing (the default) is the same, but back and forward leave the marks: back shows the file's info, forward does
-    /// nothing for now.
+    /// Viewing uses the side buttons for file info and filter comparison.
     @Test func viewingLeavesTheMarksAlone() {
         let viewing = InputMap.build(layout: .classic, profile: .viewing)
         #expect(command(viewing, "MX_GESTURE") == .screenshot && command(viewing, "MX_GESTURE_LONG") == .saveClip)
         #expect(command(viewing, "MX_PANEL") == .toggleAutoColor && command(viewing, "MX_PANEL_LONG") == .toggleVibrance)
         #expect(command(viewing, "MBTN_MID") == .cycleFullscreen)
         #expect(command(viewing, "MBTN_BACK") == .stats)
-        for gone in ["MBTN_BACK_LONG", "MBTN_FORWARD", "MBTN_FORWARD_LONG"] { #expect(command(viewing, gone) == nil, "\(gone)") }
+        #expect(command(viewing, "MBTN_FORWARD") == .toggleArtifactFilters)
+        for gone in ["MBTN_BACK_LONG", "MBTN_FORWARD_LONG"] { #expect(command(viewing, gone) == nil, "\(gone)") }
         for gone in ["MBTN_BACK+WHEEL_UP", "MBTN_BACK+WHEEL_DOWN", "MBTN_FORWARD+WHEEL_UP", "MBTN_FORWARD+WHEEL_DOWN"] {
             #expect(chord(viewing, gone) == nil, "\(gone)")
         }

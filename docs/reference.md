@@ -28,6 +28,7 @@ The mouse and trackpad work the same in both.
 | Right click | Play / pause (acts on release, and not after a scroll or a zoom) |
 | Double click | Show the video in its folder (Home's Folders, the video selected; as ↩ and ⌘↑) |
 | Middle click | Full screen |
+| Side button Forward (Viewing profile) | Artifact filters on / off |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
 | … gesture button tap / hold | Save a frame / save the clips |
@@ -620,7 +621,7 @@ slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
 slot-flash=no                   # yes: the playlist's slot shows for 0.8 s when the video changes by autoadvance or a key (as Zen's sidebar on a tab switch)
-mouse-profile=viewing           # viewing | editing: what the mouse's buttons do (editing: marks under back / forward; viewing: back shows the info, forward nothing). SmartShift held 0.6 s, or View › Mouse Buttons for Editing, switches
+mouse-profile=viewing           # viewing | editing: Back shows file info and Forward toggles filters in Viewing. In Editing both control marks. Hold SmartShift for 0.6 s or use View › Mouse Buttons for Editing to switch
 tourbox=no                     # yes: receive TourBox Console Max/MSP events on loopback TCP 50500 (trial)
 tourbox-frames-per-pulse=1       # 0.05…4: Knob frames per input pulse; independent of mouse sensitivity
 tourbox-accel=yes               # Knob click toggles and remembers this: yes=progressive acceleration, no=linear
@@ -906,8 +907,9 @@ iterations (0.765 RGB8 codes, 16 pixels, one iteration), strength 1, with grain 
 
 ### Compact filter controls
 
-N toggles experimental filters; Option-N opens the Filters tab in the shared side slot.
-Both are remappable (`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
+N and the Forward side button in the Viewing mouse profile toggle experimental filters.
+Option-N opens the Filters tab in the shared side slot. Both commands are remappable
+(`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
 left-hand B / Shift-B clip commands are unchanged. Auto activation remains deferred.
 The panel and Settings edit the same saved values. Sliders commit on release.
 
