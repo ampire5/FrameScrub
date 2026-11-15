@@ -700,10 +700,10 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             drawPositionRanges(in: edge, projection: layout.lens)
         }
         let head = filmHead(in: layout)
-        NSColor(white: 0, alpha: 0.65).setFill()
-        NSRect(x: head - 2, y: film.minY, width: 4, height: film.height).fill()
+        NSColor(white: 0.10, alpha: 1).setFill()
+        NSRect(x: head - 4, y: film.minY, width: 8, height: film.height).fill()
         NSColor.white.setFill()
-        NSRect(x: head - 1, y: film.minY, width: 2, height: film.height).fill()
+        NSRect(x: head - 2, y: film.minY, width: 4, height: film.height).fill()
         if opacity < 1 {
             context.endTransparencyLayer()
             context.restoreGState()
