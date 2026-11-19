@@ -39,6 +39,7 @@ final class BackButton: NSView {
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -18),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
+        setAccessibilityElement(true)
         setAccessibilityRole(.button)
     }
 

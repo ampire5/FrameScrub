@@ -64,4 +64,21 @@ import Testing
         #expect(ConfigText.containsKey("volume", in: "  Volume = 5\n"))
         #expect(!ConfigText.containsKey("volume", in: "# volume=5\n"))
     }
+
+    @MainActor @Test func pendingStrengthDoesNotOverwriteALaterPanelEdit() async throws {
+        let file = try url(containing: "volume=50\nartifact-strength=0.5\n")
+        let store = PreferencesStore(config: Config.load(from: file).0, url: file)
+        store.updateCoalesced(["artifact-strength"], onError: { Issue.record("Unexpected save error: \($0)") }) {
+            $0.artifactFilters.strength = 0.55
+        }
+        #expect(store.config.artifactFilters.strength == 0.55)
+        await store.flushCoalescedWrites()
+        #expect(try String(contentsOf: file, encoding: .utf8) == "volume=50\nartifact-strength=0.55\n")
+        store.updateCoalesced(["artifact-strength"], onError: { Issue.record("Unexpected save error: \($0)") }) {
+            $0.artifactFilters.strength = 0.6
+        }
+        try store.update(["artifact-strength"]) { $0.artifactFilters.strength = 0.3 }
+        await store.flushCoalescedWrites()
+        #expect(try String(contentsOf: file, encoding: .utf8) == "volume=50\nartifact-strength=0.3\n")
+    }
 }

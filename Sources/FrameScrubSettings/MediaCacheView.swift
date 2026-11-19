@@ -26,7 +26,7 @@ import SwiftUI
         if command != .cleanUp {
             let alert = NSAlert()
             alert.messageText = command == .clearImages ? "Clear thumbnail cache?" : "Clear media cache?"
-            alert.informativeText = "Cached data will be rebuilt when needed. Viewing history, playback positions, marks and colour settings are kept."
+            alert.informativeText = "FrameScrub rebuilds the cache as needed. History, positions, marks and colour settings are kept."
             alert.addButton(withTitle: "Clear")
             alert.addButton(withTitle: "Cancel")
             let response: NSApplication.ModalResponse

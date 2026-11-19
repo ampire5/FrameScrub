@@ -39,9 +39,8 @@ extension SettingsPanel {
             SettingsSection("Buttons", rows: [
                 .choice("mouse-profile", "Profile", MouseProfile.allCases.map { ($0.rawValue, $0.title) },
                         symbol: "button.programmable",
-                        description: "Editing: the gesture button plays and pauses (hold: save a clip), the panel "
-                            + "saves the frame (hold: export the range), back and forward set marks. Viewing leaves the "
-                            + "marks alone. Hold the SmartShift button to switch. Lines of your own for a profile go to "
+                        description: "In Viewing, Back shows file info and Forward toggles artifact filters. Hold Forward and "
+                            + "turn the wheel to adjust their strength. In Editing, both buttons control marks. Hold the SmartShift button to switch. Profile bindings go to "
                             + "input-viewing.conf or input-editing.conf. Default Viewing."),
                 .number("mouse-long-press", "Long press", unit: "ms", step: 50, symbol: "hand.tap",
                         description: "A press held this long is a long one. 150–2000, default 400."),

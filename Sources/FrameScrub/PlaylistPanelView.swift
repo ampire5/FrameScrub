@@ -4,7 +4,7 @@ import HomeScreenModel
 import SlotChrome
 
 /// The playlist (shown in a slot): the folder's videos or a page's list, current one highlighted; a click opens a row.
-/// Its filter and, for a folder, its order are tools in the slot's capsule (`tools`); the capsule's filter field drives
+/// Its filter, view mode and folder order are tools in the slot's capsule (`tools`); the capsule's filter field drives
 /// the filter here (`filterEdited`, `filterCommand`, `filterEnded`).
 final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     /// A row was clicked: its index among the rows shown.
@@ -13,6 +13,8 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     var onFilter: ((String) -> Void)?
     /// The order picked from the menu.
     var onSort: ((PlaylistSort) -> Void)?
+    /// The view picked from the menu.
+    var onMode: ((PlaylistView) -> Void)?
     /// Return in the filter field: open the first file shown.
     var onSubmitFilter: (() -> Void)?
     /// Esc in the filter field (after clearing it): the keys go back to the player.
@@ -35,7 +37,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     var fontSize: CGFloat = 14 {
         didSet {
             guard fontSize != oldValue else { return }
-            table.rowHeight = (fontSize * 1.8).rounded()
+            table.rowHeight = max(28, (fontSize * 2).rounded())
             table.reloadData()
             if rows.indices.contains(table.selectedRow) { table.scrollRowToVisible(table.selectedRow) }
         }
@@ -66,7 +68,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         table.addTableColumn(column)
         table.headerView = nil
         table.backgroundColor = .clear
-        table.rowHeight = (fontSize * 1.8).rounded()
+        table.rowHeight = max(28, (fontSize * 2).rounded())
         table.style = .plain
         table.intercellSpacing = .zero   // rows touch: the stripes and the selection fill the whole row
         table.refusesFirstResponder = true   // clicks still select, but keys keep going to the video view
@@ -116,20 +118,29 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
 
     func beginFilter() { onBeginFilter?() }
 
-    /// 🔍 (accented while the filter holds text) and, for a folder, ⇅ with the orders, the chosen one ticked.
+    /// Filter and playlist options share the same space in folder playlists and page queues.
     var tools: [SlotTool] {
         let tip = filterText.isEmpty ? (listName.map { "Filter \($0) (⌘F)" } ?? "Filter (⌘F)") : "Filter: \(filterText)"
-        var tools = [SlotTool(id: "filter", symbol: "magnifyingglass", accent: !filterText.isEmpty, tip: tip,
-                              action: { [weak self] in self?.beginFilter() })]
-        if let sort {
-            tools.append(SlotTool(id: "order", symbol: "arrow.up.arrow.down", tip: "Order: \(Self.title(sort))",
-                                  menu: { [weak self] in self?.sortMenu(sort) ?? NSMenu() }))
-        }
-        return tools
+        return [
+            SlotTool(id: "filter", symbol: "magnifyingglass", accent: !filterText.isEmpty, tip: tip,
+                     action: { [weak self] in self?.beginFilter() }),
+            SlotTool(id: "playlist-options", symbol: "slider.horizontal.3",
+                     tip: sort.map { "Playlist View · Order: \(Self.title($0))" } ?? "Playlist View",
+                     menu: { [weak self] in self?.optionsMenu() ?? NSMenu() }),
+        ]
     }
 
-    private func sortMenu(_ sort: BrowserSort) -> NSMenu {
+    private func optionsMenu() -> NSMenu {
         let menu = NSMenu()
+        for view in PlaylistView.allCases {
+            let item = menu.addItem(withTitle: view == .list ? "List" : "Strip",
+                                    action: #selector(modePicked(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = view.rawValue
+            item.state = view == mode ? .on : .off
+        }
+        guard let sort else { return menu }
+        menu.addItem(.separator())
         for key in PlaylistSort.allCases {
             let chosen = key.rawValue == sort.key.rawValue
             let item = menu.addItem(withTitle: chosen ? Self.title(sort) : key.shortTitle,
@@ -139,6 +150,11 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             item.state = chosen ? .on : .off
         }
         return menu
+    }
+
+    @objc private func modePicked(_ item: NSMenuItem) {
+        guard let raw = item.representedObject as? String, let view = PlaylistView(rawValue: raw), view != mode else { return }
+        onMode?(view)
     }
 
     /// A folder: its order (Home's too) can be picked; the chosen field shows its direction, picking it again turns it.

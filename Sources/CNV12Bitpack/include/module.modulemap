@@ -1,0 +1,4 @@
+module CNV12Bitpack {
+    header "CNV12Bitpack.h"
+    export *
+}

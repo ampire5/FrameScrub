@@ -1,13 +1,22 @@
 {
-  "originHash" : "234e2e7e71756ee9aff90616da4df18a937dfdaf18e52d3adf0420e428ce19b3",
+  "originHash" : "4a0700c2d8bcc1cdbe9b67f898aee7725a9c0acbf873f45b4d31944fcfcf69b4",
   "pins" : [
+    {
+      "identity" : "everythingmac",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ampire5/EverythingMac.git",
+      "state" : {
+        "revision" : "c9c671238e0cc3ffa43beb153a8092da4385594c",
+        "version" : "0.1.1"
+      }
+    },
     {
       "identity" : "homescreenkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/HomeScreenKit.git",
       "state" : {
-        "revision" : "e64a51b87535916c355501afdd39909f7952a49a",
-        "version" : "0.13.5"
+        "revision" : "defe38598d7e673b93dae9e0ed509e319084dbd0",
+        "version" : "0.15.0"
       }
     },
     {

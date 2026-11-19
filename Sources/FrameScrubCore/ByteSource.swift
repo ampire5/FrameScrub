@@ -33,15 +33,33 @@ public final class FileByteSource: ByteSource {
     private let fd: Int32
 
     /// Throws `FFmpegError` like `avformat_open_input` would ("open name: No such file or directory").
-    public init(url: URL) throws {
-        fd = open(url.path, O_RDONLY)
-        guard fd >= 0 else { throw FFmpegError(-errno, "open \(url.lastPathComponent)") }
+    public convenience init(url: URL) throws {
+        let descriptor = open(url.path, O_RDONLY)
+        try self.init(ownedDescriptor: descriptor, operation: "open \(url.lastPathComponent)", requireReadOnlyFile: false)
+    }
+
+    /// Takes independent ownership of the same open file without resolving or reopening its path.
+    public convenience init(duplicatingReadOnlyDescriptor descriptor: Int32) throws {
+        let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+        try self.init(ownedDescriptor: duplicate, operation: "open playback descriptor", requireReadOnlyFile: true)
+    }
+
+    private init(ownedDescriptor descriptor: Int32, operation: String, requireReadOnlyFile: Bool) throws {
+        guard descriptor >= 0 else { throw FFmpegError(-errno, operation) }
         var info = stat()
-        guard fstat(fd, &info) == 0 else {
+        guard fstat(descriptor, &info) == 0 else {
             let code = errno
-            close(fd)
-            throw FFmpegError(-code, "open \(url.lastPathComponent)")
+            close(descriptor)
+            throw FFmpegError(-code, operation)
         }
+        if requireReadOnlyFile {
+            let flags = fcntl(descriptor, F_GETFL)
+            guard flags >= 0, flags & O_ACCMODE == O_RDONLY, info.st_mode & S_IFMT == S_IFREG else {
+                close(descriptor)
+                throw FFmpegError(-EINVAL, operation)
+            }
+        }
+        self.fd = descriptor
         size = Int64(info.st_size)
     }
 

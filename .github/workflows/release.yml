@@ -24,7 +24,7 @@ jobs:
           scripts/make-fixtures.sh
           scripts/test.sh --no-parallel
       - name: Build the app
-        run: scripts/make-app.sh
+        run: scripts/make-app.sh --release
       # Not signed with a Developer ID yet: the release notes say so.
       - name: Publish
         env:
@@ -77,7 +77,7 @@ jobs:
           scripts/make-fixtures.sh
           scripts/test.sh --no-parallel
       - name: Build the app
-        run: scripts/make-app.sh
+        run: scripts/make-app.sh --release
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}

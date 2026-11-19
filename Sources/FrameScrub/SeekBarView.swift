@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import HomeChrome
 
 /// The filmstrip is the seek surface when visible. A compact track takes over when folded.
 final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
@@ -422,7 +423,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             clearHover()
             hideControls?.cancel()
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15; transport.animator().alphaValue = 0
+                context.duration = Chrome.Motion.duration(0.15); transport.animator().alphaValue = 0
                 modeControl.animator().alphaValue = 0
             }
         }
@@ -700,10 +701,10 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             drawPositionRanges(in: edge, projection: layout.lens)
         }
         let head = filmHead(in: layout)
-        NSColor(white: 0, alpha: 0.65).setFill()
-        NSRect(x: head - 2, y: film.minY, width: 4, height: film.height).fill()
+        NSColor(white: 0.10, alpha: 1).setFill()
+        NSRect(x: head - 4, y: film.minY, width: 8, height: film.height).fill()
         NSColor.white.setFill()
-        NSRect(x: head - 1, y: film.minY, width: 2, height: film.height).fill()
+        NSRect(x: head - 2, y: film.minY, width: 4, height: film.height).fill()
         if opacity < 1 {
             context.endTransparencyLayer()
             context.restoreGState()
@@ -1413,7 +1414,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         hideControls?.cancel()
         if transport.alphaValue < 1 {
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.15
+                context.duration = Chrome.Motion.duration(0.15)
                 transport.animator().alphaValue = 1
                 modeControl.animator().alphaValue = 1
             }
@@ -1425,7 +1426,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         let work = DispatchWorkItem { [weak self] in
             guard let self, !pointerInside, !isInteracting else { return }
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.15
+                context.duration = Chrome.Motion.duration(0.15)
                 self.transport.animator().alphaValue = 0; self.modeControl.animator().alphaValue = 0
             }
         }

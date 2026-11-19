@@ -42,7 +42,7 @@ jobs:
       - name: Package.resolved
         run: cat Package.resolved
       - name: Build the app
-        run: scripts/make-app.sh
+        run: scripts/make-app.sh --release
       - name: Upload the app
         run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-arm64.zip
       - uses: actions/upload-artifact@v7
@@ -100,7 +100,7 @@ jobs:
           path: .build/test.log
           retention-days: 14
       - name: Build the app
-        run: scripts/make-app.sh
+        run: scripts/make-app.sh --release
       - name: Upload the app
         run: ditto -c -k --keepParent build/FrameScrub.app FrameScrub-macOS-x86_64.zip
       - uses: actions/upload-artifact@v7

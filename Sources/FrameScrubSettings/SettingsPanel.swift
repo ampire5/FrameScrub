@@ -67,7 +67,7 @@ public struct SettingsPanelContext {
             let model = SettingsModel(store: store)
             self.model = model
             controller = SettingsWindowController(pages: pages(), model: model, autosaveName: autosaveName,
-                                                  lastPageDefaultsKey: lastPageDefaultsKey, style: .glass)
+                                                  lastPageDefaultsKey: lastPageDefaultsKey, style: .plain)
             // No tab bar, + or Window menu tab items.
             controller?.window?.tabbingMode = .disallowed
             // ⌘Q while a field is being edited: its text is written first, as on ⌘W.

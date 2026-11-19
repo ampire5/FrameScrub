@@ -105,6 +105,11 @@ public struct KeyChord: Hashable, Sendable, CustomStringConvertible {
         return KeyChord(key: characters, modifiers: modifiers)
     }
 
+    /// Codes AppKit reports for a named key, such as Return and keypad Enter.
+    public var virtualKeyCodes: [UInt16] {
+        Self.namedKeys.compactMap { $0.value == key ? $0.key : nil }
+    }
+
     private static let namedKeys: [UInt16: String] = [
         123: "LEFT", 124: "RIGHT", 125: "DOWN", 126: "UP", 49: "SPACE", 51: "BS", 53: "ESC",
         36: "ENTER", 76: "ENTER", 48: "TAB", 117: "DEL", 115: "HOME", 119: "END", 116: "PGUP", 121: "PGDWN",
@@ -128,7 +133,7 @@ public enum Command: Equatable, Sendable {
     case stepSpeed(Int)
     case addVolume(Double), cycleMute
     /// `add auto-color-strength 0.05`: the strength of auto colour, up or down.
-    case addAutoColorStrength(Double)
+    case addAutoColorStrength(Double), addArtifactStrength(Double)
     /// `scrub-edge start|end`: the wheel drags the start or the end of the mark under the position.
     case scrubEdge(MarkEdge)
     case cycleFullscreen, setFullscreen(Bool)
@@ -183,7 +188,7 @@ public enum Command: Equatable, Sendable {
     /// flicker or fire many times; seeking, stepping, speed, volume and zoom are meant to repeat.
     public var repeatsWhenHeld: Bool {
         switch self {
-        case .seek, .frameStep, .frameBackStep, .keyframeStep, .keyframeBackStep, .markPrev, .markNext, .scrub, .multiplySpeed, .setSpeed, .stepSpeed, .addVolume, .addAutoColorStrength, .scrubEdge, .zoom, .ignore:
+        case .seek, .frameStep, .frameBackStep, .keyframeStep, .keyframeBackStep, .markPrev, .markNext, .scrub, .multiplySpeed, .setSpeed, .stepSpeed, .addVolume, .addAutoColorStrength, .addArtifactStrength, .scrubEdge, .zoom, .ignore:
             return true
         default:
             return false
@@ -217,6 +222,7 @@ public enum Command: Equatable, Sendable {
         case let .stepSpeed(direction): return "step-speed \(direction < 0 ? "down" : "up")"
         case let .addVolume(delta): return "add volume \(formatNumber(delta))"
         case let .addAutoColorStrength(delta): return "add auto-color-strength \(formatNumber(delta))"
+        case let .addArtifactStrength(delta): return "add artifact-strength \(formatNumber(delta))"
         case let .scrubEdge(edge): return "scrub-edge \(edge == .start ? "start" : "end")"
         case .cycleMute: return "cycle mute"
         case .cycleFullscreen: return "cycle fullscreen"
@@ -326,6 +332,9 @@ public enum Command: Equatable, Sendable {
                 : ["no", "false"].contains(args[1]) ? .setFullscreen(false) : nil
         case ("add", "volume"): return numberArg(1).map { .addVolume($0) }
         case ("add", "auto-color-strength"): return numberArg(1).map { .addAutoColorStrength($0) }
+        case ("add", "artifact-strength"):
+            guard args.count == 2, let delta = numberArg(1), delta.isFinite else { return nil }
+            return .addArtifactStrength(delta)
         case ("scrub-edge", "start"): return args.count == 1 ? .scrubEdge(.start) : nil
         case ("scrub-edge", "end"): return args.count == 1 ? .scrubEdge(.end) : nil
         case ("show-progress", nil): return .showProgress

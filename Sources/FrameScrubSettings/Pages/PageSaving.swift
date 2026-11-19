@@ -39,18 +39,17 @@ extension SettingsPanel {
             SettingsSection("Range export", rows: [
                 outputSize("export-scale", "Exported frames (A–B)", symbol: "arrow.up.left.and.arrow.down.right"),
                 .number("export-threads", "Threads", step: 1, symbol: "cpu", description: "1–64, default 4."),
-                .choice("export-mode", "Frames", [
-                    (word: "all", title: "Every frame"), (word: "every", title: "Every Nth frame"),
-                    (word: "fps", title: "At a frame rate"),
+                .choice("export-mode", "Frame sampling", [
+                    (word: "all", title: "All frames"), (word: "every", title: "Frame interval"),
+                    (word: "fps", title: "Frames per second"),
                 ], symbol: "square.stack.3d.down.right",
-                description: "The export sheet's choice, kept for the next export. Default Every frame.",
+                description: "FrameScrub remembers your last choice in the export sheet. The default is All frames.",
                 nested: [
-                    .number("export-every", "Every", unit: "frames", step: 1, description: "2–10000, default 10."),
+                    .number("export-every", "Frame interval", unit: "frames", step: 1, description: "2–10,000, default 10."),
                     .number("export-fps", "Frame rate", unit: "fps", step: 1, description: "0.01–240, default 1."),
                 ]),
-                .toggle("export-sharp", "Sharpest frame of each step", symbol: "camera.aperture",
-                        description: "With every Nth frame or a frame rate: the sharpest frame of each step is saved "
-                            + "instead of its first. Default off."),
+                .toggle("export-sharp", "Keep the sharpest frame per interval", symbol: "camera.aperture",
+                        description: "Applies when sampling at a frame interval or rate. Default off."),
                 .toggle("export-skip-blurry", "Skip blurry frames", symbol: "camera.metering.unknown",
                         description: "A step whose frame is blurrier than its neighbours' is left out. Default off.",
                         nested: [

@@ -1,16 +1,23 @@
 import Foundation
 
-/// Runs `handler` on its own queue for the most recently submitted value only: while the handler is busy,
-/// newer submissions overwrite older ones that have not started.
+/// Runs bounded background work with one replaceable pending request. When a slot opens, only the latest
+/// submission waiting for it runs.
 public final class LatestOnlyWorker<Value: Sendable>: @unchecked Sendable {
     private let queue: DispatchQueue
     private let handler: @Sendable (Value) -> Void
+    private let limit: Int
+    private let canRunTogether: @Sendable (Value, Value) -> Bool
     private let lock = NSLock()
     private var pending: Value?
-    private var running = false
+    private var active: [UUID: Value] = [:]
 
-    public init(label: String, qos: DispatchQoS.QoSClass = .userInitiated, handler: @escaping @Sendable (Value) -> Void) {
-        queue = DispatchQueue(label: label, qos: DispatchQoS(qosClass: qos, relativePriority: 0))
+    public init(label: String, qos: DispatchQoS.QoSClass = .userInitiated, limit: Int = 1,
+                canRunTogether: @escaping @Sendable (Value, Value) -> Bool = { _, _ in true },
+                handler: @escaping @Sendable (Value) -> Void) {
+        self.limit = limit
+        self.canRunTogether = canRunTogether
+        queue = DispatchQueue(label: label, qos: DispatchQoS(qosClass: qos, relativePriority: 0),
+                              attributes: limit > 1 ? .concurrent : [])
         self.handler = handler
     }
 
@@ -18,26 +25,34 @@ public final class LatestOnlyWorker<Value: Sendable>: @unchecked Sendable {
     public var hasPending: Bool { lock.withLock { pending != nil } }
 
     public func submit(_ value: Value) {
-        let start: Bool = lock.withLock {
+        let next = lock.withLock {
             pending = value
-            if running { return false }
-            running = true
-            return true
+            return takePending()
         }
-        if start { queue.async { self.drain() } }
+        start(next)
     }
 
-    private func drain() {
-        while true {
-            let next: Value? = lock.withLock {
-                guard let value = pending else { running = false; return nil }
-                pending = nil
-                return value
+    /// Called under the lock. A blocked request cannot take the only pending slot from a later submission.
+    private func takePending() -> (UUID, Value)? {
+        guard let value = pending, active.count < limit, active.values.allSatisfy({ canRunTogether($0, value) }) else {
+            return nil
+        }
+        let id = UUID()
+        active[id] = value
+        pending = nil
+        return (id, value)
+    }
+
+    private func start(_ request: (UUID, Value)?) {
+        guard let (id, value) = request else { return }
+        queue.async {
+            // Release decoded frames (VTDecoderXPCService IOSurfaces) before starting another request.
+            autoreleasepool { self.handler(value) }
+            let next = self.lock.withLock {
+                self.active[id] = nil
+                return self.takePending()
             }
-            guard let value = next else { return }
-            // Its own pool per value: the drain can loop for as long as submissions keep coming, and the Core Image /
-            // CoreVideo objects a handler leaves autoreleased hold decoded frames (VTDecoderXPCService IOSurfaces).
-            autoreleasepool { handler(value) }
+            self.start(next)
         }
     }
 }

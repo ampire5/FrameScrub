@@ -77,6 +77,8 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 
 **Home and File View**
 - Resume recent videos or browse folders and mounted volumes from the sidebar. Video cards show a poster, duration and viewing progress; the visible folder updates as files are added, renamed or removed, including on SMB shares.
+- Choose **Add to Favorites** from a folder’s menu to keep it in the sidebar and on the Favorites page. Open folders in separate File View tabs, or turn on **Include subfolders** to browse videos from nested folders in the same grid.
+- When [Network Everything](https://github.com/ampire5/EverythingMac) has a saved connection, choose **Everything** in Home to search and open videos and folders.
 - Open **File Information…** on a video card for codecs, streams, resolution, colour and tags. **Last Viewed** tracks when you actually saw a frame, independently of where the video will resume.
 - **Settings → Performance → Thumbnail storage** controls the format, quality, size and disk limit for cached thumbnails. Clearing the media cache keeps viewing history, positions, marks, loops and colour settings.
 
@@ -116,7 +118,7 @@ As far as we know, no other Mac app goes this deep into Logitech hardware, and i
 - **Any mouse**: the wheel scrubs, the side wheel seeks, right click plays, and every button and wheel can be rebound in `input.conf`.
 - **Logitech mice** on a Bolt or Unifying receiver, over HID++: the gesture button, the haptic panel and Back/Forward get tap, double, long-press and button+wheel bindings; mice with SmartShift can get free spin and Precision Scroll, a frame per wheel event (Settings → Scrolling).
 - **MX Master 4 haptics**: patterns you can feel for keyframes, marks, frame steps, the ends of the file, finished saves and errors.
-- **Two mouse profiles**: Editing is the bindings above, marks and their edges under back and forward. Viewing, the default, is the same but leaves the marks alone: back shows the file's info, forward does nothing (yet). Hold the SmartShift button for 0.6 s to switch (a click is felt then, and the OSD says which); a short press still switches the wheel between free spin and ratchet. FrameScrub takes the button over while it sets the wheel itself (the player in front, `wheel-precision=yes`); elsewhere it is the mouse's own. View → Mouse Buttons for Editing and `cycle-mouse-profile` switch too. Your own lines for a profile go to `input-viewing.conf` or `input-editing.conf` next to `input.conf` (`mouse-profile`).
+- **Two mouse profiles**: Editing is the bindings above, marks and their edges under back and forward. Viewing, the default, is the same but leaves the marks alone: Back shows the file's info and Forward toggles artifact filters, and holding Forward while scrolling adjusts their overall strength. Hold the SmartShift button for 0.6 s to switch (a click is felt then, and the OSD says which); a short press still switches the wheel between free spin and ratchet. FrameScrub takes the button over while it sets the wheel itself (the player in front, `wheel-precision=yes`); elsewhere it is the mouse's own. View → Mouse Buttons for Editing and `cycle-mouse-profile` switch too. Your own lines for a profile go to `input-viewing.conf` or `input-editing.conf` next to `input.conf` (`mouse-profile`).
 - **TourBox Lite**: a keyboard preset in `extras/tourbox` and an opt-in [event mode](docs/reference.md#tourbox-lite) with linear or accelerated knob scrubbing and separate Viewing and Editing controls.
 
 **Icon**
@@ -164,7 +166,7 @@ Stash support keeps growing in FrameScrub and in its sibling image viewer [Loupe
 
 A plugin is a web page that sits in a slot beside the video and drives the player through `window.framescrub`: notes taken against the timeline, chapter marking, a review checklist, a media-server library that hands the player a playlist. The player knows nothing of what the page is for.
 
-- **List them** in `framescrub.conf`, one line each: `plugin=Notes | http://localhost:8000/notes/`, name before the ` | `, then an `http(s)` or `file:` URL. A `framescrub://open?…&plugin=<http(s) URL>` link shows a page too, listed as `Plugin`.
+- **List them** in `framescrub.conf`, one line each: `plugin=Notes | http://localhost:8000/notes/`, name before the ` | `, then an `http(s)` or `file:` URL. A `framescrub://open?…&plugin=<http(s) URL>` link adds a session-only **Plugin** entry to the slot's **+** menu. Opening the video leaves the slots as they are.
 - **Slots.** The window has three: left, right and bottom. Each holds tabs, the playlist and plugin pages, or nothing. `⌃⌘←`, `⌃⌘→` and `⌃⌘↓` (View › Slots) show a slot with the keyboard or hide it; an empty one opens its **+** menu, which offers the playlist and the listed plugins.
 - **The capsule.** Over the top of a slot lies a glass capsule: the tabs and **+** on the left, then the shown view's tools (the playlist's 🔍 filter and ⇅ order), then 📌, ◐ and a chevron that hides the slot. A slot over the video shows it while the pointer is over the slot; a pinned slot always. A click on a tab shows its view; views once made are kept, so coming back to a tab reloads nothing. A right click on a tab reloads its page, moves it to another slot or closes it; a right click on the capsule sets when the slot hides by itself and how it comes from its edge, or clears it. The playlist is in one slot at a time (choosing it in another slot's **+** moves it there); the same plugin in two slots is two pages. ⌘F, or 🔍, opens the filter in the capsule: Esc clears it, Esc again closes it.
 - **Pinned or over the video.** 📌 pins a slot: it takes its room from the video. Otherwise it lies over the video, which keeps its size, as a card on a backdrop that ◐ cycles through glass (the video blurred and darkened), clear and dark; a pinned slot is always dark. Drag a slot's inner edge to size it. A window too small for its pinned slots lays the newest one over the video and says so.
@@ -361,11 +363,17 @@ under a compiler check (`#if compiler(>=…)`), so the Xcode 26 build still comp
 
 ```sh
 brew install meson ninja pkgconf
+scripts/make-app.sh                # → build/FrameScrub Preview.app
 scripts/make-app.sh --install      # → ~/Applications/FrameScrub.app
 scripts/test.sh                    # after scripts/make-fixtures.sh (needs Homebrew's ffmpeg tool)
 ```
 
 A plain `swift build` or `swift run` finds Homebrew's FFmpeg instead, if any: the scripts point SwiftPM at FrameScrub's.
+
+The default preview build has its own bundle identifier and stays out of the macOS URL and file handler lists.
+Use `--install` to update the installed handler for `framescrub://`, or `--release` to package
+`build/FrameScrub.app` for distribution. Confirm the handler change if macOS asks. Keep backups of
+release builds in ZIP archives so macOS only sees the copy you installed.
 
 `make-app.sh` writes which build it is into the app (branch, commit, its date, uncommitted changes, build date):
 About FrameScrub and the bottom of Settings › General show it, with a button that copies it.

@@ -155,6 +155,8 @@ public final class InputBindingSource: KeyBindingSource {
                 rule: KeyBindingStep(range: 0.1...100, defaultValue: 2, signed: true)) { .addVolume($0) },
         Stepped(id: "add auto-color-strength", title: "Auto colour strength: change by", section: .picture,
                 rule: .standard) { .addAutoColorStrength($0) },
+        Stepped(id: "add artifact-strength", title: "Artifact filter strength: change by", section: .picture,
+                rule: KeyBindingStep(range: 0.01...1, defaultValue: 0.05, signed: true)) { .addArtifactStrength($0) },
         Stepped(id: "set window-scale", title: "Window: scale to", section: .window,
                 rule: KeyBindingStep(range: 0.1...8, defaultValue: 1, signed: false)) { .windowScale($0) },
     ]
@@ -170,7 +172,8 @@ public final class InputBindingSource: KeyBindingSource {
         "screenshot", "copy-frame", "export-range", "reveal-frames", "mark-in", "mark-out", "mark-prev", "mark-next",
         "mark-snap", "mark-loop", "mark-delete", "mark-clear", "play-marks", "save-clip", "scrub-edge start",
         "scrub-edge end",
-        "toggle-vibrance", "toggle-auto-color", "toggle-upscaler", "cycle-upscaler", "cycle-aspect", "save-auto-color",
+        "toggle-vibrance", "toggle-auto-color", "toggle-artifact-filters", "toggle-upscaler", "cycle-upscaler",
+        "cycle-aspect", "save-auto-color",
         "save-auto-color folder", "save-vibrance", "save-vibrance folder", "reset-color file", "reset-color folder",
         "cycle fullscreen", "set fullscreen no", "window-fit", "cycle ontop", "toggle-playlist", "show-progress",
         "script-binding stats/display-stats", "show-keys", "cycle-mouse-profile", "close-file", "quit",
@@ -208,6 +211,7 @@ public final class InputBindingSource: KeyBindingSource {
         case .setSpeed: "set speed"
         case .addVolume: "add volume"
         case .addAutoColorStrength: "add auto-color-strength"
+        case .addArtifactStrength: "add artifact-strength"
         case .windowScale: "set window-scale"
         default: command.configText
         }
@@ -217,6 +221,7 @@ public final class InputBindingSource: KeyBindingSource {
     static func step(of command: Command) -> Double? {
         switch command {
         case .seek(let v, _), .multiplySpeed(let v), .setSpeed(let v), .addVolume(let v), .addAutoColorStrength(let v),
+             .addArtifactStrength(let v),
              .windowScale(let v): v
         default: nil
         }

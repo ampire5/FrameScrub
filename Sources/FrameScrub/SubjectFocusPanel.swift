@@ -77,12 +77,12 @@ import FrameScrubCore
         let stack = NSStackView()
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 18
+        stack.spacing = 16
         stack.edgeInsets = NSEdgeInsets(top: 12, left: 16, bottom: 16, right: 16)
         stack.translatesAutoresizingMaskIntoConstraints = false
 
         // on / off
-        let subtitle = label("People stay, the background changes", secondary: true)
+        let subtitle = label("Adjust the background around people", secondary: true)
         onSwitch.target = self
         onSwitch.action = #selector(toggleOn)
         stack.addArrangedSubview(row(label("On  (H)"), onSwitch, under: subtitle))
@@ -108,7 +108,7 @@ import FrameScrubCore
         }
         presetRow.onHideStandard = { SubjectFocusSettings.shared.hideStandard = $0 }
         presetRow.suggestedName = { SubjectFocusSettings.shared.newPresetName }
-        stack.addArrangedSubview(section("STYLE  ·  ⇧H NEXT", [presetRow]))
+        stack.addArrangedSubview(section("Style (⇧H for next)", [presetRow]))
 
         // the look
         func pct(_ v: Double) -> String { "\(Int((v * 100).rounded())) %" }
@@ -119,7 +119,7 @@ import FrameScrubCore
             slider("Blur", 0, 1, { $0.blur }, { $0.blur = $1 }, pct),
             slider("Colour", 0, 1, { 1 - $0.desaturate }, { $0.desaturate = 1 - $1 }, pct),
         ]
-        stack.addArrangedSubview(section("BACKGROUND", background))
+        stack.addArrangedSubview(section("Background", background))
         cleanEdge.target = self
         cleanEdge.action = #selector(changeCleanEdge)
         let edge = [
@@ -131,7 +131,7 @@ import FrameScrubCore
             slider("People contrast", 0, 1, { $0.boost }, { $0.boost = $1 }, pct),
             row(label("Clean edge colour"), cleanEdge),
         ]
-        stack.addArrangedSubview(section("EDGE AND PEOPLE", edge))
+        stack.addArrangedSubview(section("Edges and people", edge))
 
         // the mask, shared by the windows
         for control in [mask, quality, who] {
@@ -161,7 +161,7 @@ import FrameScrubCore
         let maskViews: [NSView] = [mask, maskNote, qualityRow, steadyRow,
                                    row(label("Sharper mask when paused"), stillAccurate),
                                    row(label("Who"), who), row(label("Show mask"), showMask)]
-        stack.addArrangedSubview(section("MASK  ·  EVERY WINDOW", maskViews))
+        stack.addArrangedSubview(section("Mask in all windows", maskViews))
 
         let reset = NSButton(title: "Reset to Defaults", target: self, action: #selector(resetAll))
         reset.bezelStyle = .push
@@ -220,12 +220,12 @@ import FrameScrubCore
 
     private func section(_ title: String, _ views: [NSView]) -> NSStackView {
         let heading = NSTextField(labelWithString: title)
-        heading.font = .systemFont(ofSize: 11, weight: .semibold)
+        heading.font = .systemFont(ofSize: 12, weight: .medium)
         heading.textColor = Self.secondary
         let stack = NSStackView(views: [heading] + views)
         stack.orientation = .vertical
         stack.alignment = .leading
-        stack.spacing = 10
+        stack.spacing = 8
         for view in views where view is NSStackView || view is NSSlider || view is NSSegmentedControl {
             view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
         }

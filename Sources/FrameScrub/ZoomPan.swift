@@ -181,6 +181,18 @@ final class ZoomPan {
         if !isMoving { onChange?() }
     }
 
+    /// The held trackpad swipe took over the press. Leave the picture where the press found it.
+    func cancelLeftDrag(restoring start: ViewTransform?) {
+        guard dragPoint != nil else { return }
+        dragPoint = nil
+        dragVelocity.reset()
+        if let start, start.imageSize == transform.imageSize, start.viewSize == transform.viewSize {
+            transform = start
+        }
+        releaseRubber(velocity: .zero)
+        onChange?()
+    }
+
     /// Whether a left press is held for a pan.
     var isDragging: Bool { dragPoint != nil }
 

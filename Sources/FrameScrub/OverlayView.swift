@@ -1,4 +1,5 @@
 import AppKit
+import HomeChrome
 import InfoPanelKit
 
 /// Text overlay (the OSD) on a rounded glass backdrop. Takes clicks only while `onClick` is set.
@@ -18,7 +19,7 @@ final class OverlayView: NSView {
         backdrop.autoresizingMask = [.width, .height]   // follows the label-sized overlay
         addSubview(backdrop)
         label.font = .monospacedDigitSystemFont(ofSize: fontSize, weight: .medium)
-        label.textColor = .white
+        label.textColor = Chrome.Palette.overMedia.text
         label.preferredMaxLayoutWidth = 900   // gives the wrapping label a width, so the overlay's size is not ambiguous
         label.translatesAutoresizingMaskIntoConstraints = false
         for orientation in [NSLayoutConstraint.Orientation.horizontal, .vertical] {   // the text, not the glass, sizes the overlay
@@ -27,10 +28,10 @@ final class OverlayView: NSView {
         }
         addSubview(label)
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
-            label.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -6),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
         ])
         alphaValue = 0
     }
@@ -53,7 +54,7 @@ final class OverlayView: NSView {
         guard let duration else { return }
         let work = DispatchWorkItem { [weak self] in
             NSAnimationContext.runAnimationGroup { context in
-                context.duration = 0.3
+                context.duration = Chrome.Motion.duration(0.2)
                 self?.animator().alphaValue = 0
             }
         }
