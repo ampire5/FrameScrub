@@ -24,7 +24,7 @@ let package = Package(
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.3.0"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.15.0"),
-        .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.8.1"),
+        .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.9.0"),
         // The Logitech mouse goes through MouseService (a local mirror in .swiftpm/configuration/mirrors.json while
         // working on both).
         .package(url: "https://github.com/ampire5/MouseService.git", from: "0.3.0"),
