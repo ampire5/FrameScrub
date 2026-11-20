@@ -12,20 +12,23 @@ public struct LinkTarget: Equatable, Sendable {
     public var lock: Bool?
     /// What playback does at a segment's end; nil leaves it to the configuration.
     public var advance: SegmentAdvance?
+    /// A handoff can suppress autoplay for this open.
+    public var paused: Bool?
 
     public init(time: Double? = nil, segments: [ClosedRange<Double>] = [], lock: Bool? = nil,
-                advance: SegmentAdvance? = nil) {
+                advance: SegmentAdvance? = nil, paused: Bool? = nil) {
         self.time = time
         self.segments = segments
         self.lock = lock
         self.advance = advance
+        self.paused = paused
     }
 
     /// Where to land: `time`, else the first segment's start.
     public var start: Double? { time ?? segments.first?.lowerBound }
 
     /// Nothing to apply: neither a position nor segments.
-    public var isEmpty: Bool { time == nil && segments.isEmpty }
+    public var isEmpty: Bool { time == nil && segments.isEmpty && paused != true }
 
     /// "10-20,35.5-40" → two segments; nil when any item is malformed (the whole list is then ignored).
     public static func segments(from text: String) -> [ClosedRange<Double>]? {

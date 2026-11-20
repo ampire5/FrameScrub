@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import HomeChrome
 import InfoPanelKit
 
 /// The key cheat sheet (`?`): the bindings in effect, by section, in columns on a glass backdrop in the middle of
@@ -28,9 +29,9 @@ final class KeyHelpView: NSView {
             columns.centerXAnchor.constraint(equalTo: centerXAnchor),
             columns.centerYAnchor.constraint(equalTo: centerYAnchor),
             backdrop.leadingAnchor.constraint(equalTo: columns.leadingAnchor, constant: -20),
-            backdrop.trailingAnchor.constraint(equalTo: columns.trailingAnchor, constant: 22),
+            backdrop.trailingAnchor.constraint(equalTo: columns.trailingAnchor, constant: 20),
             backdrop.topAnchor.constraint(equalTo: columns.topAnchor, constant: -16),
-            backdrop.bottomAnchor.constraint(equalTo: columns.bottomAnchor, constant: 18),
+            backdrop.bottomAnchor.constraint(equalTo: columns.bottomAnchor, constant: 16),
             dim.leadingAnchor.constraint(equalTo: backdrop.leadingAnchor),
             dim.trailingAnchor.constraint(equalTo: backdrop.trailingAnchor),
             dim.topAnchor.constraint(equalTo: backdrop.topAnchor),
@@ -50,7 +51,7 @@ final class KeyHelpView: NSView {
         layOut(map, pluginActions)
         isHidden = false
         alphaValue = 0
-        NSAnimationContext.runAnimationGroup { $0.duration = 0.12; animator().alphaValue = 1 }
+        NSAnimationContext.runAnimationGroup { $0.duration = Chrome.Motion.duration(0.12); animator().alphaValue = 1 }
     }
 
     /// Lays an open sheet out again, without the fade, when the bindings or the page's actions differ from what it shows.
@@ -122,14 +123,14 @@ final class KeyHelpView: NSView {
         grid.rowSpacing = size * 0.25
         var headings: [Int] = []
         for (i, group) in sections.enumerated() {
-            let heading = label(group.section.title.uppercased(), font: .systemFont(ofSize: size - 1.5, weight: .bold), alpha: 0.55)
+            let heading = label(group.section.title, font: .systemFont(ofSize: size, weight: .medium), alpha: 0.70)
             let row = grid.addRow(with: [heading, NSGridCell.emptyContentView])
             row.mergeCells(in: NSRange(location: 0, length: 2))
             row.topPadding = i > 0 ? size * 0.8 : 0
             row.bottomPadding = size * 0.1
             headings.append(grid.numberOfRows - 1)
             for entry in group.entries {
-                grid.addRow(with: [label(entry.keys.joined(separator: "  "), font: .systemFont(ofSize: size, weight: .semibold), alpha: 1),
+                grid.addRow(with: [label(entry.keys.joined(separator: "  "), font: .systemFont(ofSize: size, weight: .medium), alpha: 1),
                                    label(entry.action, font: .systemFont(ofSize: size), alpha: 0.8)])
             }
         }

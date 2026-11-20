@@ -9,9 +9,10 @@ concurrency, persistence or integration changes. Historical specs/plans are rati
 |---|---|---|
 | FrameScrub | App lifecycle, player window, browser/playlist/plugin integration and display views | `Sources/FrameScrub/AppDelegate.swift`, `Sources/FrameScrub/PlayerWindowController.swift` |
 | FrameScrubCore | Playback state machine, decoding, indexing, caches, audio, export and persisted facts | `Sources/FrameScrubCore/PlayerCore.swift` |
+| FrameScrubPlaybackProvider | Optional sandboxed ExtensionKit scene, audio clock, transport and picture surface | `Sources/FrameScrubPlaybackProvider/PlaybackExtension.swift` |
 | FrameScrubSettings | SettingsKit store, bindings and pages | `Sources/FrameScrubSettings/SettingsPanel.swift` |
 | FrameScrubBench | Real-window settings, slots and playlist benchmarks | `Sources/FrameScrubBench/main.swift` |
-| CFFmpeg / CSQLite / ObjCCatch | Native library interfaces and Objective-C exception boundary | `Sources/CFFmpeg`, `Sources/CSQLite`, `Sources/ObjCCatch` |
+| CFFmpeg / CSQLite / ObjCCatch / CNV12Bitpack | Native library interfaces, Objective-C exception boundary and lossless NV12 block packing | `Sources/CFFmpeg`, `Sources/CSQLite`, `Sources/ObjCCatch`, `Sources/CNV12Bitpack` |
 
 Core is not synonymous with pure data: it includes FFmpeg/media I/O, concurrency and some platform integrations.
 The executable supplies UI and connects commands/delegate callbacks to the core.
@@ -23,8 +24,40 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   and plugin panel. Its large size is not permission to mix another independent subsystem into it.
 - `PlayerCore` is a main-thread state machine. It owns frame cache/filler, playback clock, audio and export state;
   its weak `PlayerCoreDelegate` delivers frames and state/feedback to the UI.
+- The optional playback provider can link the static `FrameScrubPlayback` product. A single worker owns
+  `OnDemandVideo`, which uses `MediaSource`, `ReadCache` and `VideoDecoder` directly. The provider can
+  duplicate a read-only descriptor into `FileByteSource` without resolving the file path. The cursor
+  seeks by presentation timestamp and decodes the needed region on request. It starts no full-file index
+  or prefetch. Each cursor retains a contiguous run of already decoded pictures, up to 64 MiB or 24
+  frames with a minimum two-frame seek bracket. Nearby steps and seeks reuse its presentation timestamps,
+  while a miss seeks to the preceding keyframe. Its owner closes the read cache to cancel stale I/O and
+  discards the cursor after failed or cancelled decode work.
+  The shipped extension also owns an audio decoder over the same cache and schedules one future picture
+  against `PlaybackClock`. WebP uses `AnimatedImagePlayback`. GIF always uses the descriptor-backed FFmpeg
+  cursor, with a two-block (4 MiB) input cache and a decoded history of at most 24 frames. On machines
+  with enough RAM the GIF history grows from 64 to 192 MiB to keep adjacent reverse steps in memory.
+  Packed BGRA preserves transparency and FFmpeg retains positive frame delays starting at 10 ms. A bounded GIF prefix
+  supplies the loop count. On arm64 macOS 27.2.1, a 151 MiB mounted example and a local synthetic 1 GiB GIF
+  reached frame zero in 0.76 s and 0.17 s. The test process peaked at 163 MiB and 167 MiB respectively after
+  stepping forward, reversing, and seeking. These figures include the test runner and use warm filesystem caches.
+  Protocol v4 accepts captured scroll and supported key events from Loupe. The provider loads the standalone
+  layout, input bindings and scrub settings on its worker at media open. Its sandbox has read-only paths for those
+  four configuration files. `GestureRouter` produces frame steps and transport actions. Scrubbing pauses on the
+  first matching movement. Volume changes only the scene's audio mixer and is initialized from the player's config.
+  Protocol v5 adds a viewer-wide play/pause command and a fixed 48-point transport row. Timeline drag and
+  accessibility value changes submit seeks through the same worker, with one current request and one replacement.
+  Protocol v6 toggles Auto Color and vibrance. The decode worker analyzes one picture per Auto Color
+  enable and reuses the result with FrameScrub Core's renderer. The remote picture handles pan,
+  magnification and right clicks. The host cancels a pending click when a right-button wheel gesture
+  claims the press. A frame step also cancels the click before it pauses the clock.
+  Scene removal or XPC invalidation stops the clock and releases the media. The `paused=1` open link suppresses
+  autoplay and preserves the requested presentation time when the standalone player's exact index becomes ready.
 - Open/seek/input → controller → `PlayerCore` → index/cache/decoder work → delegate frame → `VideoView`.
   `PictureQueue` and `PreviewProvider` concern presentation/previews, not a second playback source of truth.
+- `OpenFailureView` routes its recovery buttons through the existing file-open and browser-return paths.
+  `GoToField` keeps the draft input and displays the controller's correction when a jump cannot be made.
+  `ExportSheetView.Choices` owns the export draft, including the custom pixels entered in `OutputSizeField`.
+  The sheet sends validated options to the controller when Export is activated.
 - `PlayerWindowController.configurePreview` creates one `PreviewImagePool` per open-file preview configuration,
   shared by hover `PreviewProvider` and `FilmstripPreviewLoader`'s provider. `preview=no` disables only
   the hover provider; filmstrip visibility independently gates its utility loader. It bounds small SDR images by entries
@@ -115,6 +148,8 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   It uses the same PreferencesStore as Settings/menu, refreshes through existing config application,
   and commits sliders on release / numeric fields on editing end. Shared slot typing detection
   keeps it visible during numeric editing. Cleanup profiles preserve grain and introduce no new passes. N toggles filters; Option-N opens the panel via remappable input commands.
+  Viewing profile Forward toggles filters and Forward + wheel adjusts Overall effect. Wheel steps update the
+  shared PreferencesStore in memory and coalesce config writes off the main thread.
   No auto-activation policy is installed.
   HDR bypasses encoded-SDR filters. Config/Display settings and `ArtifactFilterMenu` share
   the existing store; decoder/cache/export ownership is unchanged. `filters-pipeline` measures
@@ -163,8 +198,35 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   existing asynchronous user-state persistence. See [pipeline diagnostics](bench/playback-diagnostics.md).
 - Byte input → `ReadCache`/`ByteSource` → `MediaSource`/`VideoDecoder` → `DecoderBackend` (`VTBackend` or
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
+  The playback VideoToolbox decoder requests native lossless packed 10-bit surfaces for supported HEVC 4:2:0
+  Main10 sources. It falls back to ordinary P010 on session or output incompatibility. The cache charges native
+  packed surfaces by IOSurface allocation size. Separate decoders for exports, analysis and thumbnails retain their
+  conventional output. The inspector fetches conventional luma on its bounded worker when its displayed source is
+  packed. Core Image consumes packed surfaces directly; temporal denoising can pass native buffers to its matching
+  configuration without a transfer copy.
+  For NV12, `FrameCache` protects the focus and its ready neighbors. Distant frames can move to immutable
+  `PackedNV12Frame` payloads using an independent lossless block codec with SIMD on arm64. Packed and ready
+  entries share one byte budget and eviction policy. A packed entry counts as resident when planning decodes and
+  displaying cached ranges. A lookup that needs immediate pixels returns only a ready surface. A serial foreground
+  restore queue prioritizes the current target, then neighboring frames, and publishes through the filler's normal
+  insertion callback. One utility compression job can be in flight. It yields when the focus is missing or a
+  restore is pending. Both workers do pixel work outside the cache lock and validate the entry and current focus
+  before publication. Stop and index invalidation prevent stale work from repopulating the cache.
+  [Live scrub measurements](bench/live-scrub-cache.md) record the production cache and fill behavior.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  `FrameScrubHomeSource` builds the Favorites source and sidebar shortcuts from `FolderFavorites` (ordered paths
+  in FrameScrub's defaults). Favorites requests the same folder covers as File View. Recursive browsing uses the same bounded listing worker and poster pipeline, with
+  a separate active result and the opening folder tab as the playback return destination. MediaCatalog serves
+  the last successful walk provisionally and replaces it once a fresh walk succeeds.
+  Folder renames update favorite descendants. Mount changes and Refresh recheck availability with a bounded utility worker pool
+  and repaint the sidebar without changing the browser's location.
+  HomeScreenKit owns the opt-in File View tab histories. `PlayerWindowController` records the opening tab ID
+  for playback return and saves a versioned tab snapshot in the user-state termination flush. At launch or on
+  File › Last Session, the previous run's snapshot supplies the tabs to restore. Explicit file opens use the same
+  player and take precedence over session restore.
+  The playlist capsule's options menu changes `playlist-view` through the shared `PreferencesStore`.
+  Configuration application switches the existing list/strip views and keeps the menu and Settings in sync.
   Showing Home disables the shared slot host; returning to the player restores its presentation. Hidden slots
   neither reveal at the browser's edges nor intercept its scroller, and their saved configuration stays intact.
   Folder/Recent listing streams stay open for coalesced metadata updates; new durations update that subscription
@@ -175,14 +237,17 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   consumes AppKit's copy; Home visibility changes cancel pending taps. Web pages retain their own swipe handling.
   `FolderChangeMonitor` opens an event-only directory descriptor off the main thread and coalesces native directory
   events (including SMB) without polling. It reconciles the descriptor-open race once, stops while Home/window is
-  hidden, and reconciles again on return. Folder enumeration/metadata reads use one utility `LatestOnlyWorker`
-  with one replaceable pending read; stale results are discarded. View › Refresh (⌘R) uses the same listing stream.
+  hidden, and reconciles again on return. Folder enumeration and metadata use up to two utility reads so a blocked
+  stale read can yield to the selected tab. There is one replaceable pending request, reads for a listing are serial,
+  and stale results are discarded. View › Refresh (⌘R) uses the same listing stream.
   Thumbnail workers report failure as well as success. `PictureQueue` finishes failed jobs and suppresses repeated
   attempts until refresh; confirmed damaged versions are marked in shared `UnreadableFiles` and omitted from Home.
   Failure stamps come from the attempted file identity; network/read errors do not mark files damaged. Source
   updates and new filesystem events preserve a user pause of thumbnail generation.
 - Plugin page → `PluginPanel` / bridge → core plugin messages/policies/actions → application/player commands.
   Keep external page data separate from trusted application configuration.
+  An open link registers its plugin as a session-only tab choice. It does not reveal a slot, switch tabs,
+  or navigate a configured page.
 - A configured plugin can register a same-origin HTTP cut catalog. `PluginCatalogSource` owns the listing,
   image and cut requests. File View uses its ordinary collection cards and cancels image work when leaving.
   Registration is scoped to the live configured page. The host checks limits, origins, source open policy and
@@ -319,7 +384,17 @@ begin resets it immediately. Phase-less scrolling re-arms after a 0.25 s gap. Lo
 before button/folder/pan routing; FrameScrub's `GestureRouter` filters before command routing. Pointer right-drag
 zoom and right-button scrolling keep their first owner until release. Button recognition ignores zero deltas;
 middle-button scrolling must cross a wheel step (12 precise points or one notched unit) before cancelling a click.
+On the standalone video surface, `VideoView` observes indirect touches and the primary trackpad press.
+`HeldTrackpadSwipe` claims the press when three fingers are down and recognizes horizontal motion from either
+the touch centroid or precise scroll. The first stream to establish the axis owns the press. The controller
+dispatches the existing playlist commands, and a change of direction can step back within the same press.
+`VideoView` cancels any tentative picture pan when the swipe takes over. Releasing the button ends navigation,
+and the recognizer consumes the remaining scroll and momentum. Focus loss, hiding and touch cancellation clear it.
 Over the video, optional trackpad scrub momentum keeps only the tail of an owned horizontal scrub. The router
 passes native deltas through the existing frame accumulator and seek path. The momentum distance setting scales
 only the released movement before frame rounding, preserving the system's deceleration.
 State is local to the existing input owners; no polling, new queues or dependencies are introduced.
+On the video, `VideoView` recognizes a three-finger double tap from indirect touch events and routes it to the
+window's existing full-screen command. Force Click uses AppKit's stage 2 pressure event to toggle the existing
+information panel once per press. The view dispatches the ordinary double-click binding on release, after it can
+tell which presses became force clicks. Showing Home or losing window focus clears gesture state.

@@ -27,6 +27,18 @@ import Testing
         #expect(total == 10)
     }
 
+    @Test func scrubStartsBeforeAFrameStepAndVolumeDoesNotStartScrub() {
+        let router = router()
+        var starts = 0
+        let initial = router.route(sample(-GestureAxisLock.slop, 0, began: true)) { starts += 1 }
+        #expect(initial.isEmpty)
+        #expect(starts == 1)
+
+        let volume = router.route(sample(0, 40, began: true)) { starts += 1 }
+        #expect(volume == [.command(.addVolume(2))])
+        #expect(starts == 1)
+    }
+
     @Test func shiftTrackpadScrubsFast() {
         let r = router()
         let total = (0..<40).reduce(0) { $0 + frames(r.route(sample(-2, 0, t: Double($1) * 0.016, mods: .shift))) }

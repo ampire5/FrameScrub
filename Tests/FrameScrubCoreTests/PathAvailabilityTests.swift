@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import FrameScrubCore
 
@@ -15,4 +16,25 @@ import Testing
         #expect(result["/here"] == .some(true))
         #expect(result["/gone"] == .some(false))
     }
+
+    @Test func aBlockedDirectoryDoesNotHoldHealthyPathsOrStartAnotherReadOnRefresh() async {
+        let checks = PathAvailability.DirectoryChecks(limit: 2)
+        let release = DispatchSemaphore(value: 0)
+        let slowReads = Mutex(0)
+        let read: @Sendable (String) -> Bool = { path in
+            if path == "/slow", slowReads.withLock({ count in
+                count += 1
+                return count == 1
+            }) { release.wait() }
+            return true
+        }
+        let pending = Task { await checks.check(["/slow"], timeout: .seconds(90), read: read) }
+        #expect(await eventually(timeout: 30) { slowReads.withLock { $0 } == 1 })
+        let refreshed = await checks.check(["/slow", "/near", "/later"], timeout: .seconds(90), read: read)
+        release.signal()
+        #expect(refreshed == ["/near": true, "/later": true])
+        #expect(await pending.value == ["/slow": true])
+        #expect(slowReads.withLock { $0 } == 1)
+    }
+
 }

@@ -55,4 +55,4 @@ jobs:
       - name: Test
         run: scripts/test.sh --no-parallel
       - name: Build the app
-        run: scripts/make-app.sh
+        run: scripts/make-app.sh --release

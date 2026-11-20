@@ -23,7 +23,9 @@ import Slots
     private static let subjectFocus = SlotTabID(rawValue: "subject-focus")
     private let host: Slots.SlotsController
     private var plugins: [PluginEntry]
-    private var linkPlugin: PluginEntry?
+    private var linkPluginURL: URL?
+    // Keep the session-only page separate from configured tabs, including any named "Plugin".
+    private static let linkPlugin = SlotTabID(rawValue: "link-plugin")
     private var entryURLs: [ObjectIdentifier: URL] = [:]
     private var flashEnabled: Bool
     private static let playlist = SlotTabID(rawValue: "playlist")
@@ -67,6 +69,7 @@ import Slots
             if $0.rawValue.hasPrefix("plugin:") { return .plugin(name: String($0.rawValue.dropFirst(7))) }
             return nil
         }
+        if c.tabs.contains(linkPlugin), s.contents.isEmpty { s.shown = false }
         return s
     }
     func start() {
@@ -161,35 +164,34 @@ import Slots
     }
 
     func togglePlugin(focus: Bool = false) {
+        func isPlugin(_ id: SlotTabID) -> Bool { id == Self.linkPlugin || id.rawValue.hasPrefix("plugin:") }
         for edge in SlotEdge.allCases {
-            let ids = host.tabIDs(in: edge).filter { $0.rawValue.hasPrefix("plugin:") }
-            guard let first = ids.first else { continue }
-            if host.isShown(edge), !focus, host.activeTab(edge)?.rawValue.hasPrefix("plugin:") == true { host.hide(edge); return }
-            if host.activeTab(edge)?.rawValue.hasPrefix("plugin:") != true { host.select(first, edge: edge) }
+            guard let first = host.tabIDs(in: edge).first(where: isPlugin) else { continue }
+            let activeIsPlugin = host.activeTab(edge).map(isPlugin) ?? false
+            if host.isShown(edge), !focus, activeIsPlugin { host.hide(edge); return }
+            if !activeIsPlugin { host.select(first, edge: edge) }
             host.show(edge, focus: focus); return
         }
-        guard let plugin = allPlugins.first else { onMessage?("No plugin page: add plugin=Name | URL to framescrub.conf, or open a link with plugin="); return }
-        guard let edge = firstEmpty else { onMessage?("Every slot is taken: choose \(plugin.name) in a slot's + menu"); return }
-        host.add(Self.id(plugin.name), edge: edge); host.show(edge, focus: focus)
+        let plugin = plugins.first
+        guard plugin != nil || linkPluginURL != nil else { onMessage?("No plugin page: add plugin=Name | URL to framescrub.conf, or open a link with plugin="); return }
+        let title = plugin?.name ?? SlotDefaults.linkPluginName
+        guard let edge = firstEmpty else { onMessage?("Every slot is taken: choose \(title) in a slot's + menu"); return }
+        host.add(plugin.map { Self.id($0.name) } ?? Self.linkPlugin, edge: edge, transient: plugin == nil)
+        host.show(edge, focus: focus)
     }
-    @discardableResult func showLinkPage(_ url: URL) -> Bool {
+
+    @discardableResult func registerLinkPage(_ url: URL) -> Bool {
         guard PluginPageSource.link.accepts(url) else { return false }
-        for shownOnly in [true, false] {
-            for edge in SlotEdge.allCases {
-                let ids = shownOnly ? [host.activeTab(edge)].compactMap { $0 } : host.tabIDs(in: edge)
-                for id in ids {
-                    guard id.rawValue.hasPrefix("plugin:") else { continue }
-                    host.select(id, edge: edge); host.show(edge)
-                    guard let page = host.page(id, edge: edge)?.view as? PluginPanel else { continue }
-                    page.load(url, from: .link); return true
-                }
-            }
+        if linkPluginURL == nil {
+            host.register(SlotTabDescriptor(id: Self.linkPlugin, title: SlotDefaults.linkPluginName) { [weak self] _ in
+                guard let self, let url = linkPluginURL else { return nil }
+                return makePluginPage(url, source: .link)
+            })
         }
-        linkPlugin = PluginEntry(name: SlotDefaults.linkPluginName, url: url); registerPlugins()
-        let id = Self.id(SlotDefaults.linkPluginName), edge = firstEmpty ?? .right
-        let transient = !host.configuration(edge).tabs.contains(id)
-        host.add(id, edge: edge, transient: transient); host.show(edge)
-        (host.page(id, edge: edge)?.view as? PluginPanel)?.load(url, from: .link)
+        linkPluginURL = url
+        for (_, id, live) in host.livePages where id == Self.linkPlugin {
+            (live.view as? PluginPanel)?.load(url, from: .link)
+        }
         return true
     }
     @discardableResult func hideOverlays() -> Bool { host.hideOverlays() }
@@ -203,45 +205,44 @@ import Slots
     func escape(in view: NSView) -> Bool { host.escape(in: view) }
     func videoChanged(cause: VideoChangeCause) { host.flash(Self.playlist, cause: cause, enabled: flashEnabled) }
 
-    private var allPlugins: [PluginEntry] {
-        guard let linkPlugin, !plugins.contains(where: { $0.name == linkPlugin.name }) else { return plugins }
-        return plugins + [linkPlugin]
-    }
     func configChanged(_ config: Config) {
-        let oldNames = Set(allPlugins.map(\.name))
+        let oldNames = Set(plugins.map(\.name))
         plugins = config.plugins; flashEnabled = config.slotFlash
-        let newNames = Set(allPlugins.map(\.name))
+        let newNames = Set(plugins.map(\.name))
         for name in oldNames.subtracting(newNames) { host.unregister(Self.id(name)) }
         host.revealBand = CGFloat(config.slotRevealDistance)
         registerPlugins()
         for (edge, id, live) in host.livePages {
-            guard let page = live.view as? PluginPanel else { continue }
+            guard id != Self.linkPlugin, let page = live.view as? PluginPanel else { continue }
             let name = String(id.rawValue.dropFirst(7))
-            guard let entry = allPlugins.first(where: { $0.name == name }) else { host.invalidatePage(id, edge: edge); continue }
+            guard let entry = plugins.first(where: { $0.name == name }) else { host.invalidatePage(id, edge: edge); continue }
             if entryURLs[ObjectIdentifier(page)] != entry.url {
                 entryURLs[ObjectIdentifier(page)] = entry.url
-                page.load(entry.url, from: entry == linkPlugin ? .link : .settings)
+                page.load(entry.url, from: .settings)
             }
         }
         host.refreshContents()
     }
     private func registerPlugins() {
-        for entry in allPlugins {
+        for entry in plugins {
             host.register(SlotTabDescriptor(id: Self.id(entry.name), title: entry.name) { [weak self] _ in
-                guard let self, let current = allPlugins.first(where: { $0.name == entry.name }) else { return nil }
-                let panel = PluginPanel(); configurePage?(panel)
-                panel.load(current.url, from: current == linkPlugin ? .link : .settings)
-                entryURLs[ObjectIdentifier(panel)] = current.url
-                let page = SlotPage(view: panel, visibilityChanged: { [weak panel] in panel?.isShownInSlot = $0 }, dropped: { [weak self, weak panel] in
-                    guard let panel else { return }; self?.entryURLs[ObjectIdentifier(panel)] = nil; self?.onPageDropped?(panel)
-                })
-                page.focus = { [weak panel] in panel?.focus() }
-                page.isTyping = { [weak panel] in panel?.isTyping ?? false }
-                page.reload = { [weak panel] in panel?.reload() }
-                page.drawsOwnTextShadow = true
-                return page
+                guard let self, let current = plugins.first(where: { $0.name == entry.name }) else { return nil }
+                return makePluginPage(current.url, source: .settings)
             })
         }
+    }
+    private func makePluginPage(_ url: URL, source: PluginPageSource) -> SlotPage {
+        let panel = PluginPanel(); configurePage?(panel)
+        panel.load(url, from: source)
+        if source == .settings { entryURLs[ObjectIdentifier(panel)] = url }
+        let page = SlotPage(view: panel, visibilityChanged: { [weak panel] shown in panel?.isShownInSlot = shown }, dropped: { [weak self, weak panel] in
+            guard let panel else { return }; self?.entryURLs[ObjectIdentifier(panel)] = nil; self?.onPageDropped?(panel)
+        })
+        page.focus = { [weak panel] in panel?.focus() }
+        page.isTyping = { [weak panel] in panel?.isTyping ?? false }
+        page.reload = { [weak panel] in panel?.reload() }
+        page.drawsOwnTextShadow = true
+        return page
     }
     private func registerPlaylist() {
         host.register(SlotTabDescriptor(id: Self.playlist, title: "Playlist", symbol: "play.rectangle", singleton: true) { [weak self] _ in

@@ -118,7 +118,7 @@ final class FFmpegBackend: DecoderBackend {
             pixelBuffer = Unmanaged<CVPixelBuffer>.fromOpaque(raw).takeUnretainedValue()
         } else {
             kind = .software   // VideoToolbox declined this stream; FFmpeg fell back to software
-            pixelBuffer = try converter.convert(frame)
+            pixelBuffer = try converter.convert(frame, preserveBGRA: codecContext?.pointee.codec_id == AV_CODEC_ID_GIF)
         }
         let range = ColorAttachments.apply(from: frame, to: pixelBuffer)
         let type: Character? = switch frame.pointee.pict_type {

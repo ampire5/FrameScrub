@@ -21,8 +21,8 @@ public final class AudioDecoder {
     private var trimBefore: Double?
     private var nextStart = 0.0
 
-    public init(url: URL, zeroSeconds: Double, readCache: ReadCache? = nil) throws {
-        source = try MediaSource(url: url, readCache: readCache)
+    public init(url: URL, zeroSeconds: Double, readCache: ReadCache? = nil, readAhead: Bool = true) throws {
+        source = try MediaSource(url: url, readCache: readCache, readAhead: readAhead)
         guard let index = source.audioStreamIndex, let stream = source.audioStream else {
             throw FFmpegError(-1, "no audio stream in \(url.lastPathComponent)")
         }

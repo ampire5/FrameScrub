@@ -1,6 +1,7 @@
 import CSQLite
 import Darwin
 import Foundation
+import HomeScreenModel
 
 /// A snapshot taken before reading a file. Device and inode catch replacement even when size and dates are copied.
 /// Read on a worker; URLs keep their reached path, so aliases do not silently change user-facing locations.
@@ -108,6 +109,9 @@ public final class MediaCatalog: @unchecked Sendable {
         CREATE TABLE IF NOT EXISTS images(path TEXT NOT NULL, identity TEXT NOT NULL, variant TEXT NOT NULL,
           payload BLOB NOT NULL, bytes INTEGER NOT NULL, used REAL NOT NULL, PRIMARY KEY(path, variant));
         CREATE INDEX IF NOT EXISTS images_used ON images(used);
+        CREATE TABLE IF NOT EXISTS recursive_folder_listings(path TEXT PRIMARY KEY, scanned REAL NOT NULL,
+          entries BLOB NOT NULL);
+        CREATE INDEX IF NOT EXISTS recursive_folder_listings_scanned ON recursive_folder_listings(scanned);
         CREATE TABLE IF NOT EXISTS totals(kind TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
         INSERT OR IGNORE INTO totals VALUES('images',0),('metadata',0);
         CREATE TRIGGER IF NOT EXISTS image_add AFTER INSERT ON images BEGIN UPDATE totals SET bytes=bytes+NEW.bytes WHERE kind='images'; END;
@@ -155,6 +159,49 @@ public final class MediaCatalog: @unchecked Sendable {
         let s = try statement(text); defer { sqlite3_finalize(s) }
         let code = sqlite3_step(s); guard code == SQLITE_ROW else { throw failure(code) }
         return Int(sqlite3_column_int64(s, 0))
+    }
+
+    public func recursiveListing(in folder: URL) throws -> [BrowserEntry]? {
+        let bytes: Data? = try lock.withLock {
+            try open()
+            let s = try statement("SELECT entries FROM recursive_folder_listings WHERE path=?")
+            defer { sqlite3_finalize(s) }
+            bind(folder.standardizedFileURL.path, 1, s)
+            let code = sqlite3_step(s)
+            if code == SQLITE_DONE { return nil }
+            guard code == SQLITE_ROW else { throw failure(code) }
+            return data(s, 0)
+        }
+        return bytes.flatMap { RecursiveListingSnapshot.decode($0, in: folder) }
+    }
+
+    public func storeRecursiveListing(_ entries: [BrowserEntry], in folder: URL, scannedAt: Date) throws {
+        guard let payload = RecursiveListingSnapshot.encode(entries, in: folder) else { return }
+        try lock.withLock {
+            try open()
+            try sql("BEGIN IMMEDIATE")
+            do {
+                let s = try statement("""
+                    INSERT INTO recursive_folder_listings(path,scanned,entries) VALUES(?,?,?)
+                    ON CONFLICT(path) DO UPDATE SET scanned=excluded.scanned, entries=excluded.entries
+                    WHERE excluded.scanned >= recursive_folder_listings.scanned
+                    """)
+                defer { sqlite3_finalize(s) }
+                bind(folder.standardizedFileURL.path, 1, s)
+                sqlite3_bind_double(s, 2, scannedAt.timeIntervalSinceReferenceDate)
+                bind(payload, 3, s)
+                try done(s)
+                try sql("""
+                    DELETE FROM recursive_folder_listings WHERE rowid IN (
+                        SELECT rowid FROM recursive_folder_listings ORDER BY scanned DESC, rowid DESC
+                        LIMIT -1 OFFSET \(RecursiveListingSnapshot.capacity))
+                    """)
+                try sql("COMMIT")
+            } catch {
+                try? sql("ROLLBACK")
+                throw error
+            }
+        }
     }
 
     /// Exact identities only; each indexed lookup touches one record, irrespective of catalog size. Empty results

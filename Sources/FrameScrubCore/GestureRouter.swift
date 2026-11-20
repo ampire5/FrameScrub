@@ -101,7 +101,8 @@ public final class GestureRouter {
 
     public func cancelScrubMomentum() { ownsScrubMomentum = false }
 
-    public func route(_ sample: ScrollSample, allowsScrubMomentum: Bool = true) -> [GestureAction] {
+    public func route(_ sample: ScrollSample, allowsScrubMomentum: Bool = true,
+                      onScrub: (() -> Void)? = nil) -> [GestureAction] {
         var s = sample
         let modifiers = (s.rightButton ? s.modifiers.union(.rightButton) : s.modifiers).union(s.heldButtons)
         // Keyboard and button changes begin a new input chord, never inheriting an old coast's axis.
@@ -150,6 +151,7 @@ public final class GestureRouter {
 
         let perNotch = s.precise || horizontal ? 1 : wheelEventsPerNotch
         if case let .scrub(fast, invert) = command {
+            if !s.momentum { onScrub?() }
             if !s.momentum { ownsScrubMomentum = momentumEligible && s.phased && scrubber.settings.trackpadMomentum }
             return scrub(s, delta: delta, fast: fast, invert: invert, eventsPerNotch: perNotch)
         }

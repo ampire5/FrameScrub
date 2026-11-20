@@ -1,11 +1,12 @@
 import AppKit
 import FrameScrubCore
+import HomeChrome
 
 /// Compact controls for the existing shared slot host. Built once; no renderer or settings ownership.
 @MainActor final class ArtifactFilterPanelView: NSView, NSTextFieldDelegate {
     var settings: () -> ArtifactFilterSettings = { .init() }
     var update: ([String], (inout ArtifactFilterSettings) -> Void) -> Void = { _, _ in }
-    private let enabled = NSButton(checkboxWithTitle: "Filters on  ·  N", target: nil, action: nil)
+    private let enabled = NSButton(checkboxWithTitle: "Enable filters (N)", target: nil, action: nil)
     private let deband = NSPopUpButton()
     private let grain = NSPopUpButton()
     private let note = NSTextField(wrappingLabelWithString: "")
@@ -38,15 +39,15 @@ import FrameScrubCore
     }
     private func label(_ value: String) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: value)
-        field.textColor = NSColor(srgbRed: 242/255, green: 242/255, blue: 247/255, alpha: 1)
+        field.textColor = Chrome.Palette.overMedia.text
         field.font = .systemFont(ofSize: 12)
         return field
     }
     private func build() {
         let stack = NSStackView()
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 10
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 8
         // The shared slot capsule overlays the top of its page. Keep the first control below it.
-        stack.edgeInsets = NSEdgeInsets(top: 60, left: 16, bottom: 16, right: 16)
+        stack.edgeInsets = NSEdgeInsets(top: 56, left: 16, bottom: 16, right: 16)
         enabled.target = self; enabled.action = #selector(toggle)
         stack.addArrangedSubview(enabled)
         let presets = NSStackView(views: [
@@ -59,7 +60,7 @@ import FrameScrubCore
                   { ArtifactFilterSettings.Comparison.allCases.firstIndex(of: $0.comparison)! },
                   { $0.comparison = ArtifactFilterSettings.Comparison.allCases[$1] }, stack)
         addSlider("Overall effect", "artifact-strength", 1, { $0.strength }, { $0.strength = $1 }, stack)
-        stack.addArrangedSubview(label("DEBANDING  ·  BEFORE UPSCALING"))
+        addSection("Debanding before upscaling", to: stack)
         deband.addItems(withTitles: Self.modes); deband.target = self; deband.action = #selector(pickDeband)
         stack.addArrangedSubview(deband)
         note.textColor = .secondaryLabelColor; note.font = .systemFont(ofSize: 11)
@@ -72,21 +73,21 @@ import FrameScrubCore
         addSlider("Radius · input pixels", "artifact-deband-radius", 64, { $0.debandRadius }, { $0.debandRadius = $1 }, stack, minimum: 1)
         addSlider("Iterations · libplacebo only", "artifact-deband-iterations", 4, { Double($0.debandIterations) }, { $0.debandIterations = Int($1.rounded()) }, stack, minimum: 1)
         addSlider("Texture protection · adaptive / window", "artifact-texture-protection", 1, { $0.textureProtection }, { $0.textureProtection = $1 }, stack)
-        stack.addArrangedSubview(label("COLOUR NOISE  ·  BEFORE UPSCALING"))
+        addSection("Colour noise before upscaling", to: stack)
         addChoice("Colour filter", ["Off", "Bilateral 3×3", "Bilateral 5×5 · stronger", "Median 3×3"], "artifact-chroma",
                   { ArtifactFilterSettings.Chroma.allCases.firstIndex(of: $0.chroma)! },
                   { $0.chroma = ArtifactFilterSettings.Chroma.allCases[$1] }, stack)
         addSlider("Colour noise", "artifact-chroma-strength", 1, { $0.chroma == .off ? 0 : $0.chromaStrength }, {
             $0.chroma = $1 == 0 ? .off : ($0.chroma == .off ? .bilateral : $0.chroma); $0.chromaStrength = $1
         }, stack, extraKeys: ["artifact-chroma"])
-        stack.addArrangedSubview(label("EDGES / HALOS  ·  AFTER UPSCALING"))
+        addSection("Edges and halos after upscaling", to: stack)
         addChoice("Edge filter", ["Off", "MetalFX luma limit", "MetalFX coherent edges", "Directional cleanup"], "artifact-antiring",
                   { ArtifactFilterSettings.Antiring.allCases.firstIndex(of: $0.antiring)! },
                   { $0.antiring = ArtifactFilterSettings.Antiring.allCases[$1] }, stack)
         addSlider("MetalFX edge cleanup", "artifact-antiring-strength", 1, { $0.antiring == .off ? 0 : $0.antiringStrength }, {
             $0.antiring = $1 == 0 ? .off : ($0.antiring == .off ? .edge : $0.antiring); $0.antiringStrength = $1
         }, stack, extraKeys: ["artifact-antiring"])
-        stack.addArrangedSubview(label("GRAIN  ·  AFTER UPSCALING / SHARPENING"))
+        addSection("Grain after sharpening", to: stack)
         grain.addItems(withTitles: ["Grain off", "White / comparison", "Fine", "Soft", "AV1-style", "Particles"])
         grain.target = self; grain.action = #selector(pickGrain)
         stack.addArrangedSubview(grain)
@@ -95,7 +96,7 @@ import FrameScrubCore
         addSlider("Grain in initially smooth areas", "artifact-grain-base", 1, { $0.grainBase }, { $0.grainBase = $1 }, stack)
         addSlider("Grain structure protection", "artifact-grain-adaptation", 1, { $0.grainAdaptation }, { $0.grainAdaptation = $1 }, stack)
         addSlider("Output dither", "artifact-dither", 1, { $0.dither }, { $0.dither = $1 }, stack)
-        stack.addArrangedSubview(label("All parameters are available here. Values are shared with Settings and saved on release / Return. Spatial filters also apply while scrubbing; HDR bypasses these SDR filters."))
+        stack.addArrangedSubview(label("These filters also apply while scrubbing. HDR bypasses them. Changes are saved to Settings."))
         let doc = FlippedView(); doc.translatesAutoresizingMaskIntoConstraints = false
         stack.translatesAutoresizingMaskIntoConstraints = false; doc.addSubview(stack)
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true
@@ -110,6 +111,12 @@ import FrameScrubCore
         ])
         for view in stack.arrangedSubviews { view.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -32).isActive = true }
     }
+    private func addSection(_ title: String, to stack: NSStackView) {
+        if let previous = stack.arrangedSubviews.last { stack.setCustomSpacing(16, after: previous) }
+        let heading = label(title)
+        heading.font = .systemFont(ofSize: 13, weight: .medium)
+        stack.addArrangedSubview(heading)
+    }
     private final class FlippedView: NSView { override var isFlipped: Bool { true } }
     private var edits: [(String, [String], (inout ArtifactFilterSettings, Double) -> Void)] = []
     private func addSlider(_ title: String, _ key: String, _ maximum: Double,
@@ -118,6 +125,8 @@ import FrameScrubCore
                            _ stack: NSStackView, extraKeys: [String] = [], minimum: Double = 0) {
         let value = NSTextField(string: "")
         value.delegate = self; value.tag = sliders.count
+        value.alignment = .right
+        value.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         value.setAccessibilityLabel(title + " value")
         value.widthAnchor.constraint(equalToConstant: 64).isActive = true
         let slider = NSSlider(value: minimum, minValue: minimum, maxValue: maximum, target: self, action: #selector(change(_:)))
@@ -138,6 +147,14 @@ import FrameScrubCore
             control.doubleValue = read(s); value.stringValue = String(format: "%.4g", read(s))
         }
     }
+
+    func refreshStrength(_ strength: Double) {
+        guard built, let index = edits.firstIndex(where: { $0.0 == "artifact-strength" }) else { return }
+        let (slider, value, _) = sliders[index]
+        slider.doubleValue = strength
+        value.stringValue = String(format: "%.4g", strength)
+    }
+
     private var choices: [(NSPopUpButton, (ArtifactFilterSettings) -> Int, (inout ArtifactFilterSettings, Int) -> Void)] = []
     private var choiceKeys: [String] = []
     private func addChoice(_ title: String, _ titles: [String], _ key: String,

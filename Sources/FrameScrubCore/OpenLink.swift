@@ -3,11 +3,12 @@ import Foundation
 /// The `framescrub://open?path=<percent-encoded absolute path>` link: other programs open a video in FrameScrub with
 /// it. `scene=<id>` in place of `path` opens that Stash scene (its file paths are asked of Stash). Optional parameters:
 /// - `t=<seconds>`: start there instead of the remembered position;
+/// - `paused=1`: hold the initial frame even when autoplay is enabled;
 /// - `seg=<a>-<b>[,<a>-<b>…]`: lock playback and scrubbing to those segments (seconds), starting at the first one's
 ///   start unless `t` says otherwise; one malformed item drops the whole list;
 /// - `lock=0|1`: whether the segments lock playback (default 1);
 /// - `adv=repeat|next`: at a segment's end, play it again or go to the next one (default from the configuration);
-/// - `plugin=<http(s) URL>`: show that page in the plugin panel.
+/// - `plugin=<http(s) URL>`: offer that page in the slot's add menu for this session.
 public enum OpenLink {
     /// What a link names: a file, or a Stash scene by id.
     public enum Subject: Equatable, Sendable {
@@ -85,7 +86,8 @@ public enum OpenLink {
         let landing = LinkTarget(time: item("t").flatMap(Double.init).flatMap(LinkTarget.time),
                                  segments: item("seg").flatMap(LinkTarget.segments(from:)) ?? [],
                                  lock: item("lock").flatMap { ["0": false, "1": true][$0] },
-                                 advance: item("adv").flatMap { SegmentAdvance(rawValue: $0.lowercased()) })
+                                 advance: item("adv").flatMap { SegmentAdvance(rawValue: $0.lowercased()) },
+                                 paused: item("paused") == "1" ? true : nil)
         let plugin = item("plugin").flatMap(URL.init(string:))
             .flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
         return Target(subject: subject, landing: landing, plugin: plugin)

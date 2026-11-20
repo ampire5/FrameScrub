@@ -1,6 +1,7 @@
 import CFFmpeg
 import CoreVideo
 import Foundation
+import VideoToolbox
 
 /// Decodes the video stream of its own MediaSource into DecodedFrames in presentation order.
 /// Not thread-safe: owned by exactly one worker.
@@ -38,19 +39,21 @@ public final class VideoDecoder {
 
     private static let backoffFrames = [1, 32, 128, 512]
 
-    public convenience init(source: MediaSource, index: FrameIndex, preferHardware: Bool = true) throws {
-        try self.init(source: source, index: index, preferHardware: preferHardware, allowVideoToolboxBackend: true)
+    public convenience init(source: MediaSource, index: FrameIndex, preferHardware: Bool = true, prefersPackedOutput: Bool = false) throws {
+        try self.init(source: source, index: index, preferHardware: preferHardware, allowVideoToolboxBackend: true,
+                      prefersPackedOutput: prefersPackedOutput)
     }
 
     /// `allowVideoToolboxBackend: false` keeps H.264/HEVC on FFmpeg (tests, measurements).
     init(source: MediaSource, index: FrameIndex, preferHardware: Bool, allowVideoToolboxBackend: Bool,
-         softwareThreads: Int32 = 0) throws {
+         softwareThreads: Int32 = 0, prefersPackedOutput: Bool = false) throws {
         self.source = source
         self.index = index
         self.softwareThreads = softwareThreads
         source.selectStreams(video: true, audio: false)
         backend = try Self.makeBackend(source.videoStream, preferHardware: preferHardware,
-                                       allowVideoToolbox: allowVideoToolboxBackend, softwareThreads: softwareThreads)
+                                       allowVideoToolbox: allowVideoToolboxBackend, softwareThreads: softwareThreads,
+                                       prefersPackedOutput: prefersPackedOutput)
         packet = av_packet_alloc()!
     }
 
@@ -60,10 +63,10 @@ public final class VideoDecoder {
     }
 
     private static func makeBackend(_ stream: UnsafeMutablePointer<AVStream>, preferHardware: Bool,
-                                    allowVideoToolbox: Bool, softwareThreads: Int32) throws -> DecoderBackend {
+                                    allowVideoToolbox: Bool, softwareThreads: Int32, prefersPackedOutput: Bool) throws -> DecoderBackend {
         if preferHardware && allowVideoToolbox && VTBackend.supports(stream) {
             // FFmpeg's hwaccel would ask the same hardware: a session VideoToolbox refuses means software.
-            if let backend = try? VTBackend(stream: stream) { return backend }
+            if let backend = try? VTBackend(stream: stream, prefersPackedOutput: prefersPackedOutput) { return backend }
             return try FFmpegBackend(stream: stream, hardware: false, softwareThreads: softwareThreads)
         }
         return try FFmpegBackend(stream: stream, hardware: preferHardware, softwareThreads: softwareThreads)
@@ -225,6 +228,12 @@ public final class VideoDecoder {
     /// fails repeatedly, is replaced by a software decoder resuming at the same position.
     private func handleDecodeError(_ code: Int32) throws {
         consecutiveErrors += 1
+        if (backend as? VTBackend)?.usingPackedOutput == true,
+           (code == kVTParameterErr || lastFrameNumber == nil || consecutiveErrors >= 3),
+           let ordinary = try? VTBackend(stream: source.videoStream) {
+            try replaceBackend(with: ordinary)
+            return
+        }
         if isHardware && (framesSinceOpen == 0 || consecutiveErrors >= 3) {
             try replaceBackend(with: FFmpegBackend(stream: source.videoStream, hardware: false, softwareThreads: softwareThreads))
             return

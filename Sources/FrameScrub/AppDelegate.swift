@@ -144,7 +144,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         } else if let url = pendingURL {
             controller.open(url)
         } else {
-            controller.showHome()
+            controller.showInitialHome()
         }
         if CommandLine.arguments.contains("--bench-virtual-cut"),
            let card = ProcessInfo.processInfo.environment["FRAMESCRUB_VIRTUAL_CUT_BENCH_CARD"] {
@@ -378,6 +378,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func openDocument(_ sender: Any?) {
         let panel = NSOpenPanel()
+        panel.prompt = "Open Video"
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -663,6 +664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func smallerCards(_ sender: Any?) { controller?.resizeHomeCards(.smallerSize) }
     @objc func defaultCardSize(_ sender: Any?) { controller?.resizeHomeCards(.reset) }
     @objc func showHome(_ sender: Any?) { controller?.showHome() }
+    @objc func restoreLastFileSession(_ sender: Any?) { controller?.restoreLastFileSession() }
     @objc func refreshHome(_ sender: Any?) { controller?.refreshHome() }
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
@@ -685,6 +687,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return true
         }
 
+        if item.action == #selector(restoreLastFileSession(_:)) { return controller?.canRestoreLastFileSession == true }
         if item.action == #selector(refreshHome(_:)) { return controller?.canRefreshHome == true }
         if item.action == #selector(toggleFilmstrip(_:)) {
             item.title = controller?.filmstripShown == true ? "Fold Filmstrip" : "Show Filmstrip"
@@ -819,6 +822,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         recentMenu.delegate = self
         recentItem.submenu = recentMenu
         fileMenu.addItem(recentItem)
+        fileMenu.addItem(withTitle: "Last Session", action: #selector(restoreLastFileSession(_:)),
+                         keyEquivalent: "").target = self
         // Home's own keys (⌘= / ⌘− / ⌘0, ⌘ + wheel, pinch, the side wheel); listed here to be found in Help.
         // No key on the items: a menu key is taken even while its item is off, and ⌘= / ⌘− zoom a video.
         fileMenu.addItem(withTitle: "Larger Cards", action: #selector(largerCards(_:)), keyEquivalent: "").target = self

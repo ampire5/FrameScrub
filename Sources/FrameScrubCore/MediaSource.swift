@@ -35,7 +35,13 @@ public final class MediaSource {
         // fragmented MP4, and probing would read more of the file.
         if noParse { allocated.pointee.flags |= AVFMT_FLAG_NOPARSE }
         var context: UnsafeMutablePointer<AVFormatContext>? = allocated
-        try check(avformat_open_input(&context, url.path, nil, nil), "open \(url.lastPathComponent)")   // frees it on failure
+        var options: OpaquePointer?
+        defer { av_dict_free(&options) }
+        if url.pathExtension.lowercased() == "gif" {
+            // A positive GIF delay can be one centisecond. Keep the demuxer's default for missing/zero delays.
+            av_dict_set(&options, "min_delay", "1", 0)
+        }
+        try check(avformat_open_input(&context, url.path, nil, &options), "open \(url.lastPathComponent)") // frees it on failure
         guard let fc = context else { throw FFmpegError(-1, "open \(url.lastPathComponent)") }
         let video: Int32
         let probe = cache.probe.flatMap { $0.matches(fc) ? $0 : nil }
@@ -122,6 +128,11 @@ public final class MediaSource {
     /// Seeks `stream` to the last keyframe at or before `pts` (that stream's time base).
     func seek(stream: Int32, toPTS pts: Int64) -> Int32 {
         avformat_seek_file(formatContext, stream, Int64.min, pts, pts, 0)
+    }
+
+    /// The container's existing seek timestamp, which may be a decode timestamp rather than a presentation time.
+    func indexedKeyframe(atOrBefore pts: Int64) -> Int64? {
+        avformat_index_get_entry_from_timestamp(videoStream, pts, AVSEEK_FLAG_BACKWARD)?.pointee.timestamp
     }
 
     /// `avformat_seek_file` with explicit bounds (that stream's time base).

@@ -14,6 +14,7 @@ The mouse and trackpad work the same in both.
 |---|---|
 | Two-finger horizontal swipe (trackpad) | Pause and step frames (faster swipe = bigger steps) |
 | … with Shift (trackpad) | Fast frame scrubbing (×`scrub-fast-multiplier`) |
+| Hold the trackpad click over the video with one finger and swipe sideways with two others | Swipe left for the next video, right for the previous. Reverse direction while holding the click to step back. |
 | Wheel (vertical) | Pause and step frames (`scrub`) |
 | Hold right mouse button + wheel or scroll | Fast frame scrubbing (`MBTN_RIGHT+` bindings) |
 | Side wheel (`WHEEL_LEFT` / `WHEEL_RIGHT`) | Seek ∓10 s |
@@ -23,11 +24,15 @@ The mouse and trackpad work the same in both.
 | Pinch | Zoom about the fingers; halts at Fill (black bars gone) and 100 %, stretches past the limits and springs back. Never smaller than Fit |
 | ⌘+scroll, ⌘= / ⌘− | Zoom in / out (√√2 a step; about the pointer for ⌘+scroll), animated; ⌘0 back to Fit |
 | Two-finger double tap (Smart zoom) | Fit ↔ 100 % at the fingers (twice Fit where 100 % is not much larger) |
+| Three-finger double tap over the video | Enter or leave full screen |
+| Force Click over the video (Force Touch trackpad) | Show or hide video information |
 | Drag on a zoomed picture | Pan: the picture follows the cursor, glides on after release, rubber band at the edges (otherwise a drag moves the window) |
 | Right-button drag up / down | Zoom in / out about the press point (a right click without moving stays play / pause) |
 | Right click | Play / pause (acts on release, and not after a scroll or a zoom) |
 | Double click | Show the video in its folder (Home's Folders, the video selected; as ↩ and ⌘↑) |
 | Middle click | Full screen |
+| Side button Forward (Viewing profile) | Artifact filters on / off |
+| Hold Forward + wheel (Viewing profile) | Artifact filter strength ±5 percentage points |
 | Logitech MX Master 4: panel tap / hold | Auto colour on / off / vibrance on / off (this file) |
 | … panel + wheel | Auto colour strength ±0.05 (this file) |
 | … gesture button tap / hold | Save a frame / save the clips |
@@ -36,7 +41,8 @@ The mouse and trackpad work the same in both.
 | … Forward tap / hold | Cut mark: end here (`mark-out`) / delete the mark under the position (`mark-delete`) |
 | … Back or Forward held + wheel | Drag the start / end of the piece under the position, live |
 
-The Logitech rows need an MX Master and are described below; the rest of the table works with any mouse.
+The Logitech rows need an MX Master and are described below. If macOS uses a three-finger tap for Look Up, choose
+another option for Look Up & Data Detectors in System Settings → Trackpad.
 
 **Trackpad Scrub Momentum** (Settings → Scrolling) lets an unmodified horizontal two-finger swipe over the video
 keep stepping frames after you lift your fingers, using macOS trackpad momentum. It is off by default.
@@ -403,8 +409,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
 - Scrolling over the seek bar (wheel notch, or swipe like a scrub) moves the preview from keyframe to keyframe without
   touching playback; a click then goes to the keyframe shown. Moving the pointer lets the preview follow it again.
 - **Slots.** The window has three, left, right and bottom (View › Slots, ⌃⌘← / ⌃⌘→ / ⌃⌘↓); each holds tabs — the
-  playlist and plugin pages (`plugin=Name | URL`, repeatable; the `plugin=` page of a
-  `framescrub://open` link is a tab of its own for the run, listed as `Plugin`) — or nothing, whose **+** menu fills it.
+  playlist and plugin pages (`plugin=Name | URL`, repeatable) — or nothing, whose **+** menu fills it. A
+  `framescrub://open` link with `plugin=` offers that page as **Plugin** in the **+** menu for this session,
+  without opening a slot.
   A glass capsule over the slot's top holds the tabs, the shown view's tools (the playlist's filter and order) and pin,
   backdrop and hide; pages may read `--slot-top-inset` to keep clear of it. A slot is pinned (takes room from the video) or lies
   over it on a dark, glass or clear backdrop, hides on its own when the pointer leaves, after a choice or only when
@@ -438,6 +445,15 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   path. The pictures are JPEGs of up to 1280 pixels in the SQLite media cache
   (`~/Library/Caches/FrameScrub/media.sqlite`, the newest 200 last frames), saved when you leave a file; a file without one gets the keyframe at the place it was left, read in
   the background while Recent is up.
+- **Favorites** keeps folders above Places. Use a folder card or sidebar row's context menu to add or remove it.
+  Drag favorites to reorder them or use **Move Up** and **Move Down** in the context menu. Unavailable folders
+  stay in the list and can be removed or reordered.
+- **File View tabs** keep each folder's navigation history, selection and scroll position. Use **+** for another
+  tab at the current folder, or **Open in New Tab** from a folder's context menu. The tabs stay available above
+  Recent and Stash. Closing a video opened from a folder returns to its tab. In **Settings → Home & Interface**,
+  set **At launch** to **Last Session** to reopen the saved tabs when starting without a video. **File → Last
+  Session** replaces the current tabs from Home. The saved session includes the active tab, selections and scroll
+  positions.
 - **Places** in Home's sidebar are the home folder and the mounted volumes; each opens as a tree, and a folder shows
   its subfolders and its videos (the other files are left out) as cards with a keyframe from a tenth of the way in,
   the length and how far it was watched. The keyframes are made in the background, one file at a time, and kept in
@@ -598,7 +614,8 @@ recent-count=50                 # 1…200, recent videos Home's Recent shows
 home-sidebar=yes                # Home's sidebar (⌃⌘S)
 icon-set=sf                     # the line icons: lucide | sf (SF Symbols); read at launch
 single-instance=no              # yes: a second launch hands its file to the running window and quits (read at launch)
-home-tab=recent                 # where Home opens at launch: recent | folders | stash
+home-tab=recent                 # where Home opens: recent | folders | stash
+session-restore=none             # At launch without a video: none (Home) | last (Last Session)
 stash-url=                      # Stash server, e.g. http://localhost:9999; empty = off
 stash-api-key=                  # Stash API key when Stash has a login
 stash-path-map=                 # extra path rules stashPrefix=localPrefix;… tried before the mounted shares
@@ -609,7 +626,7 @@ slot-right=playlist, overlay, glass, mouse-leaves, 400, hidden, at-once  # right
 slot-bottom=empty, overlay, glass, mouse-leaves, 240, hidden, at-once    # bottom slot, as slot-left; its size is a height, 120…900
 slot-reveal-distance=12         # 2…60 points: how near the left or right edge the pointer brings a hidden slot (the bottom one: its last 2 points)
 slot-flash=no                   # yes: the playlist's slot shows for 0.8 s when the video changes by autoadvance or a key (as Zen's sidebar on a tab switch)
-mouse-profile=viewing           # viewing | editing: what the mouse's buttons do (editing: marks under back / forward; viewing: back shows the info, forward nothing). SmartShift held 0.6 s, or View › Mouse Buttons for Editing, switches
+mouse-profile=viewing           # viewing | editing: Back shows file info and Forward toggles filters in Viewing. In Editing both control marks. Hold SmartShift for 0.6 s or use View › Mouse Buttons for Editing to switch
 tourbox=no                     # yes: receive TourBox Console Max/MSP events on loopback TCP 50500 (trial)
 tourbox-frames-per-pulse=1       # 0.05…4: Knob frames per input pulse; independent of mouse sensitivity
 tourbox-accel=yes               # Knob click toggles and remembers this: yes=progressive acceleration, no=linear
@@ -895,8 +912,10 @@ iterations (0.765 RGB8 codes, 16 pixels, one iteration), strength 1, with grain 
 
 ### Compact filter controls
 
-N toggles experimental filters; Option-N opens the Filters tab in the shared side slot.
-Both are remappable (`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
+N and the Forward side button in the Viewing mouse profile toggle experimental filters.
+Hold Forward and turn the vertical wheel to change Overall effect by 5 percentage points per notch
+(`add artifact-strength ±0.05`). Option-N opens the Filters tab in the shared side slot. Both commands are remappable
+(`toggle-artifact-filters`, `toggle-artifact-filter-panel`). Existing
 left-hand B / Shift-B clip commands are unchanged. Auto activation remains deferred.
 The panel and Settings edit the same saved values. Sliders commit on release.
 

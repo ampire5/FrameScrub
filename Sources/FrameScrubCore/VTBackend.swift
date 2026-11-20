@@ -1,4 +1,5 @@
 import CFFmpeg
+import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -49,6 +50,9 @@ final class VTBackend: DecoderBackend {
     private var format: CMVideoFormatDescription
     private var session: VTDecompressionSession
     private let tenBit: Bool
+    private let packedOutputFormat: OSType?
+    private(set) var usingPackedOutput = false
+    private var checkedPackedOutput = false
     private let injection = VTBackend.injection
     private let state = State()
     private let dynamicRange: DynamicRange
@@ -77,7 +81,7 @@ final class VTBackend: DecoderBackend {
         return ParameterSets.parse(extradata: Data(bytes: extradata, count: Int(p.extradata_size)), family: family)
     }
 
-    init(stream: UnsafeMutablePointer<AVStream>) throws {
+    init(stream: UnsafeMutablePointer<AVStream>, prefersPackedOutput: Bool = false) throws {
         let parameters = stream.pointee.codecpar!
         guard let sets = Self.parameterSets(parameters) else { throw FFmpegError(-1, "not avcC/hvcC") }
         self.stream = stream
@@ -86,9 +90,17 @@ final class VTBackend: DecoderBackend {
         codecName = String(cString: avcodec_get_name(parameters.pointee.codec_id))
         queue = ReorderQueue(depth: Int(parameters.pointee.video_delay))
         tenBit = cff_pix_fmt_depth(parameters.pointee.format) > 8
+        let packed = parameters.pointee.color_range == AVCOL_RANGE_JPEG
+            ? kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarFullRange
+            : kCVPixelFormatType_Lossless_420YpCbCr10PackedBiPlanarVideoRange
+        packedOutputFormat = prefersPackedOutput && sets.family == .hevc &&
+            parameters.pointee.format == AV_PIX_FMT_YUV420P10LE.rawValue && CVIsCompressedPixelFormatAvailable(packed)
+            ? packed : nil
         format = try Self.makeFormat(parameters, Data(bytes: parameters.pointee.extradata,
                                                       count: Int(parameters.pointee.extradata_size)), sets)
-        session = try Self.makeSession(format, tenBit: tenBit)
+        let opened = try Self.makeSession(format, tenBit: tenBit, packed: packedOutputFormat)
+        session = opened.0
+        usingPackedOutput = opened.1
         sessionsCreated = 1
         let probe = try Self.attachmentProbe()
         dynamicRange = ColorAttachments.apply(from: parameters, to: probe)
@@ -120,28 +132,36 @@ final class VTBackend: DecoderBackend {
     private static let refusedUntil = Mutex<[String: TimeInterval]>([:])
     static let refusalMemory: TimeInterval = 60
 
-    private static func makeSession(_ format: CMVideoFormatDescription, tenBit: Bool) throws -> VTDecompressionSession {
-        if let makeSessionOverride { return try makeSessionOverride(format) }
+    private static func makeSession(_ format: CMVideoFormatDescription, tenBit: Bool,
+                                    packed: OSType?) throws -> (VTDecompressionSession, Bool) {
+        if let makeSessionOverride { return (try makeSessionOverride(format), false) }
         let key = "\(CMFormatDescriptionGetMediaSubType(format)) \(tenBit ? 10 : 8)"
         let now = ProcessInfo.processInfo.systemUptime
         if refusedUntil.withLock({ ($0[key] ?? 0) > now }) {
             throw FFmpegError(kVTCouldNotFindVideoDecoderErr, "VideoToolbox session (refused within the last minute)")
         }
         let specification = [kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder: true] as CFDictionary
-        let attributes = [kCVPixelBufferPixelFormatTypeKey: tenBit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
-                                                                   : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
-                          kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
-                          kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary
-        var session: VTDecompressionSession?
-        let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: format,
-                                                  decoderSpecification: specification,
-                                                  imageBufferAttributes: attributes, outputCallback: nil,
-                                                  decompressionSessionOut: &session)
+        func create(_ type: OSType) -> (OSStatus, VTDecompressionSession?) {
+            let attributes = [kCVPixelBufferPixelFormatTypeKey: type,
+                              kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+                              kCVPixelBufferMetalCompatibilityKey: true] as CFDictionary
+            var session: VTDecompressionSession?
+            let status = VTDecompressionSessionCreate(allocator: nil, formatDescription: format,
+                                                      decoderSpecification: specification, imageBufferAttributes: attributes,
+                                                      outputCallback: nil, decompressionSessionOut: &session)
+            return (status, session)
+        }
+        if let packed {
+            let (status, session) = create(packed)
+            if status == noErr, let session { return (session, true) }
+        }
+        let (status, session) = create(tenBit ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                                            : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
         guard status == noErr, let session else {
             refusedUntil.withLock { $0[key] = now + refusalMemory }
             throw FFmpegError(status, "VideoToolbox session")
         }
-        return session
+        return (session, false)
     }
 
     /// A tiny buffer to learn the dynamic range from the same mapping the frames get.
@@ -242,6 +262,17 @@ final class VTBackend: DecoderBackend {
             }
             guard let image = entry.image else { continue }
             _ = ColorAttachments.apply(from: stream.pointee.codecpar, to: image)
+            if usingPackedOutput, !checkedPackedOutput {
+                let type = CVPixelBufferGetPixelFormatType(image)
+                if type == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+                    type == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange {
+                    usingPackedOutput = false
+                } else if type != packedOutputFormat || CVPixelBufferGetIOSurface(image) == nil ||
+                    CIImage(cvPixelBuffer: image).extent.isEmpty {
+                    throw BackendError.corruptFrame(kVTParameterErr)
+                }
+                checkedPackedOutput = true
+            }
             queue.insert(BackendFrame(pts: entry.pts, pixelBuffer: image, dynamicRange: dynamicRange,
                                       pictureType: pictureTypes.removeValue(forKey: entry.pts)), pts: entry.pts)
         }
@@ -264,9 +295,11 @@ final class VTBackend: DecoderBackend {
         if forceNewSessionOnNextFormat || !VTDecompressionSessionCanAcceptFormatDescription(session, formatDescription: newFormat) {
             forceNewSessionOnNextFormat = false
             VTDecompressionSessionWaitForAsynchronousFrames(session)
-            let newSession = try Self.makeSession(newFormat, tenBit: tenBit)
+            let opened = try Self.makeSession(newFormat, tenBit: tenBit, packed: usingPackedOutput ? packedOutputFormat : nil)
             VTDecompressionSessionInvalidate(session)
-            session = newSession
+            session = opened.0
+            usingPackedOutput = opened.1
+            checkedPackedOutput = false
             sessionsCreated += 1
         }
         format = newFormat

@@ -20,7 +20,7 @@ final class TransportControls: NSView, NSPopoverDelegate {
     private let mute = TransportControls.button("speaker.wave.2.fill", "Mute")
     private let volume = TransportControls.button("chevron.down", "Volume")
     private let speed = NSButton(title: "1×", target: nil, action: nil)
-    private let full = TransportControls.button("arrow.up.left.and.arrow.down.right", "Full screen")
+    private let full = TransportControls.button("arrow.up.left.and.arrow.down.right", "Enter Full Screen")
     private let slider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private let popover = NSPopover()
     private var menuOpen = false
@@ -79,8 +79,10 @@ final class TransportControls: NSView, NSPopoverDelegate {
     }
     func update(volume value: Double, muted: Bool, paused: Bool, speed: Double) {
         if self.paused != paused {
-            play.image = Self.image(paused ? "play.fill" : "pause.fill", paused ? "Play" : "Pause")
-            play.setAccessibilityLabel(paused ? "Play" : "Pause")
+            let action = paused ? "Play" : "Pause"
+            play.image = Self.image(paused ? "play.fill" : "pause.fill", action)
+            play.setAccessibilityLabel(action)
+            play.toolTip = action
             self.paused = paused
         }
         let level = Int(value.rounded())
@@ -91,22 +93,36 @@ final class TransportControls: NSView, NSPopoverDelegate {
             if !popover.isShown { slider.doubleValue = value }
             self.level = level; self.muted = muted
         }
-        if rate != speed { self.speed.title = String(format: "%g×", speed); rate = speed }
+        if rate != speed {
+            let title = String(format: "%g×", speed)
+            self.speed.title = title
+            self.speed.setAccessibilityLabel("Playback speed, \(title)")
+            rate = speed
+        }
+    }
+
+    func updateFullscreen(_ fullscreen: Bool) {
+        let action = fullscreen ? "Exit Full Screen" : "Enter Full Screen"
+        full.image = Self.image(fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", action)
+        full.toolTip = action
+        full.setAccessibilityLabel(action)
     }
     private static func plate() -> NSView {
         let glass = NSVisualEffectView()
         glass.material = .hudWindow; glass.blendingMode = .withinWindow; glass.state = .active
-        glass.wantsLayer = true; glass.layer?.cornerRadius = Chrome.Radius.panel
+        glass.wantsLayer = true; glass.layer?.cornerRadius = 12
+        glass.layer?.borderWidth = 1
+        glass.layer?.borderColor = Chrome.Palette.overMedia.rim.cgColor
         glass.layer?.cornerCurve = .continuous
         glass.layer?.masksToBounds = true
         let veil = NSView(frame: glass.bounds); veil.wantsLayer = true
-        veil.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        veil.layer?.backgroundColor = Chrome.Palette.overMedia.glassTint.cgColor
         veil.autoresizingMask = [.width, .height]
         glass.addSubview(veil)
         return glass
     }
     private static func image(_ symbol: String, _ label: String) -> NSImage {
-        Icons.symbol(symbol, pointSize: 13, weight: .medium, description: label) ?? NSImage()
+        Icons.symbol(symbol, pointSize: 14, weight: .medium, description: label) ?? NSImage()
     }
     private static func button(_ symbol: String, _ label: String) -> NSButton {
         let button = NSButton(image: image(symbol, label), target: nil, action: nil)

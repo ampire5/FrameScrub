@@ -32,6 +32,7 @@ public final class CacheFiller: @unchecked Sendable {
     /// Frames kept above and below the playhead when not playing (`NetworkPolicy`), nil = what the budget allows.
     private let windowCap: (ahead: Int, behind: Int)?
     private let playbackLookahead: Int
+    private let prefersPackedOutput: Bool
     private let condition = NSCondition()
     private let finished = DispatchGroup()
     private var index: FrameIndex
@@ -104,7 +105,7 @@ public final class CacheFiller: @unchecked Sendable {
 
     public init(url: URL, index: FrameIndex, cache: FrameCache, estimatedFrameBytes: Int,
                 playbackLookahead: Int, preferHardware: Bool = true, readCache: ReadCache? = nil,
-                policy: NetworkPolicy = .local, frameRate: Double = 30,
+                policy: NetworkPolicy = .local, frameRate: Double = 30, prefersPackedOutput: Bool = false,
                 now: @escaping @Sendable () -> Double = CACurrentMediaTime) {
         self.url = url
         self.now = now
@@ -113,6 +114,7 @@ public final class CacheFiller: @unchecked Sendable {
         self.cache = cache
         self.estimatedFrameBytes = estimatedFrameBytes
         self.playbackLookahead = playbackLookahead
+        self.prefersPackedOutput = prefersPackedOutput
         self.policy = policy
         windowCap = policy.frameAheadSeconds.map {
             (max(2, Int($0 * frameRate)), max(0, Int((policy.frameBehindSeconds ?? $0) * frameRate)))
@@ -136,7 +138,10 @@ public final class CacheFiller: @unchecked Sendable {
     /// True while the workers run and the focus frame is neither cached nor known to be undecodable
     /// (the index scan yields meanwhile, spec §2.2).
     public var hasUnresolvedFocus: Bool {
-        condition.withLock { running && !cache.isResolved(clampedFocusLocked()) }
+        condition.withLock {
+            let n = clampedFocusLocked()
+            return running && !cache.hasReadyFrame(n) && !cache.isUndecodable(n)
+        }
     }
 
     /// Decoder creations attempted by both workers (for tests).
@@ -149,7 +154,17 @@ public final class CacheFiller: @unchecked Sendable {
     var poolReleases: Int { condition.withLock { poolReleaseCount } }
 
     public func start() {
-        condition.withLock { running = true }
+        condition.withLock {
+            running = true
+            cache.observeTierChanges { [weak self] number, ready in
+                guard let self else { return }
+                let isRunning = condition.withLock {
+                    condition.broadcast()
+                    return running
+                }
+                if isRunning, ready { onInsert?(number) }
+            }
+        }
         let loops: [@Sendable () -> Void] = [{ self.forwardLoop() }, { self.backwardLoop() }]
         for body in loops {
             finished.enter()
@@ -167,6 +182,7 @@ public final class CacheFiller: @unchecked Sendable {
     public func stop(waitForExit: Bool = true) {
         condition.withLock {
             running = false
+            cache.observeTierChanges(nil)
             indexVersion += 1
             condition.broadcast()
         }
@@ -556,7 +572,7 @@ public final class CacheFiller: @unchecked Sendable {
                 slot.decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache,
                                                         readAhead: slot.forward || policy.sideReadAhead),
                                                 index: currentIndex,
-                                                preferHardware: hardware)
+                                                preferHardware: hardware, prefersPackedOutput: prefersPackedOutput)
                 slot.decoder?.diagnosticRole = slot.forward ? "forward" : "reverse"
                 slot.hardware = hardware
                 slot.failures = 0

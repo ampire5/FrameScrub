@@ -13,7 +13,10 @@ final class VideoView: NSView {
     var onKeyUp: ((NSEvent) -> Void)?
     var onScroll: ((NSEvent) -> Void)?
     var onScrollGestureReset: (() -> Void)?
+    var onHeldTrackpadStep: ((HeldTrackpadSwipe.Direction) -> Void)?
     var onMagnify: ((NSEvent) -> Void)?
+    var onForceClick: (() -> Void)?
+    var onThreeFingerDoubleTap: (() -> Void)?
     var onMouseButton: ((String) -> Void)?
     /// A single left click on the picture (the slots over the video hide).
     var onLeftClick: (() -> Void)?
@@ -135,6 +138,18 @@ final class VideoView: NSView {
     private var needsRender = false
     private var frameLink: CADisplayLink?
     private var rightUsedAsModifier = false
+    private var heldTrackpadSwipe = HeldTrackpadSwipe()
+    private var videoClick = VideoClick()
+    private var threeFingerTap = ThreeFingerDoubleTap<TouchIdentity>()
+
+    // NSTouch instances are transient. AppKit gives each contact a stable Objective-C identity.
+    private struct TouchIdentity: Hashable {
+        let value: any NSObjectProtocol
+
+        static func == (lhs: Self, rhs: Self) -> Bool { lhs.value.isEqual(rhs.value) }
+        func hash(into hasher: inout Hasher) { hasher.combine(value.hash) }
+    }
+    private var trackpadPanStart: ViewTransform?
     private let flashLayer = CALayer()
 
     // Subject Focus (SubjectFocus.swift)
@@ -167,6 +182,8 @@ final class VideoView: NSView {
         commandQueue = device.makeCommandQueue()!
         context = CIContext(mtlDevice: device, options: [.cacheIntermediates: false])
         super.init(frame: .zero)
+        allowedTouchTypes = [.indirect]
+        pressureConfiguration = NSPressureConfiguration(pressureBehavior: .primaryDeepClick)
         lowLatency.onChange = { [weak self] in self?.needsRender = true }
         llScaler = DisplayScaler(device: device, context: context)
         llZoomScaler = DisplayScaler(device: device, context: context)
@@ -508,6 +525,7 @@ final class VideoView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        cancelTrackpadGestures()
         frameLink?.invalidate()
         frameLink = nil
         guard window != nil else { return }
@@ -846,6 +864,22 @@ final class VideoView: NSView {
     override func keyDown(with event: NSEvent) { onKeyDown?(event) }
     override func keyUp(with event: NSEvent) { onKeyUp?(event) }
     override func scrollWheel(with event: NSEvent) {
+        if event.momentumPhase.isEmpty, event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 {
+            threeFingerTap.cancel()
+        }
+        if event.hasPreciseScrollingDeltas {
+            // AppKit reports the fingers' direction with natural scrolling and flips it otherwise.
+            let sign = event.isDirectionInvertedFromDevice ? 1.0 : -1.0
+            switch heldTrackpadSwipe.scroll(x: sign * event.scrollingDeltaX, y: sign * event.scrollingDeltaY,
+                                            begins: event.phase.contains(.began) || event.phase.isEmpty,
+                                            momentum: !event.momentumPhase.isEmpty, primaryDown: NSEvent.pressedMouseButtons & 1 != 0) {
+            case .pass: break
+            case .consume: return
+            case .step(let direction):
+                onHeldTrackpadStep?(direction)
+                return
+            }
+        }
         // A pointer drag owns its right press through release; a wheel cannot replace it midway.
         if NSEvent.pressedMouseButtons & 0b10 != 0, zoomPan.rmbDragging { return }
         // Only real scrolling cancels the right click: not zero-delta phase events or momentum.
@@ -856,14 +890,81 @@ final class VideoView: NSView {
         }
         onScroll?(event)
     }
-    override func magnify(with event: NSEvent) { onMagnify?(event) }
+    override func magnify(with event: NSEvent) {
+        threeFingerTap.cancel()
+        if !heldTrackpadSwipe.isPressed { onMagnify?(event) }
+    }
+
+    override func touchesBegan(with event: NSEvent) { updateTrackpadTouches(event) }
+    override func touchesMoved(with event: NSEvent) { updateTrackpadTouches(event) }
+    override func touchesEnded(with event: NSEvent) { updateTrackpadTouches(event) }
+    override func touchesCancelled(with event: NSEvent) {
+        cancelTrackpadTouches()
+        videoClick.drag()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        cancelTrackpadGestures()
+    }
+
+    func cancelTrackpadGestures() {
+        cancelTrackpadTouches()
+        videoClick = VideoClick()
+    }
+
+    private func cancelTrackpadTouches() {
+        if heldTrackpadSwipe.isPressed { cancelTrackpadPan() }
+        heldTrackpadSwipe = HeldTrackpadSwipe()
+        threeFingerTap = ThreeFingerDoubleTap()
+    }
+
+    override func pressureChange(with event: NSEvent) {
+        guard videoClick.pressure(stage: event.stage),
+              zoomAllowed(), heldTrackpadSwipe.touchCount < 2, !heldTrackpadSwipe.ownsPress else { return }
+        threeFingerTap.cancel()
+        _ = heldTrackpadSwipe.endPress()
+        cancelTrackpadPan()
+        onForceClick?()
+    }
+
+    private func updateTrackpadTouches(_ event: NSEvent) {
+        let touches = event.touches(matching: .touching, in: self)
+        let center: CGPoint? = touches.count == 3 ? touches.reduce(CGPoint.zero) { sum, touch in
+            CGPoint(x: sum.x + touch.normalizedPosition.x / 3, y: sum.y + touch.normalizedPosition.y / 3)
+        } : nil
+        let alreadyOwned = heldTrackpadSwipe.ownsPress
+        let direction = heldTrackpadSwipe.touches(count: touches.count, center: center,
+                                                  primaryDown: NSEvent.pressedMouseButtons & 1 != 0)
+        if heldTrackpadSwipe.ownsPress, !alreadyOwned {
+            cancelTrackpadPan()
+            videoClick.drag()
+        }
+        if let direction { onHeldTrackpadStep?(direction) }
+        guard zoomAllowed() else { return }
+        let positions = Dictionary(uniqueKeysWithValues: touches.map {
+            (TouchIdentity(value: $0.identity), $0.normalizedPosition)
+        })
+        if threeFingerTap.update(positions, at: event.timestamp, interval: NSEvent.doubleClickInterval) {
+            onThreeFingerDoubleTap?()
+        }
+    }
+
+    private func cancelTrackpadPan() {
+        defer { trackpadPanStart = nil }
+        guard panPress else { return }
+        panPress = false
+        if zoomPan.isDragging { NSCursor.arrow.set() }
+        zoomPan.cancelLeftDrag(restoring: trackpadPanStart)
+    }
 
     /// A pinch bound to the continuous zoom (`PINCH_IN/OUT zoom`), about the fingers.
     func zoomMagnify(_ event: NSEvent) { zoomPan.magnify(event, at: drawablePoint(event)) }
 
     /// Two-finger double tap (the system's "Smart zoom"): Fit ↔ 100 % at the fingers.
     override func smartMagnify(with event: NSEvent) {
-        guard zoomAllowed() else { return }
+        threeFingerTap.cancel()
+        guard zoomAllowed(), !heldTrackpadSwipe.isPressed else { return }
         zoomPan.smartZoom(at: drawablePoint(event))
     }
 
@@ -936,18 +1037,28 @@ final class VideoView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        threeFingerTap.cancel()
+        videoClick.begin(count: event.clickCount)
         onScrollGestureReset?()
+        let trackpadPress = zoomAllowed() && !event.modifierFlags.contains(.control)
+            && NSEvent.pressedMouseButtons == 1 && heldTrackpadSwipe.beginPress()
+        if heldTrackpadSwipe.ownsPress {
+            videoClick.drag()
+            return
+        }
         // A zoomed picture larger than the view is grabbed: the drag pans it instead of moving the window.
         panPress = zoomAllowed() && zoomPan.canPan
         if panPress { zoomPan.leftDown(at: drawablePoint(event), time: event.timestamp) }
-        if event.clickCount == 1 { onLeftClick?() }
-        if event.clickCount == 2 { onMouseButton?("MBTN_LEFT_DBL") }
+        trackpadPanStart = panPress && trackpadPress ? zoomPan.transform : nil
+        if !trackpadPress, event.clickCount == 1 { onLeftClick?() }
     }
 
     /// Dragging anywhere on the picture moves the window (like other players), except in full screen; on a zoomed
     /// picture it pans (`ZoomPan`). `performDrag` instead of `isMovableByWindowBackground`, which would swallow the
     /// double click.
     override func mouseDragged(with event: NSEvent) {
+        videoClick.drag()
+        if heldTrackpadSwipe.isPressed, heldTrackpadSwipe.ownsPress || heldTrackpadSwipe.touchCount > 1 { return }
         if panPress {
             if zoomPan.isDragging { NSCursor.closedHand.set() }
             zoomPan.leftDragged(to: drawablePoint(event), time: event.timestamp)
@@ -955,13 +1066,24 @@ final class VideoView: NSView {
         }
         guard let window, !window.styleMask.contains(.fullScreen) else { return }
         window.performDrag(with: event)
+        // AppKit's window drag may consume the mouse-up.
+        _ = heldTrackpadSwipe.endPress()
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard panPress else { return }
-        panPress = false
-        if zoomPan.isDragging { NSCursor.arrow.set() }
-        zoomPan.leftUp(time: event.timestamp)
+        let trackpadPress = heldTrackpadSwipe.isPressed
+        _ = heldTrackpadSwipe.endPress()
+        trackpadPanStart = nil
+        if panPress {
+            panPress = false
+            if zoomPan.isDragging { NSCursor.arrow.set() }
+            zoomPan.leftUp(time: event.timestamp)
+        }
+        switch videoClick.end() {
+        case 1 where trackpadPress: onLeftClick?()
+        case 2: onMouseButton?("MBTN_LEFT_DBL")
+        default: break
+        }
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {

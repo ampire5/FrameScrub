@@ -15,12 +15,15 @@ let package = Package(
     products: [
         .executable(name: "FrameScrub", targets: ["FrameScrub"]),
         .executable(name: "FrameScrubBench", targets: ["FrameScrubBench"]),
+        .executable(name: "FrameScrubPlaybackProvider", targets: ["FrameScrubPlaybackProvider"]),
+        .library(name: "FrameScrubPlayback", type: .static, targets: ["FrameScrubCore"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.3.0"),
-        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.13.4"),
+        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.15.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.8.1"),
         // The Logitech mouse goes through MouseService (a local mirror in .swiftpm/configuration/mirrors.json while
         // working on both).
@@ -34,12 +37,14 @@ let package = Package(
         ),
         .systemLibrary(name: "CSQLite"),
         .target(name: "ObjCCatch"),
+        .target(name: "CNV12Bitpack"),
         .target(
             name: "FrameScrubCore",
             dependencies: [
                 "CFFmpeg",
                 "ObjCCatch",
                 "CSQLite",
+                "CNV12Bitpack",
                 .product(name: "LogiHIDPP", package: "LogiHIDPP"),
                 .product(name: "InfoPanelModel", package: "InfoPanelKit"),
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
@@ -89,7 +94,16 @@ let package = Package(
                 .product(name: "FilmstripModel", package: "HomeScreenKit"),
                 .product(name: "SettingsKit", package: "SettingsKit"),
                 .product(name: "MouseClient", package: "MouseService"),
+                .product(name: "EverythingSearchUI", package: "EverythingMac"),
             ]
+        ),
+        .executableTarget(
+            name: "FrameScrubPlaybackProvider",
+            dependencies: ["FrameScrubCore"],
+            swiftSettings: [.swiftLanguageMode(.v5), .unsafeFlags(["-application-extension"])],
+            // Match Xcode's ExtensionKit bundle entry point. Foundation starts the extension runtime
+            // before calling the Swift AppExtension main.
+            linkerSettings: [.unsafeFlags(["-Xlinker", "-e", "-Xlinker", "_NSExtensionMain"])]
         ),
         .testTarget(
             name: "FrameScrubCoreTests",

@@ -23,6 +23,7 @@ final class TemporalNoiseFilter {
 
     static func pixelFormat(for frame: DecodedFrame) -> OSType {
         let format = CVPixelBufferGetPixelFormatType(frame.pixelBuffer)
+        if frame.usesNativePacked10 { return format }
         let tenBit = frame.dynamicRange != .sdr || format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
             || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
         let full = format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
@@ -70,9 +71,14 @@ final class TemporalNoiseFilter {
         let future = Array(references.filter { $0.seconds > seconds }.prefix(configuration.nextFrameCount ?? 0))
         guard !past.isEmpty || !future.isEmpty else { throw Failure.noReferences }
         func prepared(_ frame: DecodedFrame, _ time: Double) throws -> VTFrameProcessorFrame {
-            let buffer = try Self.buffer(sourcePool)
-            try Self.check(VTPixelTransferSessionTransferImage(transfer, from: frame.pixelBuffer, to: buffer))
-            CVBufferPropagateAttachments(frame.pixelBuffer, buffer)
+            let buffer: CVPixelBuffer
+            if frame.usesNativePacked10 {
+                buffer = frame.pixelBuffer
+            } else {
+                buffer = try Self.buffer(sourcePool)
+                try Self.check(VTPixelTransferSessionTransferImage(transfer, from: frame.pixelBuffer, to: buffer))
+                CVBufferPropagateAttachments(frame.pixelBuffer, buffer)
+            }
             guard let wrapped = VTFrameProcessorFrame(buffer: buffer, presentationTimeStamp: CMTime(seconds: time, preferredTimescale: 600_000)) else { throw Failure.buffer }
             return wrapped
         }

@@ -136,3 +136,41 @@ extension OpenLinkTests {
         #expect(target?.landing.advance == nil)
     }
 }
+
+@Test func playbackHandoffCanRequirePausedLanding() throws {
+    let request = try #require(URL(string: "framescrub://open?path=/sample.mp4&t=1.25&paused=1"))
+    let landing = try #require(OpenLink.target(from: request)?.landing)
+    #expect(landing.time == 1.25)
+    #expect(landing.paused == true)
+    #expect(!landing.isEmpty)
+
+    let normal = try #require(URL(string: "framescrub://open?path=/sample.mp4"))
+    #expect(OpenLink.target(from: normal)?.landing.paused == nil)
+}
+
+@MainActor
+@Test func pausedHandoffRetainsVFRPresentationTimeAfterIndexing() async throws {
+    let (_, exact) = try openIndexed(Fixtures.vfr)
+    let url = Fixtures.url(Fixtures.vfr)
+    let approximate = try MediaSource(url: url).approximateIndex()
+    let frame = try #require((0..<exact.frameCount).first { n in
+        let t = exact.seconds(forFrame: n)
+        let estimated = approximate.pts(forFrame: approximate.frameNumber(forSeconds: t))
+        return exact.nearestFrameNumber(forPTS: estimated) != n
+    })
+    let time = exact.seconds(forFrame: frame)
+    var config = Config()
+    config.autoplay = true
+    let player = PlayerCore(config: config, enableAudio: false, fallbackRoot: makeTemporaryDirectory())
+    defer { player.close() }
+    let open = player.preparation(for: url)
+    let prepared = try await Task.detached { try open() }.value
+    player.open(prepared, landingTime: time, startPaused: true)
+    player.applyLanding(LinkTarget(time: time, paused: true))
+    #expect(player.isPaused)
+    #expect(player.displayedFrame == nil)
+    #expect(await eventually { player.index?.isExact == true })
+    #expect(await eventually { player.displayedFrame == frame })
+    #expect(player.position == frame)
+    #expect(player.isPaused)
+}

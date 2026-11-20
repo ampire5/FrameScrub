@@ -14,12 +14,13 @@ final class SoftwareFrameConverter {
 
     deinit { sws_freeContext(sws) }
 
-    func convert(_ frame: UnsafePointer<AVFrame>) throws -> CVPixelBuffer {
+    func convert(_ frame: UnsafePointer<AVFrame>, preserveBGRA: Bool = false) throws -> CVPixelBuffer {
         let width = Int(frame.pointee.width)
         let height = Int(frame.pointee.height)
         let highBitDepth = cff_pix_fmt_depth(frame.pointee.format) > 8
         let fullRange = Self.isFullRange(frame)
-        let cvFormat = highBitDepth
+        let packed = preserveBGRA && frame.pointee.format == AV_PIX_FMT_BGRA.rawValue
+        let cvFormat = packed ? kCVPixelFormatType_32BGRA : highBitDepth
             ? (fullRange ? kCVPixelFormatType_420YpCbCr10BiPlanarFullRange : kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange)
             : (fullRange ? kCVPixelFormatType_420YpCbCr8BiPlanarFullRange : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
         let avFormat = highBitDepth ? AV_PIX_FMT_P010LE : AV_PIX_FMT_NV12
@@ -43,6 +44,21 @@ final class SoftwareFrameConverter {
         guard let pool, CVPixelBufferPoolCreatePixelBuffer(nil, pool, &created) == kCVReturnSuccess,
               let buffer = created else {
             throw FFmpegError(-1, "allocate pixel buffer")
+        }
+
+        if packed {
+            CVPixelBufferLockBaseAddress(buffer, [])
+            defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+            guard let pixels = frame.pointee.data.0, let destination = CVPixelBufferGetBaseAddress(buffer) else {
+                throw FFmpegError(-1, "copy GIF pixels")
+            }
+            let sourceStride = Int(frame.pointee.linesize.0)
+            let targetStride = CVPixelBufferGetBytesPerRow(buffer)
+            for row in 0..<height {
+                destination.advanced(by: row * targetStride)
+                    .copyMemory(from: pixels.advanced(by: row * sourceStride), byteCount: width * 4)
+            }
+            return buffer
         }
 
         sws = sws_getCachedContext(sws, Int32(width), Int32(height),

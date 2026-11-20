@@ -7,6 +7,12 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 - **Light, dark or system theme everywhere.** The start screen, the playlist panel and the other dark-only windows follow the choice in Settings.
 - **Subtitles and audio tracks.** Embedded and external subtitles, switching between audio and subtitle tracks, remembered per file.
 
+## Implemented in the next release
+
+- Favorite folders in the sidebar and on a dedicated Favorites page, plus tabs and recursive browsing in File View.
+- Toggle artifact filters with Forward in the Viewing mouse profile. Hold Forward and scroll to adjust their strength.
+- A more visible playhead in the thumbnail filmstrip.
+
 ## Recently shipped
 
 - Viewing timeline with a thumbnail filmstrip, adjustable time lens, linear overview and transport controls.
@@ -26,6 +32,7 @@ FrameScrub is made by one person in their spare time, so there are no dates here
 
 ## Exploring
 
+- **Everything search in Home.** Try opening videos directly from results provided by a user-configured Everything server.
 - **Media-server plugins.** A documented plugin architecture shared with Loupe: a *source* (library, metadata, watched state, resume points, history) and a *transport* (local path, share, HTTP range requests, HLS). The existing Stash integration becomes the first plugin; others — Plex, Jellyfin, Emby, DLNA, plain HLS streams — are open to the community.
 - **Real-time neural upscaling** during playback (`VTLowLatencySuperResolutionScaler`), and integer scaling for pixel checks.
 

@@ -3,6 +3,8 @@ import FrameScrubCore
 
 StartupTrace.mark("main")
 
+if CommandLine.arguments.contains("--bench-cache-scrub") { MainActor.assumeIsolated { CacheScrubBench.launch() } }
+
 if CommandLine.arguments.contains("--bench-timeline") { MainActor.assumeIsolated { SeekBarBench.run() } }
 if CommandLine.arguments.contains("--bench-home-updates") { MainActor.assumeIsolated { HomeUpdatesBench.run() } }
 

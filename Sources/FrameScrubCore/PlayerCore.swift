@@ -89,10 +89,10 @@ public final class PlayerCore {
     public private(set) var networkPolicy = NetworkPolicy.local
     /// A terminal missing picture has finished foreground work too; side previews must not wait for it forever.
     public var allowsBackgroundPreview: Bool {
-        guard let index, index.frameCount > 0, cache.isResolved(position) else { return false }
+        guard let index, index.frameCount > 0, cache.hasReadyFrame(position) || cache.isUndecodable(position) else { return false }
         if isPaused { return true }
         let next = min(index.frameCount - 1, max(0, position + direction))
-        return cache.isResolved(next)
+        return cache.hasReadyFrame(next) || cache.isUndecodable(next)
     }
     public private(set) var index: FrameIndex?
     public private(set) var position = 0
@@ -189,7 +189,8 @@ public final class PlayerCore {
     /// Signature of the last frame measured for the stats.
     private var statsSignature: (session: Int, signature: SceneSignature)?
     private var sharpnessPending: (session: Int, frame: Int)?
-    private let sharpnessQueue = DispatchQueue(label: "framescrub.sharpness", qos: .utility)
+    private let sharpnessWorker = LatestOnlyWorker<@Sendable () -> Void>(label: "framescrub.sharpness", qos: .utility) { $0() }
+    private var sharpnessCancel = CancellationFlag()
     private var decodeErrorShown = false
     private(set) var session = 0
     private var memoryPressure: DispatchSourceMemoryPressure?
@@ -198,6 +199,8 @@ public final class PlayerCore {
     /// Id of the keyframe seek whose landing may still move the position (spec §2.3); bumped by every
     /// other seek so a late landing never moves the user.
     private(set) var landingID = 0
+    private var pendingHandoffTime: Double?
+    private var waitsForHandoffPicture = false
     /// Direction of the running seek series (spec §3.2): frames that arrive on the way are shown only if
     /// they move the picture this way.
     var seekDirection = 1
@@ -210,7 +213,9 @@ public final class PlayerCore {
     /// Frames farther than this from the target are not shown as stand-ins while decoding.
     private static let standInDistance = 300
 
-    public init(config: Config, enableAudio: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
+    private let cacheCompression: Bool
+
+    public init(config: Config, enableAudio: Bool = true, cacheCompression: Bool = true, fallbackRoot: URL = FrameNaming.defaultFallbackRoot,
                 now: @escaping () -> Double = CACurrentMediaTime, resumeStore: ResumeStore? = nil,
                 byteSource: @escaping @Sendable (URL, Config) throws -> ByteSource = {
                     try ByteSources.open($0, headers: StashOpenPolicy.headers(for: $0, config: $1))
@@ -219,10 +224,11 @@ public final class PlayerCore {
         self.byteSource = byteSource
         self.now = now
         self.enableAudio = enableAudio
+        self.cacheCompression = cacheCompression
         self.fallbackRoot = fallbackRoot
         self.resumeStore = resumeStore
         baseBudget = config.cacheSizeMiB << 20
-        cache = FrameCache(budgetBytes: baseBudget)
+        cache = FrameCache(budgetBytes: baseBudget, packsNV12: cacheCompression)
         clock = PlaybackClock(now: now)
         volume = config.volume
         segmentAdvance = config.segmentAdvance
@@ -234,6 +240,7 @@ public final class PlayerCore {
         close()
     }
 
+    public var playbackDecoderKind: DecoderBackendKind? { filler?.decoderStatus?.backend }
     public var frameCount: Int { index?.frameCount ?? 0 }
     /// A cut segment owns these bounds while its underlying file is playing.
     public var virtualPlaybackBounds: Range<Double>? { didSet { syncCacheRegions() } }
@@ -280,7 +287,7 @@ public final class PlayerCore {
 
     /// Opens a file `preparation(for:)` read; the file open until now is left. `landingTime` as for `open(_:)`.
     public func open(_ prepared: PreparedOpen, fallbackPosition: Double? = nil, landingTime: Double? = nil,
-                     virtualBounds: Range<Double>? = nil, virtualIndex: FrameIndex? = nil) {
+                     virtualBounds: Range<Double>? = nil, virtualIndex: FrameIndex? = nil, startPaused: Bool = false) {
         let url = prepared.url, readCache = prepared.readCache, source = prepared.source
         networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
@@ -318,7 +325,7 @@ public final class PlayerCore {
                                  estimatedFrameBytes: source.estimatedFrameBytes,
                                  playbackLookahead: max(8, Int(source.frameRate * 2)),
                                  preferHardware: config.hwdec.prefersHardware, readCache: readCache,
-                                 policy: networkPolicy, frameRate: source.frameRate)
+                                 policy: networkPolicy, frameRate: source.frameRate, prefersPackedOutput: cacheCompression)
         filler.onInsert = { [weak self] n in
             DispatchQueue.main.async { self?.frameInserted(n, session: current) }
         }
@@ -352,8 +359,10 @@ public final class PlayerCore {
         if !initialIndex.isExact { buildIndexInBackground(url, readCache: readCache, session: current) }
         let initialFrame = virtualBounds.flatMap { _ in landingTime }.map { initialIndex.frameNumber(forSeconds: $0) } ?? 0
         seek(toFrame: initialFrame)
+        waitsForHandoffPicture = startPaused && landingTime != nil
+        if waitsForHandoffPicture, !initialIndex.isExact { pendingHandoffTime = landingTime }
         resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
-        if config.autoplay, virtualBounds == nil { play() }
+        if config.autoplay, virtualBounds == nil, !startPaused { play() }
         // Start in the final playback/pause mode and at the restored position, never in the
         // filler's default paused mode while open/export/audio setup is still being prepared.
         filler.start()
@@ -366,6 +375,8 @@ public final class PlayerCore {
 
     /// `announcing` false: `onSegmentChange` is left for the caller (`open` restoring segments given before it).
     private func close(announcing: Bool) {
+        pendingHandoffTime = nil
+        waitsForHandoffPicture = false
         cancelEdgeDrag()   // before the marks are remembered: the drag never reached them
         // Persist only an observed display date: Home may have hidden this paused video for hours.
         rememberPosition()
@@ -376,6 +387,8 @@ public final class PlayerCore {
         indexFlag = nil
         filler?.stop(waitForExit: false)   // never block the UI thread on decoders
         filler = nil
+        sharpnessCancel.cancel()
+        sharpnessCancel = CancellationFlag()
         audio?.stop()
         audio = nil
         scrubAudio?.stop()
@@ -432,6 +445,10 @@ public final class PlayerCore {
             setMemoryPressureFactor(pressureFactor)   // keeps a budget lowered by memory pressure
         }
         rebuildExporter()
+    }
+
+    public func applyArtifactFilters(_ filters: ArtifactFilterSettings) {
+        config.artifactFilters = filters
     }
 
     private func rebuildExporter() {
@@ -575,6 +592,10 @@ public final class PlayerCore {
     private func indexFailed(session current: Int) {
         guard current == session else { return }
         indexStatus = .failed
+        if let time = pendingHandoffTime {
+            pendingHandoffTime = nil
+            seek(toSeconds: time)
+        }
         if virtualPlaybackBounds != nil, cache.isUndecodable(position), displayedFrame != position {
             onVirtualPictureUnavailable?()
         }
@@ -617,6 +638,10 @@ public final class PlayerCore {
             displayedFrame = nil
         }
         index = exact
+        if let time = pendingHandoffTime {
+            pendingHandoffTime = nil
+            position = exact.frameNumber(forSeconds: time)
+        }
         rebuildSegments()   // from the seconds given, not remapped: the exact frames of those times
         if let segments = lockedSegments { position = segments.nearest(position) }
         StartupTrace.mark("exact index ready")
@@ -638,6 +663,8 @@ public final class PlayerCore {
 
     public func play() {
         guard let index else { return }
+        pendingHandoffTime = nil
+        waitsForHandoffPicture = false
         if shuttleSpeed { applySpeed(1) }   // Space after the shuttle: 1× (spec §2)
         let loop = playbackLoop
         if virtualPlaybackBounds != nil {
@@ -697,7 +724,7 @@ public final class PlayerCore {
     /// Released motion may advance only while the next requested picture is already ready.
     public func coastFilm(toFrame target: Int) -> Bool {
         guard isPaused, held(target, hold: .glued) == target else { return false }
-        guard cache.contains(target) else {
+        guard cache.hasReadyFrame(target) else {
             // A short cache gap can end a coast, but use any ready travel before it.
             if let ready = cache.readyFilmSeekFrames(from: position, to: target).last,
                held(ready, hold: .glued) == ready {
@@ -718,6 +745,8 @@ public final class PlayerCore {
     /// Every seek, step and scrub ends here, so each is held inside the locked segments.
     private func move(toFrame n: Int, direction: Int, hold: SegmentHold = .glued) {
         guard let index else { return }
+        pendingHandoffTime = nil
+        waitsForHandoffPicture = false
         if let bounds = virtualFrameBounds {
             position = min(max(n, bounds.lowerBound), bounds.upperBound)
         } else {
@@ -913,7 +942,7 @@ public final class PlayerCore {
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .showInFolder, .cycleABLoopMode, .toggleArtifactFilters, .toggleArtifactFilterPanel, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .toggleSubjectFocus, .cycleSubjectFocus, .toggleSubjectFocusPanel, .cycleAspect, .windowScale, .windowFit,
-             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .scrubEdge, .pluginAction: break
+             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .addArtifactStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
         case .shuttleForward: shuttle(.forward)
@@ -946,7 +975,7 @@ public final class PlayerCore {
         if let a = loopA { text += " · " + offsetText(position - a, prefix: "A") }
         if let i = marks.segmentIndex(containing: position) { text += " · mark \(i + 1)/\(marks.segments.count)" }
         if index?.isExact == false { text += " ≈" }
-        if !cache.contains(position) { text += " …" }
+        if !cache.hasReadyFrame(position) { text += " …" }
         return text
     }
 
@@ -1002,12 +1031,26 @@ public final class PlayerCore {
         if let frame = cache.frame(position), sharpnessPending.map({ $0 != key }) ?? true {
             sharpnessPending = key
             let previous = statsSignature.flatMap { $0.session == session ? $0.signature : nil }
-            sharpnessQueue.async { [weak self] in
-                let score = SharpnessMeter.score(frame.pixelBuffer)
+            let rawURL = frame.usesNativePacked10 ? url : nil
+            let index = self.index
+            let readCache = self.readCache
+            let cancel = sharpnessCancel
+            sharpnessWorker.submit { [weak self] in
+                guard !cancel.isCancelled else { return }
+                let score: Double?
+                if let rawURL, let index,
+                   let source = try? MediaSource(url: rawURL, readCache: readCache, readAhead: false),
+                   let decoder = try? VideoDecoder(source: source, index: index),
+                   (try? decoder.seek(toFrame: frame.number)) != nil,
+                   let ordinary = try? decoder.nextFrame(), ordinary.number == frame.number {
+                    score = SharpnessMeter.score(ordinary.pixelBuffer)
+                } else {
+                    score = SharpnessMeter.score(frame.pixelBuffer)
+                }
                 let signature = SceneSignature.of(FrameImageRenderer.image(for: frame, rotationClockwise: 0, toneMapToSDR: true))
                 let change = previous.map { DuplicateFilter.change($0, signature) }
                 DispatchQueue.main.async {
-                    guard let self else { return }
+                    guard let self, self.session == key.session else { return }
                     self.sharpness = (key.session, key.frame, score, change)
                     self.statsSignature = (key.session, signature)
                     if let pending = self.sharpnessPending, pending == key { self.sharpnessPending = nil }
@@ -1116,8 +1159,31 @@ public final class PlayerCore {
     }
 
     private func showCurrent() {
+        if pendingHandoffTime != nil {
+            delegate?.playerStateDidChange(self)
+            return
+        }
+        if waitsForHandoffPicture {
+            if let frame = cache.frame(position) { display(frame) }
+            delegate?.playerStateDidChange(self)
+            return
+        }
         checkPendingScreenshot()
-        let standIn: DecodedFrame? = cache.nearestAvailable(to: position).flatMap {
+        let candidate: DecodedFrame?
+        if seekTimer.isRunning, let shown = displayedFrame {
+            // A cached stand-in can disappear when its frame leaves the ready
+            // window. Keep it on screen until a replacement advances the seek.
+            if seekDirection > 0, shown <= position {
+                candidate = cache.nearest(to: position, within: shown...position)
+            } else if seekDirection < 0, shown >= position {
+                candidate = cache.nearest(to: position, within: position...shown)
+            } else {
+                candidate = nil
+            }
+        } else {
+            candidate = cache.nearestAvailable(to: position)
+        }
+        let standIn: DecodedFrame? = candidate.flatMap {
             if let bounds = virtualFrameBounds, !bounds.contains($0.number) { return nil }
             return abs($0.number - position) <= Self.standInDistance ? $0 : nil
         }
@@ -1130,6 +1196,8 @@ public final class PlayerCore {
 
     /// Puts `frame` on screen; in pause it also gets its piece of scrub audio.
     private func display(_ frame: DecodedFrame) {
+        guard pendingHandoffTime == nil, !waitsForHandoffPicture || frame.number == position else { return }
+        waitsForHandoffPicture = false
         StartupTrace.markOnce("first frame to view")
         displayedFrame = frame.number
         if viewingVisible { recordActualView() }
@@ -1214,7 +1282,7 @@ public final class PlayerCore {
         var n = min(max(position + frames, 0), index.frameCount - 1)
         while cache.isUndecodable(n), n + direction >= 0, n + direction < index.frameCount { n += direction }
         seek(toFrame: n, direction: direction)
-        frameOSDPending = !cache.contains(position)
+        frameOSDPending = !cache.hasReadyFrame(position)
         osd(frameText)
     }
 
@@ -1234,7 +1302,7 @@ public final class PlayerCore {
         let target = direction > 0 ? index.keyframe(after: position) ?? position
             : index.keyframe(atOrBefore: max(position - 1, 0))
         seek(toFrame: target, direction: direction)
-        frameOSDPending = !cache.contains(position)
+        frameOSDPending = !cache.hasReadyFrame(position)
         osd(frameText)
     }
 
@@ -1279,7 +1347,7 @@ public final class PlayerCore {
         let target = min(max(frame, 0), max(index.frameCount - 1, 0))
         seekDirection = target < position ? -1 : 1
         seek(toFrame: target, direction: seekDirection, hold: hold)
-        frameOSDPending = !cache.contains(position)
+        frameOSDPending = !cache.hasReadyFrame(position)
         osd(frameText)
     }
 
@@ -1483,11 +1551,17 @@ public final class PlayerCore {
     /// is false), then its time, else the start of the first segment — over the remembered position and Stash's resume
     /// point. Without segments, only the time. Announced once, where it lands.
     public func applyLanding(_ landing: LinkTarget) {
+        if landing.paused == true, !isPaused { pause() }
         if !landing.segments.isEmpty {
             assignSegments(seconds: landing.segments, lock: landing.lock ?? true, advance: landing.advance)
         }
         if let index, let time = landing.time {
-            seek(toFrame: index.frameNumber(forSeconds: time), direction: 0, hold: .nearest)
+            if landing.paused == true, !index.isExact {
+                pendingHandoffTime = time
+                waitsForHandoffPicture = true
+            } else {
+                seek(toFrame: index.frameNumber(forSeconds: time), direction: 0, hold: .nearest)
+            }
         } else if !landing.segments.isEmpty, let first = segments?.ranges.first {
             seek(toFrame: first.lowerBound, direction: 0, hold: .nearest)
         }
