@@ -23,7 +23,7 @@ struct EnginePlaybackView: View {
                     transportButton("Next frame", icon: "forward.frame.fill") { service.step(1) { _ in } }
                 }
                 Slider(value: Binding(get: { service.scrubbing ? service.scrubPosition : service.position },
-                                      set: service.scrub),
+                                      set: { value, _ in service.scrub(value) }),
                        in: 0...max(service.duration, 0.001), onEditingChanged: service.editScrub) {
                     Text("Seek")
                 }
@@ -44,7 +44,7 @@ struct EnginePlaybackView: View {
                                     icon: service.muted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
                         service.toggleMute()
                     }
-                    Slider(value: Binding(get: { service.volume }, set: service.setVolume), in: 0...100) {
+                    Slider(value: Binding(get: { service.volume }, set: { value, _ in service.setVolume(value) }), in: 0...100) {
                         Text("Volume")
                     }
                     .labelsHidden()
@@ -55,7 +55,7 @@ struct EnginePlaybackView: View {
                 }
                 Menu {
                     Toggle("Auto Color", isOn: Binding(get: { service.autoColorEnabled },
-                                                       set: service.setAutoColor))
+                                                       set: { value, _ in service.setAutoColor(value) }))
                     Divider()
                     Button("Vibrance Off") { service.setVibrance(0) }
                     Button("Low vibrance") { service.setVibrance(0.25) }

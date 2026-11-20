@@ -31,13 +31,13 @@ struct OutputSizeField: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Picker("Output size", selection: Binding(get: { kind }, set: { choose($0) })) {
+            Picker("Output size", selection: Binding(get: { kind }, set: { value, _ in choose(value) })) {
                 ForEach(Kind.allCases) { Text($0.rawValue).tag($0) }
             }
             .labelsHidden()
             .fixedSize()
             if kind == .width || kind == .height {
-                TextField("Pixels", text: Binding(get: { pixelsText }, set: typePixels))
+                TextField("Pixels", text: Binding(get: { pixelsText }, set: { value, _ in typePixels(value) }))
                     .multilineTextAlignment(.trailing)
                     .font(.body.monospacedDigit())
                     .frame(width: 64)
