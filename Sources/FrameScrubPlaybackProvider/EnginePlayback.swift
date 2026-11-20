@@ -23,7 +23,7 @@ struct EnginePlaybackView: View {
                     transportButton("Next frame", icon: "forward.frame.fill") { service.step(1) { _ in } }
                 }
                 Slider(value: Binding(get: { service.scrubbing ? service.scrubPosition : service.position },
-                                      set: { value, _ in service.scrub(value) }),
+                                      set: { value, _ in service.scrub(to: value) }),
                        in: 0...max(service.duration, 0.001), onEditingChanged: service.editScrub) {
                     Text("Seek")
                 }
