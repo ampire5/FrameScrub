@@ -11,7 +11,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # renovate: datasource=github-tags depName=FFmpeg/FFmpeg extractVersion=^n(?<version>\d+\.\d+(?:\.\d+)?)$
-ffmpeg_version=9.0.2
+ffmpeg_version=9.1
 # renovate: datasource=github-tags depName=videolan/dav1d
 dav1d_version=1.5.4
 min=26.0
