@@ -19,7 +19,7 @@ let package = Package(
         .library(name: "FrameScrubPlayback", type: .static, targets: ["FrameScrubCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.0"),
+        .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.3"),
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.3.0"),
