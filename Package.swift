@@ -21,7 +21,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
-        .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.0"),
+        .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.1"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.3.0"),
         .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.15.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.8.1"),

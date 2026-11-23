@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/InfoPanelKit.git",
       "state" : {
-        "revision" : "28b6b575b196c68271e70e4abbc4fe6e37ae3c54",
-        "version" : "0.2.0"
+        "revision" : "f6b5af8d976543d336530949a75a1c87a3e7d525",
+        "version" : "0.2.1"
       }
     },
     {
