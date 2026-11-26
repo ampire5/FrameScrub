@@ -13,7 +13,11 @@ import Testing
     }
 
     @Test func describesAudio() throws {
-        #expect(try format(Fixtures.withAudio).audioText == "aac LC, 48 kHz, mono, 70 kbit/s")
+        let media = try format(Fixtures.withAudio)
+        let audio = try #require(media.audio)
+        // The generated fixture's AAC bit rate varies between FFmpeg encoders.
+        #expect(audio.bitRate > 0)
+        #expect(media.audioText == "aac LC, 48 kHz, mono, \(MediaFormat.rate(audio.bitRate))")
     }
 
     @Test func fallsBackToTheFileBitRateWhenTheStreamHasNone() throws {
