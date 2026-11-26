@@ -42,8 +42,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ampire5/MouseService.git",
       "state" : {
-        "revision" : "1f852452c99dcc343eeb1a2a63d532bfe07a40ba",
-        "version" : "0.3.0"
+        "revision" : "b41650dcbb5f8391aae49e9053dcdb8b7c31e125",
+        "version" : "0.5.0"
       }
     },
     {
