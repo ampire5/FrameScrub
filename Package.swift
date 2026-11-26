@@ -19,15 +19,15 @@ let package = Package(
         .library(name: "FrameScrubPlayback", type: .static, targets: ["FrameScrubCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.0"),
+        .package(url: "https://github.com/ampire5/EverythingMac.git", from: "0.1.3"),
         .package(url: "https://github.com/ampire5/LogiHIDPP.git", from: "0.1.0"),
         .package(url: "https://github.com/ampire5/InfoPanelKit.git", from: "0.2.0"),
         .package(url: "https://github.com/ampire5/StashKit.git", from: "0.3.0"),
-        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.15.0"),
+        .package(url: "https://github.com/ampire5/HomeScreenKit.git", from: "0.16.0"),
         .package(url: "https://github.com/ampire5/SettingsKit.git", from: "0.8.1"),
         // The Logitech mouse goes through MouseService (a local mirror in .swiftpm/configuration/mirrors.json while
         // working on both).
-        .package(url: "https://github.com/ampire5/MouseService.git", from: "0.3.0"),
+        .package(url: "https://github.com/ampire5/MouseService.git", from: "0.5.0"),
     ],
     targets: [
         .systemLibrary(
@@ -50,6 +50,7 @@ let package = Package(
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "SlotModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
+                .product(name: "MouseClient", package: "MouseService"),
             ],
             resources: [.copy("Resources/GrainTemplates")]
         ),
@@ -115,6 +116,7 @@ let package = Package(
                 .product(name: "HomeScreenModel", package: "HomeScreenKit"),
                 .product(name: "SlotModel", package: "HomeScreenKit"),
                 .product(name: "StashKit", package: "StashKit"),
+                .product(name: "MouseClient", package: "MouseService"),
             ],
             swiftSettings: usesCommandLineTools ? [.unsafeFlags(["-plugin-path", testingPluginPath])] : []
         ),

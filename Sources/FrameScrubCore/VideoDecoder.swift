@@ -18,6 +18,7 @@ public final class VideoDecoder {
     public var codecName: String { backend.codecName }
 
     private let softwareThreads: Int32
+    private var seekPackets: Int?
     private let packet: UnsafeMutablePointer<AVPacket>
     private var inputEnded = false
     private var seekTarget: Int?
@@ -36,6 +37,13 @@ public final class VideoDecoder {
     /// as many buffers as were ever out at once, in VTDecoderXPCService, until the session goes (flushing the pool
     /// does not free them). 0 for a software decoder, whose pool ages out in this process.
     public var poolSurplus: Int { isHardware ? outputs.surplus : 0 }
+
+    /// The owner registers only while waiting, when retaining a surplus pool is avoidable.
+    func watchPoolSurplus(over limit: Int, notify: @escaping @Sendable () -> Void) -> Bool {
+        isHardware && outputs.watchSurplus(over: limit, notify: notify)
+    }
+
+    func stopWatchingPoolSurplus() { outputs.stopWatchingSurplus() }
 
     private static let backoffFrames = [1, 32, 128, 512]
 
@@ -78,6 +86,7 @@ public final class VideoDecoder {
         let clamped = min(max(target, 0), max(index.frameCount - 1, 0))
         seekTarget = clamped
         seekAttempts = 0
+        if source.isHLS, clamped == 0, framesSinceOpen == 0, !inputEnded, lastFrameNumber == nil { return }
         try seekDemuxer(toFrame: index.keyframe(atOrBefore: clamped))
     }
 
@@ -87,6 +96,18 @@ public final class VideoDecoder {
         seekTarget = nil
         seekAttempts = 0
         try seekDemuxer(toFrame: min(max(target, 0), max(index.frameCount - 1, 0)))
+    }
+
+    /// HLS selects segments on the decode timeline. A backward seek one frame
+    /// before a keyframe's presentation time can still land on that keyframe.
+    func previousHLSKeyframe(before frame: Int) throws -> DecodedFrame? {
+        for offset in [2, 4, 8, 16, 32, 128, 512] where frame > 0 {
+            let target = max(0, frame - offset)
+            try seekToKeyframe(near: target)
+            if let decoded = try nextFrame(), decoded.number < frame { return decoded }
+            if target == 0 { break }
+        }
+        return nil
     }
 
     /// Spec §2.3: positions on a keyframe strictly after (`direction` > 0) or before (< 0) `current`, preferring
@@ -131,13 +152,44 @@ public final class VideoDecoder {
     }
 
     public var diagnosticRole = "other"
+    var reportsHTTPReadFailures = false
 
     public func nextFrame() throws -> DecodedFrame? {
+        try nextFrame(keepingPrerollFrom: nil) { _ in }
+    }
+
+    /// For `continuingTo`, the owner must have decoded an earlier picture in the same GOP with
+    /// this decoder and index. A cursor that ends or passes the target gets one ordinary seek.
+    func nextFrame(keepingPrerollFrom start: Int?, previewPreroll: ClosedRange<Int>? = nil, continuingTo: Int? = nil,
+                   isObsolete: (() -> Bool)? = nil,
+                   onPreroll: (DecodedFrame) -> Void) throws -> DecodedFrame? {
+        var retryFromKeyframe = continuingTo
+        if let continuingTo {
+            seekTarget = continuingTo
+            seekAttempts = 0
+        }
         let diagnosticStart = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
+        if diagnosticStart > 0, seekTarget != nil { seekPackets = 0 }
+        defer {
+            if let count = seekPackets {
+                PlaybackDiagnostics.shared.record("seek_video_packets", Double(count),
+                                                  group: "decoder.\(diagnosticRole).\(isHardware ? "hardware" : "software")")
+                seekPackets = nil
+            }
+        }
         while true {
             // A pool per frame: a seek's pre-roll can decode a whole GOP in this loop, and anything left autoreleased
             // with a frame keeps its IOSurface (VTDecoderXPCService memory) until the caller's pool drains.
-            guard let decoded = try autoreleasepool(invoking: { try receiveFrame() }) else { return nil }
+            let picture = try autoreleasepool {
+                try receiveFrame(keepingPrerollFrom: start, previewPreroll: previewPreroll, isObsolete: isObsolete)
+            }
+            if let target = retryFromKeyframe, picture.map({ $0.number > target }) ?? true {
+                if isObsolete?() == true { throw CancellationError() }
+                retryFromKeyframe = nil
+                try seek(toFrame: target)
+                continue
+            }
+            guard let decoded = picture else { return nil }
             if let target = seekTarget {
                 // Past the target is a bad seek, unless the target was among the frames asked to be skipped.
                 let targetSkipped = skipBefore.map { target < $0 } ?? false
@@ -147,7 +199,12 @@ public final class VideoDecoder {
                     try seekDemuxer(toFrame: index.keyframe(atOrBefore: max(0, lastSeekFrame - backoff)))
                     continue
                 }
-                if decoded.number < target { continue }   // pre-roll from the keyframe
+                if decoded.number < target {
+                    if start.map({ decoded.number >= $0 }) == true || previewPreroll?.contains(decoded.number) == true {
+                        onPreroll(decoded)
+                    }
+                    continue
+                }
                 seekTarget = nil
             }
             lastFrameNumber = decoded.number
@@ -169,8 +226,10 @@ public final class VideoDecoder {
         lastFrameNumber = nil
     }
 
-    private func receiveFrame() throws -> DecodedFrame? {
+    private func receiveFrame(keepingPrerollFrom start: Int?, previewPreroll: ClosedRange<Int>?,
+                              isObsolete: (() -> Bool)?) throws -> DecodedFrame? {
         while true {
+            if isObsolete?() == true { throw CancellationError() }
             let result: BackendResult
             do { result = try backend.receive() } catch BackendError.corruptFrame(let code) {
                 try handleDecodeError(code)
@@ -187,24 +246,41 @@ public final class VideoDecoder {
                 return nil
             case .needsInput:
                 if inputEnded { return nil }
-                try feedPacket()
+                try feedPacket(keepingPrerollFrom: start, previewPreroll: previewPreroll, isObsolete: isObsolete)
             }
         }
     }
 
-    private func feedPacket() throws {
+    private func feedPacket(keepingPrerollFrom start: Int?, previewPreroll: ClosedRange<Int>?,
+                            isObsolete: (() -> Bool)?) throws {
         while true {
-            if source.read(into: packet) < 0 {
+            let result = source.read(into: packet)
+            defer { av_packet_unref(packet) }
+            if isObsolete?() == true { throw CancellationError() }
+            if result < 0 {
+                if source.isHLS, result != cff_error_eof() { try check(result, "read HLS video") }
+                if !source.isHLS, reportsHTTPReadFailures {
+                    let status = source.byteReadError ?? result
+                    if status != cff_error_eof() { try check(status, "read HTTP video") }
+                }
                 try backend.drain()   // the delayed frames come out
                 inputEnded = true
                 return
             }
-            defer { av_packet_unref(packet) }
             guard packet.pointee.stream_index == source.videoStreamIndex else { continue }
+            seekPackets? += 1
             do {
                 let pts = packet.pointee.pts
-                let preRoll = seekTarget.map { pts != cff_nopts() && index.frameNumber(forPTS: pts) < $0 } ?? false
-                try backend.send(packet, output: !preRoll, mayDrop: skipsBeforeTarget(pts))
+                let discardBefore = seekTarget.map { target in min(start ?? target, target) }
+                var preRoll = false
+                var preview = false
+                if let discardBefore, pts != cff_nopts() {
+                    let number = index.frameNumber(forPTS: pts)
+                    preRoll = number < discardBefore
+                    preview = previewPreroll?.contains(number) == true
+                }
+                try backend.send(packet, output: !preRoll || preview,
+                                 mayDrop: !preview && skipsBeforeTarget(pts, seekLimit: discardBefore))
             } catch BackendError.corruptFrame(let code) {
                 try handleDecodeError(code)
                 continue
@@ -219,8 +295,8 @@ public final class VideoDecoder {
     /// The pre-roll from a keyframe up to the seek target is thrown away, and so are frames a caller catching up
     /// has been passed by; of those, only frames others refer to must be decoded. Skipping the rest roughly halves
     /// the work with B-frames (long GOPs over a NAS, fast scrubbing).
-    private func skipsBeforeTarget(_ pts: Int64) -> Bool {
-        guard pts != cff_nopts(), let limit = [seekTarget, skipBefore].compactMap({ $0 }).max() else { return false }
+    private func skipsBeforeTarget(_ pts: Int64, seekLimit: Int?) -> Bool {
+        guard pts != cff_nopts(), let limit = [seekLimit, skipBefore].compactMap({ $0 }).max() else { return false }
         return pts < index.pts(forFrame: limit)
     }
 
@@ -276,6 +352,7 @@ private final class OutputTracker: @unchecked Sendable {
     private let lock = NSLock()
     private var alive = 0
     private var peak = 0
+    private var surplusWatch: (limit: Int, notify: @Sendable () -> Void)?
 
     var surplus: Int { lock.withLock { peak - alive } }
 
@@ -288,7 +365,27 @@ private final class OutputTracker: @unchecked Sendable {
         }
     }
 
-    private func released() { lock.withLock { alive -= 1 } }
+    /// True if the owner can release its pool now. Otherwise arm a one-shot notification.
+    func watchSurplus(over limit: Int, notify: @escaping @Sendable () -> Void) -> Bool {
+        lock.withLock {
+            if peak - alive > limit { return true }
+            surplusWatch = (limit, notify)
+            return false
+        }
+    }
+
+    func stopWatchingSurplus() { lock.withLock { surplusWatch = nil } }
+
+    private func released() {
+        let notify = lock.withLock { () -> (@Sendable () -> Void)? in
+            alive -= 1
+            guard let watch = surplusWatch, peak - alive > watch.limit else { return nil }
+            surplusWatch = nil
+            return watch.notify
+        }
+        // A pixel buffer can be released while the filler or cache is locked.
+        if let notify { DispatchQueue.global(qos: .utility).async(execute: notify) }
+    }
 
     private static var key: CFString { "FrameScrubOutputToken" as CFString }
 

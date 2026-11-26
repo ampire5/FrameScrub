@@ -204,6 +204,25 @@ import Testing
         #expect(Command.parse(Command.saveClip.configText) == .saveClip)
     }
 
+    @Test func colourStrengthKeysWorkInBothLayouts() throws {
+        let bindings = [
+            ("Alt+-", "add auto-color-strength -0.05"),
+            ("Alt+=", "add auto-color-strength 0.05"),
+            ("Ctrl+-", "add vibrance -0.05"),
+            ("Ctrl+=", "add vibrance 0.05"),
+        ]
+        for (key, text) in bindings {
+            let chord = try #require(KeyChord.parse(key))
+            let command = try #require(Command.parse(text))
+            #expect(command.configText == text)
+            #expect(command.repeatsWhenHeld)
+            #expect(KeyHelp.describe(command)?.section == .picture)
+            for layout in [KeyLayout.classic, .leftHand] {
+                #expect(InputMap(layout: layout).command(for: chord) == command)
+            }
+        }
+    }
+
     @Test func colourMemoryCommandsRoundTrip() {
         let commands: [(Command, String)] = [
             (.saveAutoColor(folder: false), "save-auto-color"), (.saveAutoColor(folder: true), "save-auto-color folder"),
@@ -367,7 +386,7 @@ import Testing
         #expect(map.command(for: KeyChord(key: "h", modifiers: .shift)) == .cycleSubjectFocus)
         #expect(Command.parse("cycle-subject-focus") == .cycleSubjectFocus)
         #expect(map.command(for: KeyChord.parse("Alt+h")!) == .toggleSubjectFocusPanel)
-        #expect(map.bindings.count == 137)   // h ⇧H ⌥H Subject Focus, ⇧C ⇧V ⌥C ⌥V and ⌘⇧C for clips, then the original 88 lines, the middle button and its wheel volume, the shuttle on ⌃J ⌃K ⌃L, 8 right button + scroll, ⌥m, ⇧⌥m, ⌥l, ⇧↑ ⇧↓, ⌥ + wheel volume, 16 MX / side button lines, ⌘W, ↩ and ⌘↑ show-in-folder
+        #expect(map.bindings.count == 141)
         #expect(map.command(for: KeyChord.parse("Ctrl+j")!) == .shuttleBack)
         #expect(map.command(for: KeyChord.parse("Ctrl+k")!) == .shuttleStop)
         #expect(map.command(for: KeyChord.parse("Ctrl+l")!) == .shuttleForward)

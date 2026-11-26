@@ -143,6 +143,7 @@ public struct Config: Equatable, Sendable {
     public var hwdec = HardwareDecoding.auto
     /// Gentle reading of network volumes (`NetworkPolicy`).
     public var networkMode = NetworkMode.auto
+    public var preferStreamBitrate = true
     public var resumePlayback = true
     public var playlistAutoadvance = true
     /// Start playing every file as it opens (after the resume position is applied).
@@ -195,9 +196,17 @@ public struct Config: Equatable, Sendable {
     public var tourBoxAccelerates = true
     public var tourBoxAccelerationStart = 12.0
     public var tourBoxScrollPoints = 4.0
+    public var tourBoxInvertsScroll = false
+    public var tourBoxSwapsKnobModifiers = false
+    public var d100h = false
+    public var d100hMuteDetents = false
+    public var d100hEdgeOffset = 10.0
     /// `plugin-open-allowed`: origins (`http://host:port`, comma-separated) whose pages may open local videos.
     public var pluginOpenAllowed = ""
     public var preview = true
+    public var navigationFilmstrip = true
+    public var navigationFilmstripWidth = 49.0
+    public var navigationFilmstripHeight = 106.0
     public var previewWidth = 240.0
     public var exportMode = ExportMode.all
     public var exportEvery = 10
@@ -289,6 +298,9 @@ public struct Config: Equatable, Sendable {
     /// Every key `framescrub.conf` understands, in file order.
     public static let keys = [
         "tourbox", "tourbox-frames-per-pulse", "tourbox-accel", "tourbox-accel-start", "tourbox-scroll-points",
+        "tourbox-scroll-invert",
+        "tourbox-knob-modifiers-swap",
+        "d100h", "d100h-mute-detents", "d100h-edge-offset",
         "cache-size", "read-cache", "volume", "resume-playback", "playlist-autoadvance", "autoplay", "activate-on-open", "playlist-sort", "playlist-font-size", "playlist-view", "playlist-strip-return", "home-card-size", "recent-count", "home-sidebar", "session-restore", "icon-set", "single-instance", "home-tab", "stash-url", "stash-api-key", "stash-path-map", "stash-stream", "plugin-open-allowed", "slot-left", "slot-right", "slot-bottom", "slot-reveal-distance", "slot-flash", "mouse-profile", "seek-mode", "scene-threshold", "scene-lookahead", "scene-check-time", "scene-search-time", "hwdec", "network-mode",
         "scrub-px-per-frame", "scrub-accel-from", "scrub-accel-max", "scrub-invert", "scrub-fast-multiplier", "scrub-accel",
         "scrub-trackpad-momentum", "scrub-trackpad-momentum-distance", "wheel-precision", "wheel-precision-mode", "wheel-precision-frames", "wheel-precision-time",
@@ -296,7 +308,8 @@ public struct Config: Equatable, Sendable {
         "frame-format", "jpeg-quality", "heic-quality", "frame-dir", "frame-template", "export-threads",
         "export-mode", "export-every", "export-fps", "export-scale", "export-sharp", "export-skip-blurry", "export-sharp-threshold", "export-sharp-neighbours",
         "export-skip-duplicates", "export-duplicate-change", "clip-template", "clip-read-limit", "clip-mode", "clip-confirm",
-        "preview", "preview-width", "scale", "sharpen",
+        "preview", "preview-width", "navigation-filmstrip", "navigation-filmstrip-width", "navigation-filmstrip-height",
+        "scale", "sharpen", "prefer-stream-bitrate",
         "artifact-grain", "artifact-grain-amount", "artifact-grain-size", "artifact-grain-base", "artifact-grain-adaptation", "artifact-enabled", "artifact-antiring", "artifact-deband", "artifact-chroma", "artifact-strength", "artifact-antiring-strength", "artifact-deband-strength", "artifact-deband-threshold", "artifact-deband-radius", "artifact-deband-iterations", "artifact-texture-protection", "artifact-chroma-strength", "artifact-compare", "artifact-dither",
         "ll-sr", "ll-interpolation", "temporal-noise", "temporal-noise-strength", "temporal-noise-mode", "save-scale",
         "vibrance", "vibrance-on", "auto-color", "auto-color-strength", "auto-color-filters", "auto-color-vibrance-gain", "auto-color-interval", "auto-color-threshold", "auto-color-full", "save-color", "ontop", "stats-font-size",
@@ -336,11 +349,16 @@ public struct Config: Equatable, Sendable {
         case "slot-reveal-distance": return String(slotRevealDistance)
         case "slot-flash": return yesNo(slotFlash)
         case "mouse-profile": return mouseProfile.rawValue
+        case "d100h": return yesNo(d100h)
+        case "d100h-mute-detents": return yesNo(d100hMuteDetents)
+        case "d100h-edge-offset": return formatNumber(d100hEdgeOffset)
         case "tourbox": return yesNo(tourBox)
         case "tourbox-frames-per-pulse": return formatNumber(tourBoxFramesPerPulse)
         case "tourbox-accel": return yesNo(tourBoxAccelerates)
         case "tourbox-accel-start": return formatNumber(tourBoxAccelerationStart)
         case "tourbox-scroll-points": return formatNumber(tourBoxScrollPoints)
+        case "tourbox-scroll-invert": return yesNo(tourBoxInvertsScroll)
+        case "tourbox-knob-modifiers-swap": return yesNo(tourBoxSwapsKnobModifiers)
         case "seek-mode": return seekMode.rawValue
         case "scene-threshold": return formatNumber(sceneThreshold)
         case "scene-lookahead": return String(sceneLookahead)
@@ -348,6 +366,7 @@ public struct Config: Equatable, Sendable {
         case "scene-search-time": return formatNumber(sceneSearchTime)
         case "hwdec": return hwdec.rawValue
         case "network-mode": return networkMode.rawValue
+        case "prefer-stream-bitrate": return yesNo(preferStreamBitrate)
         case "scrub-px-per-frame": return formatNumber(scrub.pxPerFrame)
         case "scrub-accel-from": return formatNumber(scrub.accelFrom)
         case "scrub-accel-max": return formatNumber(scrub.accelMax)
@@ -386,6 +405,9 @@ public struct Config: Equatable, Sendable {
         case "clip-mode": return clipMode.rawValue
         case "clip-confirm": return yesNo(clipConfirm)
         case "preview": return yesNo(preview)
+        case "navigation-filmstrip": return yesNo(navigationFilmstrip)
+        case "navigation-filmstrip-width": return formatNumber(navigationFilmstripWidth) + "%"
+        case "navigation-filmstrip-height": return formatNumber(navigationFilmstripHeight)
         case "preview-width": return formatNumber(previewWidth)
         case "scale": return scaleMode.rawValue
         case "artifact-grain": return artifactFilters.grain.rawValue
@@ -535,6 +557,7 @@ public struct Config: Equatable, Sendable {
         case "scene-search-time": guard let v = double(0.5...120) else { return false }; sceneSearchTime = v
         case "hwdec": guard let v = HardwareDecoding(rawValue: value.lowercased()) else { return false }; hwdec = v
         case "network-mode": guard let v = NetworkMode(rawValue: value.lowercased()) else { return false }; networkMode = v
+        case "prefer-stream-bitrate": guard let v = bool() else { return false }; preferStreamBitrate = v
         case "resume-playback": guard let v = bool() else { return false }; resumePlayback = v
         case "playlist-autoadvance": guard let v = bool() else { return false }; playlistAutoadvance = v
         case "autoplay": guard let v = bool() else { return false }; autoplay = v
@@ -565,13 +588,31 @@ public struct Config: Equatable, Sendable {
         case "slot-reveal-distance": guard let v = int(2...60) else { return false }; slotRevealDistance = v
         case "slot-flash": guard let v = bool() else { return false }; slotFlash = v
         case "mouse-profile": guard let v = MouseProfile(rawValue: value.lowercased()) else { return false }; mouseProfile = v
+        case "d100h": guard let v = bool() else { return false }; d100h = v
+        case "d100h-mute-detents": guard let v = bool() else { return false }; d100hMuteDetents = v
+        case "d100h-edge-offset": guard let v = double(0...50) else { return false }; d100hEdgeOffset = v
         case "tourbox": guard let v = bool() else { return false }; tourBox = v
         case "tourbox-frames-per-pulse": guard let v = double(0.05...4) else { return false }; tourBoxFramesPerPulse = v
         case "tourbox-accel": guard let v = bool() else { return false }; tourBoxAccelerates = v
         case "tourbox-accel-start": guard let v = double(4...120) else { return false }; tourBoxAccelerationStart = v
         case "tourbox-fast-multiplier": guard double(1...64) != nil else { return false } // legacy coarse scale; ignored
         case "tourbox-scroll-points": guard let v = double(0.1...64) else { return false }; tourBoxScrollPoints = v
+        case "tourbox-scroll-invert": guard let v = bool() else { return false }; tourBoxInvertsScroll = v
+        case "tourbox-knob-modifiers-swap": guard let v = bool() else { return false }; tourBoxSwapsKnobModifiers = v
         case "preview": guard let v = bool() else { return false }; preview = v
+        case "navigation-filmstrip": guard let v = bool() else { return false }; navigationFilmstrip = v
+        case "navigation-filmstrip-width":
+            let hasPercent = value.hasSuffix("%")
+            let number = hasPercent ? String(value.dropLast()).trimmingCharacters(in: .whitespaces) : value
+            guard let width = Double(number), width.isFinite else { return false }
+            if !hasPercent, (200...2560).contains(width) {
+                // Convert old point widths against the original 960-point window and its 24-point side insets.
+                navigationFilmstripWidth = min(100, (width * 100 / (960 - 24)).rounded())
+            } else {
+                guard (10...100).contains(width) else { return false }
+                navigationFilmstripWidth = width
+            }
+        case "navigation-filmstrip-height": guard let v = double(60...320) else { return false }; navigationFilmstripHeight = v
         case "preview-width": guard let v = double(80...640) else { return false }; previewWidth = v
         case "export-mode": guard let v = ExportMode(rawValue: value.lowercased()) else { return false }; exportMode = v
         case "export-every": guard let v = int(2...10_000) else { return false }; exportEvery = v

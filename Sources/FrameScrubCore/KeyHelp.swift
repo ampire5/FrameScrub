@@ -135,13 +135,15 @@ public enum KeyHelp {
         case .showInFolder: return (.navigation, 100_009, "Show the video in its folder")
         case .showProgress: return (.window, 103, "Progress")
         case .stats: return (.window, 104, "Stats")
-        case .showKeys: return (.window, 105, "These keys")
+        case .showKeys: return (.window, 105, "Keys and Gestures")
         case .cycleMouseProfile: return (.window, 106, "Mouse buttons: Viewing / Editing")
         case .closeFile: return (.window, 106, "Close the video: back to Recent or Stash")
         case .quit: return (.window, 107, "Quit")
         case let .addVolume(delta): return (.audio, delta < 0 ? 0 : 1, delta < 0 ? "Volume down" : "Volume up")
         case let .addAutoColorStrength(delta):
             return (.picture, delta < 0 ? 5 : 6, "Auto colour strength \(delta < 0 ? "−" : "+")\(formatNumber(abs(delta)))")
+        case let .addVibranceStrength(delta):
+            return (.picture, delta < 0 ? 5 : 6, "Vibrance strength \(delta < 0 ? "−" : "+")\(formatNumber(abs(delta)))")
         case let .scrubEdge(edge): return (.saving, edge == .start ? 20 : 21, edge == .start ? "Drag the mark start" : "Drag the mark end")
         case .cycleMute: return (.audio, 2, "Mute")
         case .toggleScrubAudio: return (.audio, 3, "Scrub audio on / off")
@@ -149,14 +151,17 @@ public enum KeyHelp {
         case let .zoom(step?): return (.picture, step < 0 ? 14 : 13, step < 0 ? "Zoom out" : "Zoom in")
         case .zoom(nil): return (.picture, 15, "Zoom")
         case .zoomReset: return (.picture, 16, "Zoom: fit")
-        case .setFullscreen(true), .ignore: return nil
+        case .setFullscreen(true): return (.window, 0, "Enter full screen")
+        case .ignore: return nil
         case .pluginAction: return nil   // the plugin section lists them under the page's labels
         }
     }
 
     /// The bound commands by section, each with all its keys (keys first, then mouse and trackpad); last the plugin
     /// page's declared `actions` in their order, each with the keys bound to it (none when nothing reaches it).
-    public static func sections(for map: InputMap, plugin actions: [PluginAction] = []) -> [(section: Section, entries: [Entry])] {
+    public static func sections(
+        for map: InputMap, plugin actions: [PluginAction] = [], keyLimit: Int = 3
+    ) -> [(section: Section, entries: [Entry])] {
         var grouped: [String: (section: Section, rank: Int, chords: [KeyChord])] = [:]
         for (chord, command) in map.bindings {
             guard let (section, rank, action) = describe(command) else { continue }
@@ -164,14 +169,15 @@ public enum KeyHelp {
         }
         let plugin = actions.map { action in
             Entry(keys: condensed(map.bindings.filter { $0.value == .pluginAction(action.name) }.keys
-                    .sorted { order($0, $1, in: map) }.map(\.displayName)),
+                    .sorted { order($0, $1, in: map) }.map(\.displayName), limit: keyLimit),
                   action: action.label)
         }
         return Section.allCases.compactMap { section in
             if section == .plugin { return plugin.isEmpty ? nil : (section, plugin) }
             let entries = grouped.filter { $0.value.section == section }
                 .sorted { ($0.value.rank, $0.key) < ($1.value.rank, $1.key) }
-                .map { Entry(keys: condensed($0.value.chords.sorted { order($0, $1, in: map) }.map(\.displayName)),
+                .map { Entry(keys: condensed($0.value.chords.sorted { order($0, $1, in: map) }.map(\.displayName),
+                                             limit: keyLimit),
                              action: $0.key) }
             return entries.isEmpty ? nil : (section, entries)
         }

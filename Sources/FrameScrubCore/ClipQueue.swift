@@ -44,6 +44,10 @@ public final class ClipQueue: @unchecked Sendable {
     /// A job is being written or waiting.
     public var isBusy: Bool { condition.withLock { running != nil || !waiting.isEmpty } }
 
+    package var pendingSources: [URL] {
+        condition.withLock { (running.map { [$0.source] } ?? []) + waiting.map(\.source) }
+    }
+
     public func pendingCount(for source: URL) -> Int {
         condition.withLock { waiting.filter { $0.source == source }.count + (running?.source == source ? 1 : 0) }
     }

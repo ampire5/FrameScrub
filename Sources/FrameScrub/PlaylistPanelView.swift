@@ -1,5 +1,6 @@
 import AppKit
 import FrameScrubCore
+import HomeChrome
 import HomeScreenModel
 import SlotChrome
 
@@ -32,6 +33,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     private var listName: String?
     private let table = NSTableView()
     private let scroll = NSScrollView()
+    private let emptyMessage = NSTextField(wrappingLabelWithString: "No videos in the playlist")
     private var rows: [PlaylistRow] = []
     /// `playlist-font-size`; the rows grow with it.
     var fontSize: CGFloat = 14 {
@@ -62,7 +64,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
         // The table refuses first responder, so the selected row is drawn unemphasized (light gray in a light
         // appearance), which would make the white labels unreadable. A dark appearance (inherited by the table
         // and scroll view) keeps the selection colours consistent with the dark overlay.
-        appearance = NSAppearance(named: .darkAqua)   // the slot draws the backdrop
+        Chrome.Palette.overMedia.apply(to: self)   // the slot draws the backdrop
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         column.resizingMask = .autoresizingMask
         table.addTableColumn(column)
@@ -86,6 +88,16 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             scroll.leadingAnchor.constraint(equalTo: leadingAnchor), scroll.trailingAnchor.constraint(equalTo: trailingAnchor),
             scroll.topAnchor.constraint(equalTo: topAnchor), scroll.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+        emptyMessage.translatesAutoresizingMaskIntoConstraints = false
+        emptyMessage.alignment = .center
+        emptyMessage.font = .systemFont(ofSize: 13)
+        emptyMessage.textColor = Chrome.Palette.overMedia.secondaryText
+        addSubview(emptyMessage)
+        NSLayoutConstraint.activate([
+            emptyMessage.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            emptyMessage.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            emptyMessage.topAnchor.constraint(equalTo: topAnchor, constant: PluginPanel.topInset + 16),
+        ])
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -100,7 +112,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             strip.returnDelay = stripReturn
             strip.onSelect = { [weak self] row in self?.onSelect?(row) }
             strip.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(strip)
+            addSubview(strip, positioned: .below, relativeTo: emptyMessage)
             NSLayoutConstraint.activate([
                 strip.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
                 strip.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
@@ -236,6 +248,12 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
     func update(rows: [PlaylistRow], current: Int) {
         latest = rows
         self.current = current
+        emptyMessage.isHidden = !rows.isEmpty
+        if rows.isEmpty {
+            let message = filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "No videos in the playlist" : "No videos match the filter"
+            if emptyMessage.stringValue != message { emptyMessage.stringValue = message }
+        }
         // Only the one shown is kept up to date; the other catches up when it is shown (`applyMode`).
         if mode == .strip {
             strip?.update(rows: rows, current: current)
@@ -266,7 +284,7 @@ final class PlaylistPanelView: NSView, NSTableViewDataSource, NSTableViewDelegat
             cell.identifier = id
             let field = NSTextField(labelWithString: "")
             field.lineBreakMode = .byTruncatingMiddle
-            field.textColor = .white
+            field.textColor = Chrome.Palette.overMedia.text
             field.translatesAutoresizingMaskIntoConstraints = false
             cell.addSubview(field)
             cell.textField = field

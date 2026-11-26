@@ -155,6 +155,8 @@ public final class InputBindingSource: KeyBindingSource {
                 rule: KeyBindingStep(range: 0.1...100, defaultValue: 2, signed: true)) { .addVolume($0) },
         Stepped(id: "add auto-color-strength", title: "Auto colour strength: change by", section: .picture,
                 rule: .standard) { .addAutoColorStrength($0) },
+        Stepped(id: "add vibrance", title: "Vibrance strength: change by", section: .picture,
+                rule: .standard) { .addVibranceStrength($0) },
         Stepped(id: "add artifact-strength", title: "Artifact filter strength: change by", section: .picture,
                 rule: KeyBindingStep(range: 0.01...1, defaultValue: 0.05, signed: true)) { .addArtifactStrength($0) },
         Stepped(id: "set window-scale", title: "Window: scale to", section: .window,
@@ -211,6 +213,7 @@ public final class InputBindingSource: KeyBindingSource {
         case .setSpeed: "set speed"
         case .addVolume: "add volume"
         case .addAutoColorStrength: "add auto-color-strength"
+        case .addVibranceStrength: "add vibrance"
         case .addArtifactStrength: "add artifact-strength"
         case .windowScale: "set window-scale"
         default: command.configText
@@ -221,7 +224,7 @@ public final class InputBindingSource: KeyBindingSource {
     static func step(of command: Command) -> Double? {
         switch command {
         case .seek(let v, _), .multiplySpeed(let v), .setSpeed(let v), .addVolume(let v), .addAutoColorStrength(let v),
-             .addArtifactStrength(let v),
+             .addVibranceStrength(let v), .addArtifactStrength(let v),
              .windowScale(let v): v
         default: nil
         }

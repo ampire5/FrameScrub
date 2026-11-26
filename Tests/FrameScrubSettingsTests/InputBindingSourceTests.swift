@@ -79,6 +79,17 @@ import Testing
         #expect(s.row("F14")?.step == -3)
     }
 
+    @Test func vibranceStrengthCanBeReboundWithASignedStep() throws {
+        let s = try setup()
+        let action = "add vibrance"
+        #expect(s.source.actionGroups().flatMap(\.actions).contains { $0.id == action && $0.takesStep })
+        #expect(s.source.stepRule(for: action) == KeyBindingStep(range: 0.01...1, defaultValue: 0.05, signed: true))
+        try s.source.bind(input: "F13", action: action, step: -0.15)
+        #expect(s.text("input.conf") == "F13 add vibrance -0.15\n")
+        #expect(s.row("F13")?.actionID == action)
+        #expect(s.row("F13")?.step == -0.15)
+    }
+
     @Test func removeABuiltInWritesIgnore() throws {
         let s = try setup()
         try s.source.remove(rowID: "SPACE")

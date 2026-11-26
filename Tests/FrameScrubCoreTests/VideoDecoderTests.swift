@@ -20,6 +20,19 @@ func makeDecoder(_ source: MediaSource, _ index: FrameIndex, _ path: Path) throw
 }
 
 @Suite struct VideoDecoderTests {
+    @Test(arguments: Path.testable)
+    func continuingWithinAGOPRetriesAnExhaustedCursor(_ path: Path) throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let decoder = try makeDecoder(source, index, path)
+        try decoder.seek(toFrame: 300)
+        #expect(try decoder.nextFrame()?.number == 300)
+        try decoder.backend.drain()
+
+        let frame = try #require(try decoder.nextFrame(keepingPrerollFrom: nil, continuingTo: 410) { _ in })
+        #expect(frame.number == 410)
+        #expect(readFrameNumber(frame.pixelBuffer) == 410)
+    }
+
     /// Reverse playback's reference-frames level seeks to a chunk start that may be a frame it then skips: landing past
     /// the target is expected then, not a bad seek to back off from (which decoded GOPs again and again: 15 s chunks).
     @Test(arguments: Path.testable)

@@ -28,6 +28,8 @@ public struct TourBoxRouter {
     }
     public var accelerationStart = 12.0
     public var scrollPointsPerPulse = 4.0
+    public var invertsScroll = false
+    public var swapsKnobModifiers = false
     private var carry = 0.0
     private var lastPulse: Double?
     private var pulsesAtLastTime = 0
@@ -41,7 +43,9 @@ public struct TourBoxRouter {
         for byte in bytes {
             switch byte {
             case 196, 132: actions += rotate(knob: true, direction: byte == 196 ? 1 : -1, at: time, profile: profile)
-            case 201, 137: actions += rotate(knob: false, direction: byte == 201 ? -1 : 1, at: time, profile: profile)
+            case 201, 137:
+                let direction = byte == 201 ? -1 : 1
+                actions += rotate(knob: false, direction: invertsScroll ? -direction : direction, at: time, profile: profile)
             case 0, 2, 3, 10, 34, 35, 42, 55:
                 guard held.insert(byte).inserted else { continue }
                 resetMotion()
@@ -135,13 +139,14 @@ public struct TourBoxRouter {
         let ending = endSpeedHold()
         // Unassigned combinations consume their taps; they never become zoom, scene steps or volume controls.
         if held.contains(2) || held.contains(42) || held.contains(55) || held.contains(10) { return ending }
-        if held == [0] {
-            if knob {
-                return ending + [.command(.addVolume(Double(direction) * 2))]
+        if held == [0] || held == [3] {
+            let tallHeld = held.contains(0)
+            if !knob {
+                return ending + (tallHeld ? [.command(.seek(Double(direction) * 60, .byConfig))] : [])
             }
-            return ending + [.command(.seek(Double(direction) * 60, .byConfig))]
+            let controlsSpeed = tallHeld == swapsKnobModifiers
+            return ending + [.command(controlsSpeed ? .stepSpeed(direction) : .addVolume(Double(direction) * 2))]
         }
-        if held == [3] { return ending + (knob ? [.command(.stepSpeed(direction))] : []) }
         if knob, held == [34] || held == [35] {
             let owner: UInt8 = held.contains(34) ? 34 : 35
             if profile == .viewing {

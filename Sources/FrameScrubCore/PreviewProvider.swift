@@ -18,6 +18,8 @@ public final class PreviewProvider: @unchecked Sendable {
     public var onUnavailable: (() -> Void)?                // main queue; the file cannot be previewed
     /// Main queue, after image delivery (or failure): a serial consumer may submit its next visible thumbnail.
     public var onRequestFinished: (() -> Void)?
+    /// A cold request yielded to the main player. Called before onRequestFinished.
+    public var onDeferred: (() -> Void)?
     public var decodeCount: Int { lock.withLock { decodes } }
 
     private let url: URL
@@ -31,6 +33,7 @@ public final class PreviewProvider: @unchecked Sendable {
     private lazy var renderer = FrameImageRenderer() // worker-only, including Core Image context creation
     private let imagePool: PreviewImagePool
     private let frameCache: FrameCache?
+    private let shouldYield: (@Sendable () -> Bool)?
     private let lock = NSLock()
     private var index: FrameIndex
     private var decoder: VideoDecoder?
@@ -53,13 +56,14 @@ public final class PreviewProvider: @unchecked Sendable {
     public init(url: URL, index: FrameIndex, rotationClockwise: Int, widthPixels: Int, readCache: ReadCache? = nil,
                 policy: NetworkPolicy = .local, qos: DispatchQoS.QoSClass = .userInitiated,
                 imagePool: PreviewImagePool? = nil, frameCache: FrameCache? = nil, exactSample: Bool = false,
-                retainsSourceFrame: Bool = false) {
+                retainsSourceFrame: Bool = false, shouldYield: (@Sendable () -> Bool)? = nil) {
         self.url = url
         self.readCache = readCache
         self.index = index
         self.imagePool = imagePool.flatMap { $0.matches(url: url, rotationClockwise: rotationClockwise) ? $0 : nil }
             ?? PreviewImagePool(url: url, rotationClockwise: rotationClockwise)
         self.frameCache = frameCache
+        self.shouldYield = shouldYield
         self.exactSample = exactSample
         self.retainsSourceFrame = retainsSourceFrame
         rotation = rotationClockwise
@@ -81,7 +85,7 @@ public final class PreviewProvider: @unchecked Sendable {
         let request = Request(seconds: seconds, readyOnly: readyOnly, speculative: speculative,
                               generation: generation, at: PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0)
         // Shared ready images bypass a worker waiting on a cold-read deadline or decoding.
-        if current.isExact {
+        if current.isExact || !HLSDemuxInput.matches(url) {
             let key = current.pts(forFrame: sampleFrame(seconds, index: current))
             if let image = imagePool.image(pts: key, widthPixels: widthPixels) {
                 if PlaybackDiagnostics.enabled { PlaybackDiagnostics.shared.record("cache_hit", 1, group: diagnosticGroup) }
@@ -99,7 +103,9 @@ public final class PreviewProvider: @unchecked Sendable {
     /// Cheap readiness check for the bounded film scheduler: no I/O, rendering or full-cache scan.
     public func canReuse(seconds: Double) -> Bool {
         let current = lock.withLock { index }
-        guard current.isExact else { return false }
+        if HLSDemuxInput.matches(url) {
+            return frameCache?.hasReadyFrame(current.frameNumber(forSeconds: seconds)) == true
+        }
         let n = sampleFrame(seconds, index: current)
         let pts = current.pts(forFrame: n)
         return imagePool.contains(pts: pts, widthPixels: widthPixels) || frameCache?.frame(n)?.pts == pts
@@ -115,6 +121,7 @@ public final class PreviewProvider: @unchecked Sendable {
         onImage = nil
         onUnavailable = nil
         onRequestFinished = nil
+        onDeferred = nil
     }
 
     private func handle(_ request: Request) {
@@ -129,7 +136,10 @@ public final class PreviewProvider: @unchecked Sendable {
         guard !skip else { return }
         let n = current.frameNumber(forSeconds: seconds)
         let sample = sampleFrame(seconds, index: current)
-        let key: Int64? = current.isExact ? current.pts(forFrame: sample) : nil
+        let hls = HLSDemuxInput.matches(url)
+        // Nominal indexes can still select an exact PTS hit. Verify actual decoded PTS before
+        // reusing a playback frame, since the nominal frame number alone can match a different picture.
+        let key: Int64? = hls && !current.isExact ? frameCache?.frame(sample)?.pts : current.pts(forFrame: sample)
         if let key, let hit = imagePool.image(pts: key, widthPixels: widthPixels) {
             if PlaybackDiagnostics.enabled { report.record("cache_hit", 1, group: diagnosticGroup) }
             deliver(hit, request: request, frameSeconds: current.seconds(forPTS: key))
@@ -145,7 +155,7 @@ public final class PreviewProvider: @unchecked Sendable {
         }
         // A speculative reuse may lose its source frame to eviction before this worker runs. Never turn it
         // into a new read/decode.
-        guard !request.readyOnly else { return }
+        guard !request.readyOnly, !hls else { return }
         // Limit cold reads without starving a moving pointer; ready-only work never reaches this path.
         let delay = readThrottle.delay(at: ProcessInfo.processInfo.systemUptime)
         if delay > 0 {
@@ -155,6 +165,7 @@ public final class PreviewProvider: @unchecked Sendable {
             if worker.hasPending { return }
         }
         guard lock.withLock({ !stopped && request.generation == requestedGeneration }) else { return }
+        if shouldYield?() == true { deferToForeground(); return }
         readThrottle.started(at: ProcessInfo.processInfo.systemUptime)
         if decoder == nil {
             let start = PlaybackDiagnostics.now()
@@ -181,8 +192,13 @@ public final class PreviewProvider: @unchecked Sendable {
             let seekStart = PlaybackDiagnostics.now()
             if exactSample { try decoder.seek(toFrame: n) }
             else { try decoder.seekToKeyframe(near: n) }
-            guard let frame = try decoder.nextFrame() else { return }
+            let obsolete: (() -> Bool)? = shouldYield.map { yield in
+                { yield() || self.lock.withLock { self.stopped } }
+            }
+            guard let frame = try decoder.nextFrame(keepingPrerollFrom: nil, isObsolete: obsolete, onPreroll: { _ in })
+            else { return }
             measure("seek_decode_ms", since: seekStart)
+            if obsolete?() == true { deferToForeground(); return }
             let renderStart = PlaybackDiagnostics.now()
             guard let image = renderer.thumbnail(for: frame, rotationClockwise: rotation, width: widthPixels) else { return }
             measure("thumbnail_render_ms", since: renderStart)
@@ -190,8 +206,18 @@ public final class PreviewProvider: @unchecked Sendable {
             imagePool.set(image, pts: frame.pts, widthPixels: widthPixels)
             deliver(image, request: request, frameSeconds: current.seconds(forPTS: frame.pts),
                     sourceFrame: retainsSourceFrame ? frame : nil)
+        } catch is CancellationError where shouldYield != nil {
+            deferToForeground()
         } catch {
             decoder = nil      // a transient seek/decode error drops this request; the next one reopens the file
+        }
+    }
+
+    private func deferToForeground() {
+        if PlaybackDiagnostics.enabled { PlaybackDiagnostics.shared.record("foreground_deferred", 1, group: diagnosticGroup) }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.lock.withLock({ self.stopped }) else { return }
+            self.onDeferred?()
         }
     }
 

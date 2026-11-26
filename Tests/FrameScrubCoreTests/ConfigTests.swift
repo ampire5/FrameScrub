@@ -4,6 +4,22 @@ import Testing
 @testable import FrameScrubCore
 
 @Suite struct ConfigTests {
+    @Test func miniFilmstripWidthReadsPercentAndConvertsLegacyPoints() {
+        var config = Config()
+        let percentage = config.set("navigation-filmstrip-width", "75%")
+        #expect(percentage)
+        #expect(config.navigationFilmstripWidth == 75)
+        #expect(config.text(forKey: "navigation-filmstrip-width") == "75%")
+        let oldDefault = config.set("navigation-filmstrip-width", "460")
+        #expect(oldDefault)
+        #expect(config.navigationFilmstripWidth == 49)
+        let oldMaximum = config.set("navigation-filmstrip-width", "2560")
+        #expect(oldMaximum)
+        #expect(config.navigationFilmstripWidth == 100)
+        let invalid = config.set("navigation-filmstrip-width", "101%")
+        #expect(!invalid)
+    }
+
     /// The reference's settings block (docs/reference.md) is the commented reference config: every key, each with its default.
     @Test func referenceSettingsListEveryKeyWithItsDefault() throws {
         let readme = try String(contentsOf: URL(fileURLWithPath: #filePath)
@@ -739,6 +755,14 @@ import Testing
         let (bad, badWarnings) = Config.parse("network-mode=smb")
         #expect(bad.networkMode == .auto)
         #expect(badWarnings.count == 1)
+    }
+
+    @Test func parsesStreamBitratePreference() {
+        #expect(Config().text(forKey: "prefer-stream-bitrate") == "yes")
+        let (config, warnings) = Config.parse("prefer-stream-bitrate=no")
+        #expect(warnings.isEmpty)
+        #expect(!config.preferStreamBitrate)
+        #expect(config.text(forKey: "prefer-stream-bitrate") == "no")
     }
 
     @Test func parsesHardwareDecoding() {

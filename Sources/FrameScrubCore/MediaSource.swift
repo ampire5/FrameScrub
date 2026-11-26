@@ -19,45 +19,71 @@ public final class MediaSource {
     public let durationSeconds: Double
     /// Codecs and bit rates, for the stats.
     public let format: MediaFormat
-    /// The file's shared reads (a private pass-through one when none was given).
-    public let readCache: ReadCache
-    let input: AVIOReader
+    /// Shared reads for byte-addressable media.
+    public let readCache: ReadCache?
+    private let input: AVIOReader?
+    private let hlsInput: HLSDemuxInput?
+    public var isHLS: Bool { hlsInput != nil }
     /// The streams' parameters came from the file's first probe (`ReadCache.probe`), not from probing again.
     public let usedSharedProbe: Bool
 
-    /// Opens `url` through `readCache` (`cached: false` reads past its blocks; `noParse` is for index-only demuxing; `readAhead: false` loads no blocks beyond the ones asked for).
-    public init(url: URL, readCache: ReadCache? = nil, cached: Bool = true, noParse: Bool = false, readAhead: Bool = true) throws {
-        let cache = try readCache ?? ReadCache(url: url, budgetBytes: 0)
-        let reader = try AVIOReader(cache: cache, cached: cached, readAhead: readAhead)
-        guard let allocated = avformat_alloc_context() else { throw FFmpegError(-1, "allocate demuxer") }
-        allocated.pointee.pb = reader.context   // custom I/O: avformat_close_input leaves pb to us
-        // No AVFMT_FLAG_NOFILLIN: without it the stream's start_time (the index's zero) would be left unset for
-        // fragmented MP4, and probing would read more of the file.
-        if noParse { allocated.pointee.flags |= AVFMT_FLAG_NOPARSE }
-        var context: UnsafeMutablePointer<AVFormatContext>? = allocated
-        var options: OpaquePointer?
-        defer { av_dict_free(&options) }
-        if url.pathExtension.lowercased() == "gif" {
-            // A positive GIF delay can be one centisecond. Keep the demuxer's default for missing/zero delays.
-            av_dict_set(&options, "min_delay", "1", 0)
+    /// Opens a file through `readCache`, or a direct HTTP HLS VOD through libavformat.
+    public convenience init(url: URL, readCache: ReadCache? = nil, cached: Bool = true,
+                            noParse: Bool = false, readAhead: Bool = true) throws {
+        try self.init(url: url, readCache: readCache, cached: cached, noParse: noParse, readAhead: readAhead,
+                      hlsSession: nil)
+    }
+
+    init(url: URL, readCache: ReadCache? = nil, cached: Bool = true, noParse: Bool = false, readAhead: Bool = true,
+         hlsSession: HLSMediaSession?, hlsRead: HLSReadInterrupt? = nil, audioOnly: Bool = false) throws {
+        let cache: ReadCache?
+        let reader: AVIOReader?
+        let hls: HLSDemuxInput?
+        let fc: UnsafeMutablePointer<AVFormatContext>
+        if HLSDemuxInput.matches(url) {
+            let input = HLSDemuxInput(session: hlsSession ?? HLSMediaSession(), read: hlsRead)
+            fc = try input.open(url)
+            cache = nil
+            reader = nil
+            hls = input
+        } else {
+            let fileCache = try readCache ?? ReadCache(url: url, budgetBytes: 0)
+            let fileReader = try AVIOReader(cache: fileCache, cached: cached, readAhead: readAhead)
+            guard let allocated = avformat_alloc_context() else { throw FFmpegError(-1, "allocate demuxer") }
+            allocated.pointee.pb = fileReader.context
+            // Keep fill-in so fragmented MP4 gets a start_time without extra probing.
+            if noParse { allocated.pointee.flags |= AVFMT_FLAG_NOPARSE }
+            var context: UnsafeMutablePointer<AVFormatContext>? = allocated
+            var options: OpaquePointer?
+            defer { av_dict_free(&options) }
+            if url.pathExtension.lowercased() == "gif" {
+                // A positive GIF delay can be one centisecond. Keep the demuxer's default for missing/zero delays.
+                av_dict_set(&options, "min_delay", "1", 0)
+            }
+            try check(avformat_open_input(&context, url.path, nil, &options), "open \(url.lastPathComponent)")
+            guard let opened = context else { throw FFmpegError(-1, "open \(url.lastPathComponent)") }
+            fc = opened
+            cache = fileCache
+            reader = fileReader
+            hls = nil
         }
-        try check(avformat_open_input(&context, url.path, nil, &options), "open \(url.lastPathComponent)") // frees it on failure
-        guard let fc = context else { throw FFmpegError(-1, "open \(url.lastPathComponent)") }
-        let video: Int32
-        let probe = cache.probe.flatMap { $0.matches(fc) ? $0 : nil }
+        var context: UnsafeMutablePointer<AVFormatContext>? = fc
+        let primary: Int32
+        let probe = cache?.probe.flatMap { $0.matches(fc) ? $0 : nil }
         do {
             if let probe {
                 try probe.apply(to: fc)   // the file's first open probed it: no video frames decoded again
             } else {
                 try check(avformat_find_stream_info(fc, nil), "read stream info")
             }
-            video = try check(av_find_best_stream(fc, AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0), "find video stream")
+            primary = try check(av_find_best_stream(fc, audioOnly ? AVMEDIA_TYPE_AUDIO : AVMEDIA_TYPE_VIDEO, -1, -1, nil, 0),
+                                audioOnly ? "find audio stream" : "find video stream")
         } catch {
             avformat_close_input(&context)
             throw error
         }
-        let audio = av_find_best_stream(fc, AVMEDIA_TYPE_AUDIO, -1, video, nil, 0)
-        let stream = fc.pointee.streams[Int(video)]!
+        let audio = audioOnly ? primary : av_find_best_stream(fc, AVMEDIA_TYPE_AUDIO, -1, primary, nil, 0)
+        let stream = fc.pointee.streams[Int(primary)]!
         let parameters = stream.pointee.codecpar.pointee
         let tb = av_q2d(stream.pointee.time_base)
         let averageRate = av_q2d(stream.pointee.avg_frame_rate)
@@ -65,29 +91,30 @@ public final class MediaSource {
 
         self.url = url
         formatContext = fc
-        videoStreamIndex = video
+        videoStreamIndex = audioOnly ? -1 : primary
         audioStreamIndex = audio >= 0 ? audio : nil
         width = Int(parameters.width)
         height = Int(parameters.height)
         bitDepth = Int(cff_pix_fmt_depth(parameters.format))
         rotationClockwise = Int(cff_stream_rotation_cw(stream))
-        let sar = av_guess_sample_aspect_ratio(fc, stream, nil)
+        let sar = audioOnly ? AVRational(num: 1, den: 1) : av_guess_sample_aspect_ratio(fc, stream, nil)
         sampleAspect = sar.num > 0 && sar.den > 0 ? av_q2d(sar) : 1
         timeBase = tb
         frameRate = averageRate > 0 ? averageRate : (realRate > 0 ? realRate : 30)
         startPTS = stream.pointee.start_time != cff_nopts() ? stream.pointee.start_time : 0
-        if stream.pointee.duration != cff_nopts() {
+        if hls == nil, stream.pointee.duration != cff_nopts() {
             durationSeconds = Double(stream.pointee.duration) * tb
         } else {
             durationSeconds = Double(fc.pointee.duration) / Double(AV_TIME_BASE)
         }
         let fileBitRate = fc.pointee.bit_rate > 0 ? fc.pointee.bit_rate
-            : durationSeconds > 0 ? Int64(Double(cache.fileSize) * 8 / durationSeconds) : 0
-        format = MediaFormat(formatContext: fc, video: video, audio: audioStreamIndex, fileBitRate: fileBitRate)
+            : durationSeconds > 0 ? Int64(Double(cache?.fileSize ?? 0) * 8 / durationSeconds) : 0
+        format = MediaFormat(formatContext: fc, video: videoStreamIndex, audio: audioStreamIndex, fileBitRate: fileBitRate)
         self.readCache = cache
         input = reader
+        hlsInput = hls
         usedSharedProbe = probe != nil
-        selectStreams(video: true, audio: false)
+        selectStreams(video: !audioOnly, audio: audioOnly)
     }
 
     deinit {
@@ -106,7 +133,7 @@ public final class MediaSource {
     /// The file's average data rate: the container's bit rate, else size / duration.
     public var bytesPerSecond: Double {
         let bitRate = formatContext.pointee.bit_rate
-        return bitRate > 0 ? Double(bitRate) / 8 : Double(readCache.fileSize) / max(durationSeconds, 1)
+        return bitRate > 0 ? Double(bitRate) / 8 : Double(readCache?.fileSize ?? 0) / max(durationSeconds, 1)
     }
 
     /// Rough size of one decoded frame (NV12 / P010), used before real frames are measured.
@@ -125,9 +152,16 @@ public final class MediaSource {
         av_read_frame(formatContext, packet)
     }
 
+    /// Some demuxers surface a failed AVIO read as EOF.
+    var byteReadError: Int32? {
+        guard let error = input?.context.pointee.error, error < 0 else { return nil }
+        return error
+    }
+
     /// Seeks `stream` to the last keyframe at or before `pts` (that stream's time base).
     func seek(stream: Int32, toPTS pts: Int64) -> Int32 {
-        avformat_seek_file(formatContext, stream, Int64.min, pts, pts, 0)
+        if isHLS { return av_seek_frame(formatContext, stream, pts, AVSEEK_FLAG_BACKWARD) }
+        return avformat_seek_file(formatContext, stream, Int64.min, pts, pts, 0)
     }
 
     /// The container's existing seek timestamp, which may be a decode timestamp rather than a presentation time.
@@ -161,8 +195,9 @@ public final class MediaSource {
     /// the checks fail (then the caller scans).
     public static func containerIndex(url: URL, readCache: ReadCache?) throws -> FrameIndex? {
         let source = try MediaSource(url: url, readCache: readCache, noParse: true)
-        guard String(cString: source.formatContext.pointee.iformat.pointee.name).hasPrefix("mov,mp4") else { return nil }
-        source.input.zeroData = true
+        guard let input = source.input,
+              String(cString: source.formatContext.pointee.iformat.pointee.name).hasPrefix("mov,mp4") else { return nil }
+        input.zeroData = true
         var packets = 0
         let index = try source.scanPackets(countAll: { packets += 1 })
         let declared = Int(source.videoStream.pointee.nb_frames)
@@ -190,7 +225,7 @@ public final class MediaSource {
         var keyframes = Set<Int64>()
         var packets = 0
         var reported = 0.0
-        let fileSize = Double(max(readCache.fileSize, 1))
+        let fileSize = Double(max(readCache?.fileSize ?? 0, 1))
         while read(into: packet) >= 0 {
             defer { av_packet_unref(packet) }
             packets += 1

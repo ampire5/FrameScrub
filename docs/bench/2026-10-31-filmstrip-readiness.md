@@ -198,3 +198,26 @@ Merged validation: 1802 Core + 35 settings tests passed. Native hidden-film prep
 at 67.563 ms, without decoding/redrawing the folded strip; reveal filled the misses at 239.278 / 267.962 ms.
 The ready-first foreground-resume loader delivered three images at 96.968 / 109.298 / 113.253 ms with two decodes.
 The Home empty-file/refresh/pause/return scenario and the menu ⌘R/window-close scenario also passed.
+
+## Compact navigation reveal, 2026-11-23
+
+On an Apple M4 Max with macOS 27.2.1, the debug app opened the local H.264 GOP-250 fixture in a real window.
+It refreshed the view's thumbnail loader during playback, then issued a nine-second exact seek through
+the same input route as the app. The bench stops on the second ready picture near the destination.
+
+| Loader | Ready pictures at start | Time to at least two pictures |
+| --- | ---: | --- |
+| Folded preparation only | 0 | Still one after 859.5 ms |
+| Visible compact request, local | 0 | 32.0, 122.8 and 236.1 ms |
+| Visible compact request, network policy on the local fixture | 0 | 273.1, 280.8 and 502.5 ms |
+
+The old path performed zero side decodes during the measured wait. The compact batch used one or two
+side decodes in each run, serially on the existing utility worker. Network policy kept its 250 ms
+cold-read dwell. The measurements cover the configured network policy on local storage.
+
+```sh
+.build/debug/FrameScrub --bench-timeline --bench-navigation-ribbon \
+  --fixture "$PWD/Tests/Fixtures/h264_cfr_gop250.mp4"
+```
+
+Add `--network` to use the network reading policy.

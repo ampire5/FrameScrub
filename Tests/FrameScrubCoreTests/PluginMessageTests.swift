@@ -122,7 +122,7 @@ import Testing
         #expect(message(["cmd": "open", "scene": 42, "paths": ["/mnt/a.mp4"], "segments": [[2, 3]]])
                 == .open(.stashScene(id: "42", paths: ["/mnt/a.mp4"], landing: LinkTarget(segments: [2...3]))))
         // A scene and a path together are refused, not one of them picked.
-        #expect(reason(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"]) == "open: give one of path, scene, url")
+        #expect(reason(["cmd": "open", "scene": "1", "paths": ["/x"], "path": "/y"]) == "open: give one of path, scene, url, page")
         // Without paths (or with none) they are asked of Stash.
         #expect(message(["cmd": "open", "scene": "42"]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
         #expect(message(["cmd": "open", "scene": "42", "paths": []]) == .open(.stashScene(id: "42", paths: [], landing: LinkTarget())))
@@ -161,7 +161,7 @@ import Testing
         #expect(reason(["cmd": "open", "path": "x"]) == "open: path must be absolute")
         #expect(reason(["cmd": "open", "scene": "1", "paths": "x"]) == "open: paths must be an array of strings")
         #expect(reason(["cmd": "open", "path": "/a.mp4", "segments": [[1]]]) == "open: each segment must be [a, b] with b above a")
-        #expect(reason(["cmd": "open"]) == "open: path, scene or url is missing")
+        #expect(reason(["cmd": "open"]) == "open: path, scene, url or page is missing")
         #expect(reason(["cmd": "play"]) == nil)
     }
 
@@ -280,6 +280,7 @@ import Testing
         #expect(PluginOpen.file(URL(fileURLWithPath: "/a"), landing: landing).landing == landing)
         #expect(PluginOpen.stashScene(id: "1", paths: ["/a"], landing: landing).landing == landing)
         #expect(PluginOpen.stream(URL(string: "http://h/s/1")!, landing: landing).landing == landing)
+        #expect(PluginOpen.page(URL(string: "https://h/watch")!, landing: landing).landing == landing)
     }
 
     @Test func openStream() {
@@ -291,14 +292,35 @@ import Testing
             #expect(reason(["cmd": "open", "url": bad]) == "open: url must be http(s)", "\(bad)")
         }
         #expect(reason(["cmd": "open", "url": 5]) == "open: url must be a string")
-        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "path": "/v/a.mp4"]) == "open: give one of path, scene, url")
-        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "scene": 3]) == "open: give one of path, scene, url")
+        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "path": "/v/a.mp4"]) == "open: give one of path, scene, url, page")
+        #expect(reason(["cmd": "open", "url": "http://h/a.mp4", "scene": 3]) == "open: give one of path, scene, url, page")
         // null names none: a page may build {path: x.path, url: x.url}
         #expect(message(posted(#"{"cmd":"open","url":"http://h/a.mp4","path":null}"#))
                 == .open(.stream(URL(string: "http://h/a.mp4")!, landing: LinkTarget())))
         #expect(message(posted(#"{"cmd":"open","scene":"1","path":null,"url":null}"#))
                 == .open(.stashScene(id: "1", paths: [], landing: LinkTarget())))
-        #expect(reason(posted(#"{"cmd":"open","url":null}"#)) == "open: path, scene or url is missing")
+        #expect(reason(posted(#"{"cmd":"open","url":null}"#)) == "open: path, scene, url or page is missing")
+    }
+
+    @Test func openPageWithLandingOptions() {
+        let page = "https://media.example/watch?v=1&token=a%2B"
+        let landing = LinkTarget(time: 3.5, segments: [1...5, 7...9], lock: false, advance: .next)
+        #expect(message(posted(#"{"cmd":"open","page":"https://media.example/watch?v=1&token=a%2B","url":null,"t":3.5,"segments":[[1,5],[7,9]],"lock":false,"advance":"next"}"#))
+                == .open(.page(URL(string: page)!, landing: landing)))
+        #expect(message(["cmd": "open", "url": page]) == .open(.stream(URL(string: page)!, landing: LinkTarget())))
+    }
+
+    @Test func openPageRequiresAnHTTPOrHTTPSURLAndNoOtherSubject() {
+        let page = "https://media.example/watch"
+        for bad in ["file:///a.mp4", "ftp://media.example/watch", "https:///watch", "/watch", ""] {
+            #expect(reason(["cmd": "open", "page": bad]) == "open: page must be http(s)", "\(bad)")
+        }
+        #expect(reason(["cmd": "open", "page": 7]) == "open: page must be a string")
+        for (key, value) in ["path": "/a.mp4", "scene": "7", "url": "https://media.example/a.mp4"] {
+            #expect(reason(["cmd": "open", "page": page, key: value]) == "open: give one of path, scene, url, page")
+        }
+        #expect(reason(posted(#"{"cmd":"open","page":null}"#)) == "open: path, scene, url or page is missing")
+        #expect(reason(["cmd": "enqueue", "items": [["page": page]]]) == "enqueue: items[0] needs scene, path or url")
     }
 
     @Test func playlistStreamItems() {

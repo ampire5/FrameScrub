@@ -113,6 +113,60 @@ final class RecordingTapeSink: TapeSink, @unchecked Sendable {
         })
     }
 
+    @Test func localTapeExtendsSequentialPCMAndKeepsItWhenReversing() async throws {
+        let sink = RecordingSink(), tape = RecordingTapeSink()
+        let decoder = try AudioDecoder(url: Fixtures.url(Fixtures.withAudio), zeroSeconds: 0)
+        let scrub = ScrubAudio(decoder: decoder, sink: sink, tape: tape, batchLocalReads: true, shouldYield: { false })
+        defer { scrub.stop() }
+        scrub.fileOpened()
+        scrub.prime(seconds: 1.0)
+        #expect(await eventually { scrub.coveredSeconds.first?.contains(1.49) == true })
+        #expect(sink.pieces.isEmpty && tape.controls.isEmpty)
+        scrub.userActed()
+        scrub.frameShown(seconds: 1.0)
+        scrub.frameShown(seconds: 1.04)
+        #expect(await eventually { scrub.coveredSeconds.first?.contains(3.0) == true })
+        let sampleAt = 2.8
+        let expected = try reference(Fixtures.withAudio, from: sampleAt, count: 64)
+        #expect(await eventually {
+            tape.snapshots.contains { snapshot in
+                expected.enumerated().allSatisfy { i, value in
+                    abs(snapshot.sample(atSeconds: sampleAt + Double(i) / 48000).0 - value) < 1e-3
+                }
+            }
+        })
+        scrub.frameShown(seconds: 1.35)
+        try await Task.sleep(for: .milliseconds(40))
+        scrub.frameShown(seconds: 1)
+        #expect(await eventually { scrub.coveredSeconds.first?.contains(0.1) == true })
+        #expect(scrub.coveredSeconds.first?.contains(sampleAt) == true)
+    }
+
+    @Test func interruptedFillCanResumeAtTheSamePicture() async throws {
+        let sink = RecordingSink()
+        let decoder = try AudioDecoder(url: Fixtures.url(Fixtures.withAudio), zeroSeconds: 0)
+        let reachedGate = DispatchSemaphore(value: 0), keepGoing = DispatchSemaphore(value: 0)
+        let scrub = ScrubAudio(decoder: decoder, sink: sink, shouldYield: {
+            reachedGate.signal()
+            _ = keepGoing.wait(timeout: .now() + 2)
+            return false
+        })
+        defer {
+            scrub.stop()
+            keepGoing.signal()
+        }
+        scrub.fileOpened()
+        scrub.prime(seconds: 1)
+        #expect(await eventually { reachedGate.wait(timeout: .now()) == .success })
+        scrub.playbackStarted()
+        keepGoing.signal()
+        #expect(await eventually { scrub.runsDecoded == 1 })
+        #expect(scrub.coveredSeconds.isEmpty)
+        scrub.playbackStopped()
+        keepGoing.signal()
+        #expect(await eventually { scrub.coveredSeconds.first?.contains(1) == true })
+    }
+
     @Test func nextRunLooksAheadWhileTheTapeRuns() {
         var buffer = ScrubAudioBuffer(sampleRate: 48000)
         buffer.beginRun(atSeconds: 1.5)

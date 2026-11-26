@@ -1,7 +1,8 @@
 import Foundation
 
 /// The `framescrub://open?path=<percent-encoded absolute path>` link: other programs open a video in FrameScrub with
-/// it. `scene=<id>` in place of `path` opens that Stash scene (its file paths are asked of Stash). Optional parameters:
+/// it. `scene=<id>` opens a Stash scene, and `url=<percent-encoded http(s) URL>` opens a web address.
+/// Optional parameters:
 /// - `t=<seconds>`: start there instead of the remembered position;
 /// - `paused=1`: hold the initial frame even when autoplay is enabled;
 /// - `seg=<a>-<b>[,<a>-<b>…]`: lock playback and scrubbing to those segments (seconds), starting at the first one's
@@ -10,10 +11,11 @@ import Foundation
 /// - `adv=repeat|next`: at a segment's end, play it again or go to the next one (default from the configuration);
 /// - `plugin=<http(s) URL>`: offer that page in the slot's add menu for this session.
 public enum OpenLink {
-    /// What a link names: a file, or a Stash scene by id.
+    /// What a link names: a file, a Stash scene by id, or a web address.
     public enum Subject: Equatable, Sendable {
         case file(URL)
         case stashScene(id: String)
+        case web(URL)
     }
 
     public struct Target: Equatable, Sendable {
@@ -32,13 +34,13 @@ public enum OpenLink {
             self.init(subject: .file(file), landing: landing, plugin: plugin)
         }
 
-        /// The file named; nil for a Stash scene.
+        /// The file named, if any.
         public var file: URL? {
             if case let .file(url) = subject { return url }
             return nil
         }
 
-        /// The Stash scene's id; nil for a file.
+        /// The Stash scene's id, if any.
         public var sceneID: String? {
             if case let .stashScene(id) = subject { return id }
             return nil
@@ -67,8 +69,8 @@ public enum OpenLink {
         target(from: url)?.file
     }
 
-    /// The whole link: the file or scene plus the optional position, segments and plugin page. A `path` wins over a
-    /// `scene` when both are given; a scene's id is any non-empty text.
+    /// The subject and optional position, segments and plugin page. Subjects take precedence in order:
+    /// `path`, `scene`, `url`. A scene's id is any non-empty text.
     public static func target(from url: URL) -> Target? {
         if url.isFileURL { return Target(file: url) }
         guard url.scheme?.lowercased() == "framescrub", url.host?.lowercased() == "open",
@@ -78,8 +80,12 @@ public enum OpenLink {
         if let path = item("path") {
             guard path.hasPrefix("/") else { return nil }
             subject = .file(URL(filePath: path, directoryHint: .notDirectory))   // not looked up: a share answers over the network
-        } else if let scene = item("scene")?.trimmingCharacters(in: .whitespaces), !scene.isEmpty {
+        } else if let scene = item("scene")?.trimmingCharacters(in: .whitespaces) {
+            guard !scene.isEmpty else { return nil }
             subject = .stashScene(id: scene)
+        } else if let page = item("url").flatMap(URL.init(string:)), ByteSources.isRemote(page),
+                  let host = page.host, !host.isEmpty {
+            subject = .web(page)
         } else {
             return nil
         }

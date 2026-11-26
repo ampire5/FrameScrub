@@ -79,6 +79,7 @@ import HomeScreenModel
             strip.topAnchor.constraint(equalTo: topAnchor), strip.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
         strip.card = card
+        strip.activeLabel = "Current video"
         strip.selectionHint = "Selected · click or Return to play"
         strip.onBrowse = { [weak self] row in
             guard let self else { return }; scroll.settle()
@@ -132,6 +133,7 @@ import HomeScreenModel
         strip.playing = playing
         if scroll.isMoving, state.browsed != wasBrowsed { scroll.settle() }
         place(animated: !changed && window != nil)
+        if changed { refreshVisibleText() }
         refreshState()
     }
 
@@ -424,8 +426,9 @@ import HomeScreenModel
     // MARK: Pictures and facts for the rows in view
 
     private func visibleChanged() {
-        guard isShownOnScreen else { return }
+        // The names are already in memory and should accompany placeholders on the first paint.
         refreshVisibleText()
+        guard isShownOnScreen else { return }
         scheduleRead()
         checkDwell()
     }

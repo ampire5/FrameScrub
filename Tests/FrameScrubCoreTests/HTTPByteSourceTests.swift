@@ -230,7 +230,7 @@ import Testing
         defer { server.stop() }
         let source = try MediaSource(url: server.url)
         #expect(source.width == 640)
-        #expect(source.readCache.source is HTTPByteSource)
+        #expect(source.readCache?.source is HTTPByteSource)
         let before = server.requests.count
         #expect(try MediaSource(url: server.url, cached: false).buildIndex().frameCount == 100)
         // The index scan reads a block's worth at a time: the 387 KB file comes in one request (the open's, which asks

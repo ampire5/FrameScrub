@@ -133,6 +133,22 @@ struct TourBoxTests {
         #expect(r.receive([3, 201, 137, 131], at: 4, profile: .viewing).isEmpty)
     }
 
+    @Test func invertedScrollReversesFilmstripAndTallSeekWithoutReversingKnob() {
+        let (config, warnings) = Config.parse("tourbox-scroll-invert=yes")
+        #expect(warnings.isEmpty)
+        #expect(config.text(forKey: "tourbox-scroll-invert") == "yes")
+        #expect(Config().text(forKey: "tourbox-scroll-invert") == "no")
+
+        var r = TourBoxRouter()
+        r.invertsScroll = config.tourBoxInvertsScroll
+        #expect(r.receive([201, 137, 196, 132], at: 1, profile: .viewing) == [
+            .filmScroll(4), .filmScroll(-4), .scrub(1), .scrub(-1)
+        ])
+        #expect(r.receive([0, 201, 137, 128], at: 2, profile: .editing) == [
+            .command(.seek(60, .byConfig)), .command(.seek(-60, .byConfig))
+        ])
+    }
+
     @Test func accelerationKeepsSlowStepsPreciseAndGrowsWithRotationSpeed() {
         func frames(rate: Double) -> [Int] {
             var r = TourBoxRouter()
@@ -234,6 +250,25 @@ struct TourBoxTests {
         _ = r.receive([2], at: 3, profile: .viewing)
         _ = r.flush(at: 3.41)
         #expect(r.cancel() == [.endSpeedHold])
+    }
+
+    @Test func swappedKnobModifiersMoveSpeedToTallAndVolumeToShort() {
+        let (config, warnings) = Config.parse("tourbox-knob-modifiers-swap=yes")
+        #expect(warnings.isEmpty)
+        #expect(config.text(forKey: "tourbox-knob-modifiers-swap") == "yes")
+        #expect(Config().text(forKey: "tourbox-knob-modifiers-swap") == "no")
+
+        var r = TourBoxRouter()
+        r.swapsKnobModifiers = config.tourBoxSwapsKnobModifiers
+        #expect(r.receive([0, 196, 132, 128], at: 1, profile: .viewing) == [
+            .command(.stepSpeed(1)), .command(.stepSpeed(-1))
+        ])
+        #expect(r.receive([3, 196, 132, 131], at: 2, profile: .editing) == [
+            .command(.addVolume(2)), .command(.addVolume(-2))
+        ])
+        #expect(r.receive([3, 131], at: 3, profile: .viewing) == [.command(.setSpeed(1))])
+        #expect(r.receive([0, 137, 128], at: 4, profile: .viewing) == [.command(.seek(60, .byConfig))])
+        #expect(r.receive([3, 137, 131], at: 5, profile: .viewing).isEmpty)
     }
 
     @Test func tallKnobChangesVolumeWithoutScrubbing() {

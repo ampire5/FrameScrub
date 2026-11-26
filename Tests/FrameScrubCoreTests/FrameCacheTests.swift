@@ -72,6 +72,21 @@ import Testing
         cache.budgetBytes = 500
         #expect(cache.count == 5)
         #expect((0..<5).allSatisfy(cache.contains))
+        #expect(cache.cachedRanges() == [0...4])
+    }
+
+    @Test func residentRangesFollowReplacementsGapsAndReset() {
+        let cache = FrameCache(budgetBytes: 1000)
+        #expect(cache.cachedRanges().isEmpty)
+        for n in [2, 4, 8] { cache.insert(frame(n)) }
+        #expect(cache.cachedRanges() == [2...2, 4...4, 8...8])
+        cache.insert(frame(3))
+        cache.insert(frame(4))
+        #expect(cache.cachedRanges() == [2...4, 8...8])
+        #expect(cache.makeRoom(forBytes: 800, keeping: [2...3]))
+        #expect(cache.cachedRanges() == [2...3])
+        cache.removeAll()
+        #expect(cache.cachedRanges().isEmpty)
     }
 
     @Test func resolvedRunSpansUndecodableFrames() {

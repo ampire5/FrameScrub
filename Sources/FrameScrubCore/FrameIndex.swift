@@ -75,12 +75,16 @@ public struct FrameIndex: Sendable {
     /// keyframes and return `n` itself — the demuxer seek lands on the real keyframe anyway.
     public func keyframe(atOrBefore n: Int) -> Int {
         guard isExact else { return clamp(n) }
+        return keyframeList[keyframeOffset(atOrBefore: n)]
+    }
+
+    public func keyframeOffset(atOrBefore n: Int) -> Int {
         var lo = 0, hi = keyframeList.count - 1
         while lo < hi {
             let mid = (lo + hi + 1) / 2
             if keyframeList[mid] <= n { lo = mid } else { hi = mid - 1 }
         }
-        return keyframeList[lo]
+        return lo
     }
 
     /// The last frame whose presentation time is strictly below the cut boundary.

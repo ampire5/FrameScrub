@@ -78,7 +78,6 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 **Home and File View**
 - Resume recent videos or browse folders and mounted volumes from the sidebar. Video cards show a poster, duration and viewing progress; the visible folder updates as files are added, renamed or removed, including on SMB shares.
 - Choose **Add to Favorites** from a folder’s menu to keep it in the sidebar and on the Favorites page. Open folders in separate File View tabs, or turn on **Include subfolders** to browse videos from nested folders in the same grid.
-- When [Network Everything](https://github.com/ampire5/EverythingMac) has a saved connection, choose **Everything** in Home to search and open videos and folders.
 - Open **File Information…** on a video card for codecs, streams, resolution, colour and tags. **Last Viewed** tracks when you actually saw a frame, independently of where the video will resume.
 - **Settings → Performance → Thumbnail storage** controls the format, quality, size and disk limit for cached thumbnails. Clearing the media cache keeps viewing history, positions, marks, loops and colour settings.
 
@@ -88,7 +87,7 @@ MacBook Pro, M4 Max, macOS 27. Reproduce with `scripts/measure-startup.sh` and `
 - Frame stepping both ways, horizontal-scroll scrubbing, Precision Scroll on Logitech mice, scrub audio that plays backward like tape (`⌥M`).
 - Shuttle at 1/2/4/8× forward and backward; reverse playback is silent and loops A-B backward too.
 - **Keyframe lens** on the seek bar: hover for the keyframes ±20 s around that point and how far the nearest ones are; scroll over the bar to walk the preview from keyframe to keyframe, click to go there.
-- **Viewing timeline:** a full-width filmstrip with a time lens (seconds near the playhead, larger intervals towards the ends) and a separate linear overview for direct seeking. Two translucent capsules appear above it on hover: Play/Pause and ±10 s on the left; mute/volume, playback speed and full screen on the right. Seek directly in the filmstrip and preview frames on hover. Right-click the timeline to change thumbnail size, hide the film, or keep the controls visible. The playlist slot and `<` / `>` switch files.
+- **Viewing timeline:** a full-width filmstrip with a time lens (seconds near the playhead, larger intervals towards the ends) and a linear overview for direct seeking. A compact playback capsule appears on hover. The mini filmstrip shows nearby thumbnails and playback position during navigation. Use `⌥⌘L` to show it and `⌥⇧⌘L` to remember it across launches. The playlist slot and `<` / `>` switch files.
 - Scene detection: jump to the next scene or back to the start of this one.
 - `⌘G` goes to a time or frame number; `Shift+Backspace` goes back to before the last seek; a frame step shows the frame type (`K`, `I`, `P`, `B`); hold `/` for 2×.
 - A-B loop, cut marks with drag-to-adjust edges and `⌘Z` undo, play only the marked parts.

@@ -19,6 +19,7 @@ public final class ThumbnailStore: @unchecked Sendable {
     private let catalog: MediaCatalog
     private let encoding: ThumbnailEncoding
     private let encodingLock = NSLock()
+    private let writeLock = NSLock()
     private var runtimeFallback = false
     public init(directory: URL = ThumbnailStore.defaultDirectory, limit: Int = 200, maxSide: CGFloat = ThumbnailStore.configuredSide(poster: false),
                 encoding: ThumbnailEncoding = .configured()) {
@@ -29,19 +30,32 @@ public final class ThumbnailStore: @unchecked Sendable {
     }
 
     /// `picture` is the frame as shown (upright, cropped, square pixels). Failures are ignored: thumbnails are a convenience.
-    public func save(_ picture: CIImage, for video: URL, context: CIContext, identity expected: MediaFileIdentity? = nil) {
-        guard let identity = expected ?? MediaFileIdentity.read(video), picture.extent.width >= 1, picture.extent.height >= 1 else { return }
+    @discardableResult
+    public func save(_ picture: CIImage, for video: URL, context: CIContext, identity expected: MediaFileIdentity? = nil,
+                     onlyIfMissing: Bool = false) -> CGImage? {
+        guard let identity = expected ?? MediaFileIdentity.read(video), picture.extent.width >= 1, picture.extent.height >= 1 else { return nil }
         let size = picture.extent.size
         let scale = min(1, maxSide / max(size.width, size.height))
         let target = CGSize(width: max(1, (size.width * scale).rounded()), height: max(1, (size.height * scale).rounded()))
         let origin = picture.transformed(by: CGAffineTransform(translationX: -picture.extent.minX, y: -picture.extent.minY))
         let scaled = scale < 1 ? ImageScaling.lanczos(origin, to: target) : origin
         guard let image = context.createCGImage(scaled, from: CGRect(origin: .zero, size: target),
-                                                format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) else { return }
+                                                format: .RGBA8, colorSpace: CGColorSpace(name: CGColorSpace.sRGB)) else { return nil }
         let requested = activeEncoding
-        guard let (bytes, actual) = requested.encode(image, using: Self.encodeImage) else { return }
+        guard let (bytes, actual) = requested.encode(image, using: Self.encodeImage) else { return nil }
         if actual.format != requested.format { encodingLock.withLock { runtimeFallback = true } }
-        try? catalog.putImage(bytes, identity: identity, variant: variant(actual), limit: limit)
+        // Recent's generator and playback writer share this store. An in-flight generated fallback fills a
+        // missing card without replacing a playback frame that finished while the generator was decoding.
+        return writeLock.withLock {
+            if onlyIfMissing, self.image(for: identity) != nil { return nil }
+            do {
+                let preferred = variant(encoding)
+                // If a newer picture was stored in the fallback format, retire the preferred entry it replaces.
+                try catalog.putImage(bytes, identity: identity, variant: variant(actual), limit: limit,
+                                     replacingVariant: preferred)
+                return image
+            } catch { return nil }
+        }
     }
 
     private var activeEncoding: ThumbnailEncoding {
@@ -58,7 +72,7 @@ public final class ThumbnailStore: @unchecked Sendable {
     }
 
     /// Check the requested encoding first, then its compatible JPEG fallback. The fallback remains visible after
-    /// relaunch; a transient encoder failure cannot hide already-cached preferred-format images either.
+    /// relaunch. A successful fallback save removes any older preferred picture of that same file identity.
     private var readableVariants: [String] {
         let preferred = variant(encoding)
         guard encoding.format != .jpeg else { return [preferred] }
@@ -69,12 +83,29 @@ public final class ThumbnailStore: @unchecked Sendable {
         return readableVariants.contains { (try? catalog.hasImage(identity, variant: $0)) ?? false }
     }
 
+    /// A folder-card preview may display cached posters before the browser can list its videos.
+    public func cachedFolderCover(in folder: URL) -> [CGImage] {
+        let variants = readableVariants
+        let preferred = variants[0]
+        let payloads = try? catalog.folderCoverImages(in: folder, preferred: preferred, fallback: variants.last ?? preferred,
+                                                      limit: HomeFolders.coverVideoLimit)
+        return payloads?.compactMap(Self.decodeImage) ?? []
+    }
+
+    private static func decodeImage(_ bytes: Data) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(bytes as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
     public func image(for video: URL) -> CGImage? {
         guard let identity = MediaFileIdentity.read(video) else { return nil }
+        return image(for: identity)
+    }
+
+    private func image(for identity: MediaFileIdentity) -> CGImage? {
         for variant in readableVariants {
             guard let bytes = try? catalog.image(identity, variant: variant),
-                  let source = CGImageSourceCreateWithData(bytes as CFData, nil),
-                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { continue }
+                  let image = Self.decodeImage(bytes) else { continue }
             return image
         }
         return nil

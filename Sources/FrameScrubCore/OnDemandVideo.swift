@@ -47,9 +47,10 @@ public final class OnDemandVideo {
     /// Audio gets its own demuxer cursor and shares the already-open file, including its cancellation.
     public func makeAudioDecoder() throws -> AudioDecoder? {
         guard media.audioStreamIndex != nil else { return nil }
-        if media.readCache.probe == nil { media.readCache.probe = StreamProbe(media) }
+        let readCache = media.readCache
+        if let readCache, readCache.probe == nil { readCache.probe = StreamProbe(media) }
         return try AudioDecoder(url: media.url, zeroSeconds: Double(media.startPTS) * media.timeBase,
-                                readCache: media.readCache, readAhead: false)
+                                readCache: readCache, readAhead: false)
     }
 
     public func time(of frame: DecodedFrame) -> Double {

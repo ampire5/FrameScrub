@@ -6,10 +6,12 @@ import HomeChrome
 import HomeScreenKit
 import InfoPanelKit
 import LogiHIDPP
+import SettingsKit
 import StashKitUI
 import SwiftUI
+import MouseContract
 
-final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate {
+final class PlayerWindowController: NSWindowController, NSWindowDelegate, PlayerCoreDelegate, NSMenuItemValidation {
     private let core: PlayerCore
     /// The bindings in effect: the user's (`baseInputMap`) with the keys of the plugin page's declared actions added.
     private var inputMap: InputMap
@@ -23,6 +25,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let buttons: MouseButtonRouter
     private let tourBoxBridge = TourBoxBridge()
     private var tourBoxRouter = TourBoxRouter()
+    private var d100hProfile = D100HViewingProfile()
+    private lazy var d100hGestures = GestureRouter(inputMap: inputMap, scrubSettings: core.config.scrub)
+    private var d100hLastTurnTime: Double?
+    private var acceptsD100H: Bool {
+        core.config.d100h && playerInFront && core.info != nil && openingURL == nil && !isTerminating && !keyHelp.isOpen
+    }
     private var tourBoxTap: DispatchWorkItem?
     private var tourBoxEnabled = false
     private var tourBoxEditsEdge = false
@@ -71,8 +79,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let folderSorts: FolderSorts
     /// The videos the decoders could not read in this run: Home draws them faint, the folder's steps go past them.
     private let unreadable: UnreadableFiles
-    /// Esc on Home (`makeHome`).
-    private var homeKeys: Any?
+    /// Window-level keys for Home and the shortcut help.
+    private var windowKeys: Any?
+    private var helpTransitionKey: UInt16?
     /// Why a file did not open, in its place.
     private let failureView = OpenFailureView()
     /// The Stash WebUI (Stash spec §2.1), Home's Stash page, created the first time it is shown.
@@ -102,6 +111,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return false
     }
     private let osd = OverlayView(fontSize: 15)
+    private let webStatus = OverlayView(fontSize: 15)
     /// The stats (`i`): sections of the file on screen, in the top right corner; made in `buildViews`.
     private var statsPanel: InfoPanelController!
     /// The slots at the window's edges, holding the playlist and the plugin pages that drive the player.
@@ -150,6 +160,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Refreshes the stats every 0.5 s while the panel is on screen and the window can be seen.
     private var statsTimer: Timer?
     private let hud = FeedbackHUD()
+    private let navigationRibbon = NavigationRibbonView(frame: .zero)
+    private static let miniPinKey = "timeline-mini-film-pinned"
+    private var miniFilmstripPinned = UserDefaults.standard.bool(forKey: PlayerWindowController.miniPinKey)
     private let goToField = GoToField()
     private let seekBar = SeekBarView()
     private var virtualCut: VirtualCutSession?
@@ -185,6 +198,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var cutBenchWarmReused = 0
 
     private var seekBarHeight: NSLayoutConstraint!
+    private var navigationRibbonSize: (width: NSLayoutConstraint, height: NSLayoutConstraint)!
     private var filmstripLoader: FilmstripPreviewLoader?
     private var filmstripPrewarmFrames = Set<Int>()
     private var pausedFilmstripPrewarmPosition: Int?
@@ -194,10 +208,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private let playlistPanel = PlaylistPanelView()
     /// The playlist panel's name filter (kept from file to file until cleared).
     private var playlistFilter = ""
-    private let keyHelp = KeyHelpView()
+    private let keyHelp = CheatSheetView()
     private var previewProvider: FrameScrubCore.PreviewProvider?
+    private var seekPreviewPool: PreviewImagePool?
     private var previewImage: CGImage?
     private var previewSample: (seconds: Double, exact: Bool)?
+    private var hoverOriginal: PreviewImage?
+    private var hoverRenderGeneration = 0
+    private let hoverRenderer = LatestOnlyWorker<HoverPictureRender>(label: "framescrub.hover-picture") { $0.run() }
     /// Where the pointer is on the seek bar (0…1); nil while it is not on the bar.
     private var previewFraction: Double?
     private var cutHoverFraction: Double?
@@ -319,11 +337,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var colorOrigin = ColorOrigin.default
 
     init(config: Config, inputMap: InputMap, preferences: PreferencesStore, folderColors: FolderColors, folderSorts: FolderSorts,
-         unreadable: UnreadableFiles) {
+         unreadable: UnreadableFiles, resumeStore: ResumeStore = ResumeStore()) {
         self.folderSorts = folderSorts
         self.unreadable = unreadable
         self.preferences = preferences
-        let resumeStore = ResumeStore()   // one store: the core keeps the colour the edits write when it saves the position
         core = PlayerCore(config: config, resumeStore: resumeStore)
         core.setViewingVisible(false)
         colorMemory = ColorMemory(folders: folderColors, files: resumeStore)
@@ -337,6 +354,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                               backing: .buffered, defer: false)
         window.title = "FrameScrub"
         window.isReleasedWhenClosed = false
+        window.autorecalculatesKeyViewLoop = true
         window.backgroundColor = .black
         window.collectionBehavior.insert(.fullScreenPrimary)
         window.acceptsMouseMovedEvents = true
@@ -349,6 +367,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         applyHomeConfig(config)
         window.delegate = self
         core.delegate = self
+        core.onWebPlaybackInterrupted = { [weak self] in self?.webPlaybackInterrupted() }
         buildViews(in: window)
         setUpMouse()
         setUpTourBox()
@@ -371,6 +390,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch target.subject {
         case let .file(url):
             open(url, landing: target.landing)
+        case let .web(url):
+            openWebURL(url, landing: target.landing)
         case let .stashScene(id):
             leaveVirtualCut()
             dropListPlaylist()
@@ -382,8 +403,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// where a link asked to land in it; `then`: what became of the open.
     /// For a video card in File View, `homeFolder` supplies the playlist order and `homeFileTabID` the return tab.
     func open(_ url: URL, landing: LinkTarget? = nil, homeFolder: URL? = nil, homeFileTabID: UUID? = nil,
+              warmed: PreparedOpen? = nil, resolved: ResolvedVideo? = nil,
               then done: ((OpenOutcome) -> Void)? = nil) {
-        guard !isTerminating else { done?(.superseded); return }
+        guard !isTerminating else { warmed?.discard(); done?(.superseded); return }
         dropListPlaylist()
         returnTab = homeFolder == nil ? .recent : .folders
         folderReturn = homeFolder.map { (folder: $0, file: url) }
@@ -391,7 +413,249 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         stashScene = nil
         stashOpens += 1   // nor a scene still being looked for
         queueGate.cancel()   // a Stash answer still on its way must not open over this file
-        openFile(url, landing: landing, then: done)
+        openFile(url, landing: landing, warmed: warmed, resolved: resolved, then: done)
+    }
+
+    private static let pageResolverQueue = DispatchQueue(label: "framescrub.video-page", qos: .userInitiated)
+    private static let webPreparationQueue = DispatchQueue(label: "framescrub.web-preparation", qos: .userInitiated)
+
+    private struct WebOpenRequest: Sendable {
+        enum Input: Equatable, Sendable { case automatic, page, direct }
+
+        let url: URL
+        var input: Input = .automatic
+        var itemID: String?
+        var landing: LinkTarget?
+        var playingAfterOpen: Bool?
+    }
+
+    private var pendingWebDone: ((OpenOutcome) -> Void)?
+    private var isOpeningWeb = false
+    private var webChoiceSheet: NSWindow?
+    private var currentWebRequest: WebOpenRequest?
+    private var failedWebRequest: WebOpenRequest?
+    private var interruptedWebRequest: WebOpenRequest?
+    var webActionTitle: String? {
+        if isOpeningWeb { return "Cancel Opening URL" }
+        if failedWebRequest != nil { return "Retry Opening URL" }
+        if interruptedWebRequest != nil || reconnectRequest() != nil { return "Reconnect Stream" }
+        return nil
+    }
+
+    func performWebAction() {
+        if isOpeningWeb { cancelWebOpen() }
+        else if failedWebRequest != nil { _ = retryFailedOpen() }
+        else { reconnectStream() }
+    }
+
+    func openRecentVideo(_ item: RecentVideoPages.Item) {
+        beginWebOpen(WebOpenRequest(url: item.url, input: .page, itemID: item.itemID))
+    }
+
+    func openWebURL(_ url: URL, landing: LinkTarget? = nil) {
+        beginWebOpen(WebOpenRequest(url: url, landing: landing))
+    }
+
+    private func beginWebOpen(_ request: WebOpenRequest, then done: ((OpenOutcome) -> Void)? = nil) {
+        guard !isTerminating else { done?(.superseded); return }
+        abandonOpening()
+        clearWebNotice()
+        stashOpens += 1
+        queueGate.cancel()
+        folderWait.cancel()
+
+        let generation = fileOpens
+        let cancellation = OpenCancellation()
+        openingURL = request.url
+        openingCancellation = cancellation
+        isOpeningWeb = true
+        pendingWebDone = done
+        if request.input == .direct || (request.input == .automatic && VideoPageResolver.isDirectMedia(request.url)) {
+            prepareWebOpen(request, resolved: nil, generation: generation)
+            return
+        }
+
+        showWebProgress("Finding video streams…")
+        let preferBitrate = core.config.preferStreamBitrate
+        Self.pageResolverQueue.async { [weak self] in
+            let result = Result { try VideoPageResolver.resolve(request.url, preferBitrate: preferBitrate, cancellation: cancellation) }
+            DispatchQueue.main.async {
+                guard let self, generation == self.fileOpens else { return }
+                switch result {
+                case let .success(items):
+                    self.chooseWebVideo(items, request: request, generation: generation)
+                case let .failure(error):
+                    let failure = OpenFailure(reason: error.localizedDescription, detail: "")
+                    let extraction = error as? VideoPageResolver.Failure
+                    if request.input == .automatic, request.itemID == nil,
+                       extraction == .noVideo || extraction == .unsupported || extraction == .unavailable {
+                        // An extensionless URL can still be direct media. Preserve the extractor explanation if it isn't.
+                        self.prepareWebOpen(request, resolved: nil, generation: generation, fallbackFailure: failure)
+                    } else {
+                        self.failWebOpen(request, failure: failure)
+                    }
+                }
+            }
+        }
+    }
+
+    private func chooseWebVideo(_ items: [ResolvedVideo], request: WebOpenRequest, generation: Int) {
+        guard let first = items.first else {
+            failWebOpen(request, failure: OpenFailure(reason: "No supported video was found on this page.", detail: ""))
+            return
+        }
+        if let wanted = request.itemID, let result = items.first(where: { $0.itemID == wanted }) {
+            prepareWebOpen(request, resolved: result, generation: generation)
+            return
+        }
+        let missing = request.itemID != nil
+        guard missing || items.count > 1 else {
+            prepareWebOpen(request, resolved: first, generation: generation)
+            return
+        }
+        guard let window else { abandonOpening(); return }
+        let alert = NSAlert()
+        alert.messageText = missing ? "The saved video is no longer available" : "Choose a Video"
+        if missing { alert.informativeText = "You can open another video from this page." }
+        let choices = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28))
+        choices.addItems(withTitles: items.enumerated().map { "\($0.offset + 1). \($0.element.title)" })
+        alert.accessoryView = choices
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        webChoiceSheet = alert.window
+        alert.beginSheetModal(for: window) { [weak self] result in
+            guard let self, self.fileOpens == generation else { return }
+            self.webChoiceSheet = nil
+            guard result == .alertFirstButtonReturn, items.indices.contains(choices.indexOfSelectedItem) else {
+                self.cancelWebOpen()
+                return
+            }
+            var selection = request
+            if missing {
+                selection.itemID = nil
+                selection.landing = nil
+                selection.playingAfterOpen = nil
+            }
+            self.prepareWebOpen(selection, resolved: items[choices.indexOfSelectedItem], generation: generation)
+        }
+    }
+
+    private func prepareWebOpen(_ request: WebOpenRequest, resolved: ResolvedVideo?, generation: Int,
+                                fallbackFailure: OpenFailure? = nil) {
+        guard let cancellation = openingCancellation else { return }
+        var selected = request
+        selected.input = resolved == nil ? .direct : .page
+        selected.itemID = resolved?.itemID
+        showWebProgress("Connecting to the stream…")
+        let prepare = core.preparation(for: request.url, cancellation: cancellation, resolved: resolved, webStream: true)
+        Self.webPreparationQueue.async { [weak self, selected] in
+            let result = Result { try prepare() }
+            DispatchQueue.main.async {
+                guard let self, self.fileOpens == generation else {
+                    try? result.get().discard()
+                    return
+                }
+                switch result {
+                case let .success(prepared):
+                    let done = self.pendingWebDone
+                    self.pendingWebDone = nil
+                    self.openingCancellation = nil
+                    self.open(request.url, landing: selected.landing, warmed: prepared, resolved: resolved) { outcome in
+                        if outcome == .opened {
+                            var current = selected
+                            current.landing = nil
+                            current.playingAfterOpen = nil
+                            self.currentWebRequest = resolved != nil && resolved?.itemID == nil ? nil : current
+                            if let resolved, let itemID = resolved.itemID {
+                                RecentVideoPages.note(request.url, itemID: itemID, title: resolved.title)
+                            }
+                            if let playing = selected.playingAfterOpen {
+                                if playing { self.core.play() } else { self.core.pause() }
+                            }
+                        }
+                        done?(outcome)
+                    }
+                case let .failure(error):
+                    self.failWebOpen(fallbackFailure == nil ? selected : request,
+                                     failure: fallbackFailure ?? Self.webConnectionFailure(error))
+                }
+            }
+        }
+    }
+
+    private static func webConnectionFailure(_ error: Error) -> OpenFailure {
+        let reason = switch OpenFailure(error).kind {
+        case .noAccess: "The server refused access to the stream."
+        case .network, .readError: "The stream could not be read. Check the connection and try again."
+        case .notFound: "The stream is no longer available."
+        case .damaged, .noVideo: "This link did not return a playable video stream."
+        case .other: "The stream could not be opened."
+        }
+        return OpenFailure(reason: reason, detail: "")
+    }
+
+    private func showWebProgress(_ text: String) {
+        showWebNotice("\(text)  Click or press Esc to cancel") { [weak self] in self?.cancelWebOpen() }
+    }
+
+    private func failWebOpen(_ request: WebOpenRequest, failure: OpenFailure) {
+        openingCancellation = nil
+        isOpeningWeb = false
+        endOpening()
+        let done = pendingWebDone
+        pendingWebDone = nil
+        failedWebRequest = request
+        if core.url == nil {
+            failedURL = nil
+            failedScene = nil
+            showFailureMessage(failure, name: request.url.host ?? "Video URL")
+            hideHome()
+            failureView.isHidden = false
+            seekBar.isHidden = true
+        } else {
+            showWebNotice("\(failure.reason)  Click to retry") { [weak self] in _ = self?.retryFailedOpen() }
+        }
+        done?(.failed(failure))
+    }
+
+    private func showWebNotice(_ text: String, action: @escaping () -> Void) {
+        webStatus.onClick = action
+        webStatus.show(text, duration: nil)
+    }
+
+    private func clearWebNotice() {
+        webStatus.onClick = nil
+        webStatus.hide()
+    }
+
+    private func cancelWebOpen() {
+        guard isOpeningWeb else { return }
+        abandonOpening()
+        if interruptedWebRequest != nil { showReconnectNotice() }
+    }
+
+    private func webPlaybackInterrupted() {
+        guard interruptedWebRequest == nil, let request = reconnectRequest() else { return }
+        interruptedWebRequest = request
+        core.pause()
+        if !isOpeningWeb { showReconnectNotice() }
+    }
+
+    private func showReconnectNotice() {
+        showWebNotice("The stream was interrupted.  Click to reconnect") { [weak self] in self?.reconnectStream() }
+    }
+
+    private func reconnectRequest() -> WebOpenRequest? {
+        guard var request = currentWebRequest, let index = core.index, let displayed = core.displayedFrame else { return nil }
+        let time = lastFrame.flatMap { $0.number == displayed ? index.seconds(forPTS: $0.pts) : nil }
+        request.landing = LinkTarget(time: time ?? index.seconds(forFrame: displayed))
+        request.playingAfterOpen = !core.isPaused
+        return request
+    }
+
+    private func reconnectStream() {
+        guard let request = interruptedWebRequest ?? reconnectRequest() else { return }
+        beginWebOpen(request)
     }
 
     /// What became of an `openFile`: a stream opens a while later, and another open or a close may come first.
@@ -404,11 +668,24 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The file being read for an open, until it opens or is abandoned, and how to stop its reads.
     private var openingURL: URL?
     private var openingCancellation: OpenCancellation?
+    private lazy var fileOpenPreparation: FileOpenPreparation = {
+#if DEBUG
+        if let lifecycleBench { return FileOpenPreparation(limit: lifecycleBench.openLimit) }
+#endif
+        return FileOpenPreparation()
+    }()
     /// "Opening <name>…", shown only when an open takes longer than `openingMessageDelay` (most files open sooner), and
     /// the work item that shows it.
     private var openingMessage: String?
     private var openingMessageItem: DispatchWorkItem?
     private static let openingMessageDelay = 0.3
+#if DEBUG
+    var lifecycleBench: WindowLifecycleBench?
+    private var benchRecentURLs: [URL] = []
+    private var benchRecentPicture: ((String, CGImage) -> Void)?
+    private var benchPreviewCallback: ((Double) -> Void)?
+    private var benchPreviewReady: ((Double) -> Void)?
+#endif
 
     /// Opens `url`; `fallbackPosition` is where to start when nothing is remembered for it (Stash's resume point).
     /// `landing` (a link's or plugin's position and segments) is applied once it is open; it goes with this open only,
@@ -421,7 +698,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                           landing: LinkTarget? = nil, stepped: Int? = nil,
                           virtualSource: VirtualCutSource? = nil, virtualBounds: Range<Double>? = nil,
                           contextVersion: String? = nil,
-                          warmed: PreparedOpen? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
+                          warmed: PreparedOpen? = nil, resolved: ResolvedVideo? = nil, then done: ((OpenOutcome) -> Void)? = nil) {
         guard !isTerminating else { warmed?.discard(); done?(.superseded); return }
         gestures.cancelScrubMomentum()
         seekBar.setCutEdges(nil)
@@ -455,6 +732,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         resetAutoColor()   // computed for the previous file's picture; the first frame with a picture is analysed
         if virtualSource == nil { rebuildPlaylist(around: url) }   // < and > can skip a broken file
         failedURL = nil
+        failedWebRequest = nil
+        clearWebNotice()
+        videoPageTitle = resolved?.title
         openedAt = ProcessInfo.processInfo.systemUptime
         indexingShownAt = nil
         // The previous file stops now; the window stays responsive while the file answers.
@@ -463,9 +743,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         failureView.isHidden = true
         updateViewingVisibility()
         window?.representedURL = nil
+        openingURL = url
         updateTitle(url)
         statsFileChanged()
-        openingURL = url
+        if let warmed, virtualSource != nil || ByteSources.isRemote(url) {
+            // A warmed fragment already passed the source-version check and does not use window or Recent metadata.
+            openingURL = nil
+            finishOpen(url, warmed, facts: url, fallbackPosition: fallbackPosition, landing: landing,
+                       virtualBounds: virtualBounds, virtualIndex: virtualSource.flatMap { virtualCut?.reusedIndex(for: $0) })
+            done?(.opened)
+            return
+        }
         let cancellation = OpenCancellation()
         openingCancellation = cancellation
         let message = virtualSource != nil ? "Opening fragment…" :
@@ -480,20 +768,30 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         openingMessage = message
         openingMessageItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.openingMessageDelay, execute: item)
-        let prepare = core.preparation(for: url, cancellation: cancellation, expectedVersion: virtualSource?.version ?? contextVersion)
+        let prepare = core.preparation(for: url, cancellation: cancellation,
+                                       expectedVersion: virtualSource?.version ?? contextVersion, resolved: resolved)
         let open = fileOpens
-        Task { [weak self] in
-            // Blocking reads: on a dispatch thread, not the cooperative pool.
-            let (result, facts) = await withCheckedContinuation {
-                (answer: CheckedContinuation<(Result<PreparedOpen, Error>, URL?), Never>) in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    let result = Result { try warmed ?? prepare() }
-                    answer.resume(returning: (result, Self.warmedFileURL(url, opened: (try? result.get()) != nil)))
-                }
-            }
-            guard let self, open == fileOpens else {
+#if DEBUG
+        let bench = lifecycleBench
+        let willReadMetadata: (@Sendable () -> Void)? = bench.map { bench in
+            { @Sendable in bench.readMetadata(cancelled: cancellation.isCancelled) }
+        }
+#else
+        let willReadMetadata: (@Sendable () -> Void)? = nil
+#endif
+        fileOpenPreparation.submit({
+#if DEBUG
+            bench?.startOpen(url)
+            defer { bench?.finishOpen() }
+#endif
+            let result = Result { try warmed ?? prepare() }
+            guard virtualSource == nil else { return (result, nil) }
+            return (result, Self.warmedFileURL(url, opened: (try? result.get()) != nil, cancellation: cancellation,
+                                             willRead: willReadMetadata))
+        }, discardPending: { warmed?.discard() }) { [weak self] answer in
+            guard let self, open == fileOpens, let (result, facts) = answer else {
                 if virtualSource != nil, self?.isVirtualCutBench == true { self?.cutBenchSuperseded += 1 }
-                try? result.get().discard()
+                if let answer { try? answer.result.get().discard() }
                 done?(.superseded)
                 return
             }
@@ -527,10 +825,17 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// preparation's thread: AppKit asks that object, so the main thread finds them in its cache. Each is a round trip
     /// to a share (`getattrlist`: 0.1–0.3 s per open on SMB, sampled 2026-10-26); a stream has none. A file that did
     /// not open (`opened` false) gets one only if it exists: that too is asked here, not on the main thread.
-    nonisolated private static func warmedFileURL(_ url: URL, opened: Bool) -> URL? {
+    nonisolated private static func warmedFileURL(_ url: URL, opened: Bool, cancellation: OpenCancellation,
+                                                 willRead: (@Sendable () -> Void)?) -> URL? {
+        guard !cancellation.isCancelled else { return nil }
         guard url.isFileURL else { return opened ? url : nil }
-        if !opened, !FileManager.default.fileExists(atPath: url.path) { return nil }
+        if !opened {
+            willRead?()
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        }
+        guard !cancellation.isCancelled else { return nil }
         let warmed = NSURL(fileURLWithPath: url.path)
+        willRead?()
         _ = try? warmed.resourceValues(forKeys: [.typeIdentifierKey, .contentTypeKey, .localizedNameKey, .effectiveIconKey])
         return warmed as URL
     }
@@ -540,16 +845,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         fileOpens += 1
         openingCancellation?.cancel()
         openingCancellation = nil
+        fileOpenPreparation.cancel()
+        let done = pendingWebDone
+        pendingWebDone = nil
+        isOpeningWeb = false
+        if let sheet = webChoiceSheet {
+            webChoiceSheet = nil
+            window?.endSheet(sheet, returnCode: .cancel)
+        }
         endOpening()
+        done?(.superseded)
     }
 
     /// An open is over (opened, failed or abandoned): its message goes, or never comes.
     private func endOpening() {
         guard openingURL != nil else { return }
         openingURL = nil
+        clearWebNotice()
         openingMessageItem?.cancel()
         openingMessageItem = nil
-        if let message = openingMessage, osd.visibleText == message { osd.hide() }
+        if let message = openingMessage, osd.visibleText == message {
+            osd.onClick = nil
+            osd.hide()
+        }
         openingMessage = nil
     }
 
@@ -584,9 +902,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             positionPending = playlist?.totalCount == 1 && folderListing?.folder != folder(of: url) ? url : nil
         } else { positionPending = nil }
         if url.isFileURL, virtualBounds == nil {
-            NSDocumentController.shared.noteNewRecentDocumentURL(facts)
-            var hidden = HiddenRecent()
-            hidden.reveal(url)   // removed from Recent once: opening it again brings it back
+            rememberRecentDocument(url, facts: facts)
         }
         videoView.rotationClockwise = core.info?.rotationClockwise ?? 0
         gestures.scrubber.videoFPS = core.info?.frameRate ?? 30
@@ -640,6 +956,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The file whose open failed, while its reason is on screen: Return tries it again.
     private var failedURL: URL?
+    private var videoPageTitle: String?
 
     /// Leaves the previous file and keeps the reason on screen until another file opens.
     /// `facts`: the file as `warmedFileURL` gave it, nil when it does not exist.
@@ -660,7 +977,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         failureView.isHidden = false
         seekBar.isHidden = true
         showBackButton(false, duration: 0)
-        window?.makeFirstResponder(videoView)
+        focusVideo()
         updatePrecisionWheel()
         videoView.onNextPicture = nil
         statsFileChanged()
@@ -671,7 +988,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// A file (or the reason it did not open, or a Stash scene being deleted) is on screen.
     var hasOpenFile: Bool {
-        core.url != nil || openingURL != nil || failedURL != nil || failedScene != nil || deletingScene
+        core.url != nil || openingURL != nil || failedURL != nil || failedWebRequest != nil || failedScene != nil || deletingScene
     }
 
     /// ⌘W / the back button: leaves the file and shows where it came from; with no file, closes the window.
@@ -687,7 +1004,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         abandonOpening()
         folderWait.cancel()
         recentThumbnailer.cancel()
-        saveThumbnail(wait: true)   // the start screen shows it next
+        saveThumbnail()
         cancelStashTitleWait()
         stashSession?.leave()
         dropSceneSearch()
@@ -699,6 +1016,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.alphaValue = 0
         showBackButton(false, duration: 0)
         failedURL = nil
+        failedWebRequest = nil
         failedScene = nil
         deletingScene = false   // a delete still running finishes without opening anything
         queueGate.cancel()
@@ -717,6 +1035,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     @discardableResult private func retryFailedOpen() -> Bool {
+        if let failedWebRequest {
+            beginWebOpen(failedWebRequest)
+            return true
+        }
         if let failedURL { openFile(failedURL, origin: origin); return true }
         if let failedScene { openStashScene(failedScene); return true }
         return false
@@ -776,12 +1098,12 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             stashScene = scene   // only now: during a mount the scene on screen (and ⌘⌫'s dialog) is still the old one
             switch result {
             case let .file(url), let .stream(url):
-                window?.makeFirstResponder(videoView)
+                focusVideo()
                 let (queuePlays, step) = (queuePlays, queueDirection > 0 ? Feedback.playlistNext : .playlistPrevious)
                 openFile(url, origin: .stash(sceneID: scene.id, hasQueue: scene.hasQueue),
                          fallbackPosition: scene.resumeTime > 0 ? scene.resumeTime : nil, landing: landing) { [weak self] outcome in
                     guard let self else { return }
-                    if scene.automatic, outcome != .superseded { hud.show(openedHUD(step)) }
+                    if scene.automatic, outcome != .superseded { showPlaybackFeedback(openedHUD(step)) }
                     switch outcome {
                     case .opened:
                         stashSession.began(sceneID: scene.id, duration: core.durationSeconds)
@@ -819,7 +1141,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         statsFileChanged()
         window?.representedURL = nil
         window?.title = name ?? "FrameScrub"
-        window?.makeFirstResponder(videoView)
+        focusVideo()
     }
 
     /// What pages said about what they open (`info`), by URL: a stream they name is shown and exported by that name.
@@ -851,7 +1173,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// The name a file goes by on screen: a page's `Title — Studio · date` for it, else its file name.
     private func displayName(_ url: URL) -> String {
-        pageSceneInfos[url]?.displayTitle(fallback: url.lastPathComponent) ?? url.lastPathComponent
+        if url == (openingURL ?? core.url), let videoPageTitle { return videoPageTitle }
+        return pageSceneInfos[url]?.displayTitle(fallback: url.lastPathComponent) ?? url.lastPathComponent
     }
 
     /// The window title, and an OSD line when the folder has other videos: "12 / 48 · name.mp4". A file from Stash
@@ -958,9 +1281,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func presentHome(tab: HomeTab? = nil, restoring session: FileTabSession? = nil,
                              playback: HomePlaybackNavigation = .automatic) {
         guard let window else { return }
+        setShortcutHelp(open: false)
         let returningToPlaybackOrigin = playback == .returning || (playback == .automatic && homeHost.isHidden)
         let showPlaybackFolder = returningToPlaybackOrigin || playback == .showFolder
         videoView.cancelTrackpadGestures()
+        hover(nil)
         seekBar.cancelCutEdgeGesture()
         slots.isEnabled = false
         virtualCut?.playback.wantsPlayback = false
@@ -987,6 +1312,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         failedScene = nil
         failureView.isHidden = true
         homeHost.isHidden = false
+        filmstripLoader?.cancelVisible()
         view.isParked = false
         // Home's toolbar lies over its content (the browser insets its grid by the toolbar's height), as in Loupe.
         keepingFrame(of: window) {
@@ -1002,6 +1328,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         showBackButton(false, duration: 0)
         osd.hide()   // the player's messages and icons were about the video, now behind Home
         hud.hide()
+        navigationRibbon.clear()
         applyHomeConfig(core.config)
         let config = core.config
         // A video opened from a folder goes back to that folder with it (or the file playing after it) selected.
@@ -1074,6 +1401,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// Back to the video (or to the reason a file failed): Home stays in the window, hidden and parked.
     func hideHome() {
         guard let home, !homeHost.isHidden else { return }
+        setShortcutHelp(open: false)
         catalogOpen?.cancel()
         homeButtons.cancelAll()
         let cpu = StartupTrace.threadCPU(), wall = Date()
@@ -1093,7 +1421,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if let titleBeforeHome { window?.title = titleBeforeHome }
         titleBeforeHome = nil
         updateViewingVisibility()
-        window?.makeFirstResponder(videoView)
+        focusVideo()
         updatePrecisionWheel()
         if StartupTrace.enabled, let window {
             window.layoutIfNeeded()
@@ -1122,7 +1450,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let source = FrameScrubHomeSource(
             folderSorts: folderSorts, defaultSort: { [weak self] in self?.core.config.playlistSort.defaultSort ?? .standard },
             recentURLs: { [weak self] in
-                RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths,
+#if DEBUG
+                if let self, lifecycleBench != nil { return benchRecentURLs }
+#endif
+                return RecentFiles.shown(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths,
                                   limit: self?.core.config.recentCount ?? 50)
             },
             thumbnails: thumbnails, thumbnailer: recentThumbnailer,
@@ -1134,7 +1465,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         source.onCut = { [weak self] in self?.chooseCatalogCut($0, id: $1, edit: $2) }
         source.onCatalogNavigation = { [weak self] in self?.catalogOpen?.cancel() }
         source.view = view.browser
+#if DEBUG
+        if lifecycleBench != nil {
+            source.benchRecentPicture = { [weak self] in self?.benchRecentPicture?($0, $1) }
+        }
+#endif
         source.onSidebarChange = { [weak view] in view?.reloadSidebar() }
+        source.filesInUse = { [weak self] in
+            guard let self else { return [] }
+            var sources = core.clipQueue?.pendingSources ?? []
+            if core.isExporting, let url = core.url { sources.append(url) }
+            return sources
+        }
         view.fileTabsEnabled = true
         view.browser.unreadable = unreadable
         source.onOpen = { [weak self, weak view] url, location, _ in   // not looked up: a share answers over the network
@@ -1175,6 +1517,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if width > 0 { view.sidebarWidth = CGFloat(width) }
         view.onSidebarWidthChange = { width in defaults.set(Double(width.rounded()), forKey: "homeSidebarWidth") }
         browser.cardSizeRange = 60...480   // home-card-size's
+        browser.onLocation = { [weak browser] location in
+            let isFileView = FileViewClipboard.folder(in: location) != nil
+            browser?.allowsMultipleSelection = isFileView
+            browser?.selectsOnHover = !isFileView
+        }
         browser.onWindowText = { [weak self] title, _ in
             guard let self, self.showsHome else { return }
             self.window?.title = title
@@ -1192,23 +1539,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         view.onSidebarToggle = { [weak self] in self?.toggleHomeSidebar() }
         view.onDrop = { [weak self] url in self?.open(url) }
-        // Esc on Home goes back to the open video, unless a field is being typed in (the filter, a rename): the browser
-        // and the window keep Esc to themselves, so it is taken here first.
-        homeKeys = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window,
-                  !(self.window?.firstResponder is NSText) else { return event }
-            if self.homeSource?.everythingHasKeyboardFocus == true { return event }
-            if event.keyCode == 53, self.returnFromHome() { return nil }
-            // Home's card view owns first responder, so its unhandled keys do not
-            // reach VideoView. Route this window-settings command explicitly;
-            // keep navigation, text entry and playback commands with Home.
-            guard self.showsHome,
-                  let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode,
-                      characters: KeyboardLayout.characters(for: event), modifiers: Modifiers(event.modifierFlags)),
-                  self.inputMap.command(for: chord) == .toggleSubjectFocusPanel else { return event }
-            if !event.isARepeat { self.runInput(.toggleSubjectFocusPanel, from: .keyboard) }
-            return nil
-        }
         home = view
         homeSource = source
         let workspace = NSWorkspace.shared.notificationCenter
@@ -1319,25 +1649,48 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         window.makeKeyAndOrderFront(nil)
     }
 
-    private let thumbnails = ThumbnailStore()
-    private lazy var recentThumbnailer = RecentThumbnailer(store: thumbnails)
+    private lazy var thumbnails: ThumbnailStore = {
+#if DEBUG
+        if let lifecycleBench { return ThumbnailStore(directory: lifecycleBench.directory.appendingPathComponent("recent")) }
+#endif
+        return ThumbnailStore()
+    }()
+    private lazy var recentThumbnailer = RecentThumbnailer(store: thumbnails, fillsMissingOnly: true)
+    private lazy var playbackThumbnails: PlaybackThumbnailWriter = {
+        let writer = PlaybackThumbnailWriter(store: thumbnails) { [weak self] url, image in
+            guard let self, self.showsHome, !self.isTerminating else { return }
+            self.homeSource?.playbackPictureSaved(image, for: url)
+        }
+#if DEBUG
+        writer.bench = lifecycleBench
+#endif
+        return writer
+    }()
 
     /// Keeps the picture on screen (as shown: upright, cut, square pixels) for the start screen's recent files.
-    /// The picture of the file being left, for the start screen. Scaling and encoding it took the main thread at
-    /// every switch of file; it runs in the background now (`wait`: at quit, so it is written before the app ends).
-    private func saveThumbnail(wait: Bool = false) {
+    private func saveThumbnail() {
         guard let url = core.url, let image = videoView.displayedImage, let identity = core.sourceIdentity else { return }
-        let picture = videoView.geometry.applied(to: image)
-        let thumbnails = thumbnails, context = Self.thumbnailContext
-        let work: @Sendable () -> Void = { thumbnails.save(picture, for: url, context: context, identity: identity) }
-        if wait { thumbnailQueue.sync(execute: work) } else { thumbnailQueue.async(execute: work) }
+        playbackThumbnails.save(image, geometry: videoView.geometry, url: url, identity: identity)
     }
-    private let thumbnailQueue = DispatchQueue(label: "framescrub.thumbnail-save", qos: .utility)
+
+    private func rememberRecentDocument(_ url: URL, facts: URL) {
+#if DEBUG
+        if lifecycleBench != nil {
+            benchRecentURLs.removeAll { $0 == url }
+            benchRecentURLs.insert(url, at: 0)
+            return
+        }
+#endif
+        NSDocumentController.shared.noteNewRecentDocumentURL(facts)
+        var hidden = HiddenRecent()
+        hidden.reveal(url)
+    }
 
     /// Freeze the last observed view/position before the async quit barrier. Cache data is disposable;
     /// user state must reach its worker before applicationWillTerminate can exit the process.
     func prepareUserStateForTermination() async {
         isTerminating = true
+        filmstripLoader?.stop()
         let fileSession = home?.fileTabSession()
         core.setViewingVisible(false)
         stashOpens += 1
@@ -1361,6 +1714,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Stops rendering and shuts the core down (cancels export, filler threads, audio).
     func shutdown() {
+        if let windowKeys { NSEvent.removeMonitor(windowKeys) }
+        windowKeys = nil
         seekBar.cancelFilmScroll()
         tourBoxBridge.stop()
         abandonOpening()   // a stream answering later must not open in a closed window
@@ -1372,12 +1727,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         for observer in homeVolumeObservers { workspace.removeObserver(observer) }
         homeVolumeObservers.removeAll()
         recentThumbnailer.cancel()
-        saveThumbnail(wait: true)
+        saveThumbnail()
         cancelMouseInput()   // and the button timer; the mouse itself is released at termination (`LogiMouse.follow`)
         statsTimer?.invalidate()
         statsTimer = nil
         filmstripLoader?.stop()
         filmstripLoader = nil
+        seekPreviewPool = nil
         previewProvider?.stop()
         previewProvider = nil
         cropSampler?.cancel()
@@ -1389,9 +1745,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Leaves the file (its position is kept for the next open); framescrub.conf's colour applies again.
     private func closeCore() {
+        hover(nil)
+        if virtualCut == nil { navigationRibbon.clear() }
+        currentWebRequest = nil
+        interruptedWebRequest = nil
+        clearWebNotice()
         cancelTourBoxInput()
         filmstripLoader?.stop()
         filmstripLoader = nil
+        seekPreviewPool = nil
         if virtualCut == nil { seekBar.resetFilmstrip() }
         resetPluginAnalysisSource()
         core.close()
@@ -1402,7 +1764,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A file opened or closed: the player gets framescrub.conf with the file's and its folders' colour over it.
     /// The views follow in the caller (`openFile`: `updateColorCorrection`); with no file nothing is drawn.
     private func colorFileChanged() {
-        colorMemory.open(core.url, size: core.readCache?.fileSize)
+        colorMemory.open(core.isWebStream ? nil : core.url, size: core.readCache?.fileSize)
         core.apply(effectiveConfig())
         SettingsPanel.refreshFolderOverrides()
     }
@@ -1427,6 +1789,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func applyConfig(_ global: Config) {
         var previous = globalConfig
         globalConfig = global
+        if !global.navigationFilmstrip, !miniFilmstripPinned, !fullNavigationFilmVisible { navigationRibbon.clear() }
+        if previous.navigationFilmstripWidth != global.navigationFilmstripWidth {
+            navigationRibbonSize.width.isActive = false
+            navigationRibbonSize.width = makeNavigationWidthConstraint(percent: global.navigationFilmstripWidth)
+            navigationRibbonSize.width.isActive = true
+        }
+        if previous.navigationFilmstripHeight != global.navigationFilmstripHeight {
+            navigationRibbonSize.height.constant = global.navigationFilmstripHeight
+        }
+        seekBar.setMiniFilmSize(width: global.navigationFilmstripWidth, height: global.navigationFilmstripHeight)
+        previous.navigationFilmstripWidth = global.navigationFilmstripWidth
+        previous.navigationFilmstripHeight = global.navigationFilmstripHeight
         if previous.artifactFilters.strength != global.artifactFilters.strength {
             previous.artifactFilters.strength = global.artifactFilters.strength
             if previous == global {
@@ -1436,7 +1810,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 return
             }
         }
-        applyEffectiveConfig()
+        if previous != global { applyEffectiveConfig() }
     }
 
     /// Settings or the file's colour changed: bring the running player and the views in line with the effective config.
@@ -1491,7 +1865,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if showsHome, home?.browser.location == HomeRecent.location(of: .stash) { showHome() }
         }
         statsPanel.fontSize = CGFloat(config.statsFontSize)
-        configurePreview()
+        if stashChanged, case .stash = origin { configurePreview(force: true) }
+        else { configurePreview() }
     }
 
     /// Vibrance (when on) and the automatic adjustments, for the screen and, with `save-color`, saved frames.
@@ -1661,7 +2036,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         gestures.inputMap = inputMap
         buttons.update(map: inputMap, longPressMilliseconds: core.config.mouseLongPress)
         mouseBridge?.apply(config: core.config, map: inputMap)
-        keyHelp.refresh(inputMap, pluginActions: shownPluginActions)
+        if keyHelp.isOpen { keyHelp.update(shortcutHelpContent()) }
     }
 
     /// The declared actions as the key help lists them: those of the pages in a slot (`PluginActionPolicy`).
@@ -1731,16 +2106,32 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: Layout
 
+    private func makeNavigationWidthConstraint(percent: Double) -> NSLayoutConstraint {
+        let fraction = percent / 100
+        let constraint = navigationRibbon.widthAnchor.constraint(equalTo: visibleArea.widthAnchor,
+                                                                 multiplier: fraction, constant: -24 * fraction)
+        constraint.priority = .defaultHigh
+        return constraint
+    }
+
     private func buildViews(in window: NSWindow) {
         let container = ContainerView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
         window.contentView = container
-        for view in [videoView, homeHost, failureView, hud, osd, seekBar, backButton, previewView, keyHelp, goToField] as [NSView] {
+        for view in [videoView, homeHost, failureView, osd, webStatus, seekBar, navigationRibbon,
+                     backButton, previewView, hud, goToField] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             container.addSubview(view)
         }
         container.addLayoutGuide(visibleArea)
+        navigationRibbonSize = (
+            makeNavigationWidthConstraint(percent: globalConfig.navigationFilmstripWidth),
+            navigationRibbon.heightAnchor.constraint(equalToConstant: globalConfig.navigationFilmstripHeight)
+        )
+        navigationRibbonSize.height.priority = .defaultHigh
+        seekBar.setMiniFilmSize(width: globalConfig.navigationFilmstripWidth, height: globalConfig.navigationFilmstripHeight)
+        navigationRibbon.configureThumbnailFit(crop: seekBar.lensCrop, stretch: seekBar.thumbnailStretch)
         videoEdges = [
             videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
@@ -1766,10 +2157,6 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             hud.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor),
             hud.topAnchor.constraint(equalTo: visibleArea.topAnchor),
             hud.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor),
-            keyHelp.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor),
-            keyHelp.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor),
-            keyHelp.topAnchor.constraint(equalTo: visibleArea.topAnchor),
-            keyHelp.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor),
             goToField.centerXAnchor.constraint(equalTo: visibleArea.centerXAnchor),
             goToField.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 16),
             goToField.widthAnchor.constraint(lessThanOrEqualTo: visibleArea.widthAnchor, constant: -24),
@@ -1777,11 +2164,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 width.priority = .defaultHigh; return width }(),
             osd.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             osd.trailingAnchor.constraint(lessThanOrEqualTo: visibleArea.trailingAnchor, constant: -16),
+            webStatus.centerXAnchor.constraint(equalTo: visibleArea.centerXAnchor),
+            webStatus.topAnchor.constraint(equalTo: visibleArea.topAnchor, constant: 54),
+            webStatus.widthAnchor.constraint(lessThanOrEqualTo: visibleArea.widthAnchor, constant: -32),
             seekBar.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             seekBar.trailingAnchor.constraint(equalTo: visibleArea.trailingAnchor, constant: -16),
             seekBar.bottomAnchor.constraint(equalTo: visibleArea.bottomAnchor, constant: -8),
             { let constraint = seekBar.heightAnchor.constraint(equalToConstant: seekBar.preferredHeight)
                 seekBarHeight = constraint; return constraint }(),
+            navigationRibbon.centerXAnchor.constraint(equalTo: visibleArea.centerXAnchor),
+            navigationRibbon.bottomAnchor.constraint(equalTo: seekBar.bottomAnchor),
+            navigationRibbon.widthAnchor.constraint(lessThanOrEqualTo: visibleArea.widthAnchor, constant: -24),
+            navigationRibbon.heightAnchor.constraint(lessThanOrEqualTo: visibleArea.heightAnchor, constant: -16),
+            navigationRibbonSize.width, navigationRibbonSize.height,
             backButton.leadingAnchor.constraint(equalTo: visibleArea.leadingAnchor, constant: 16),
             previewView.bottomAnchor.constraint(equalTo: seekBar.topAnchor, constant: -6),
         ])
@@ -1793,6 +2188,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         osdTop.isActive = true
         buildStatsPanel(in: container)
         buildSlots(in: container)
+        container.addSubview(keyHelp)
+        NSLayoutConstraint.activate([
+            keyHelp.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            keyHelp.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            keyHelp.topAnchor.constraint(equalTo: container.topAnchor),
+            keyHelp.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+        ])
         seekBar.onHover = { [weak self] in
             self?.showCursorAfterScrub()
             self?.hover($0)
@@ -1812,8 +2214,83 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onHeightChange = { [weak self] height in
             guard let self, seekBarHeight.constant != height else { return }
             seekBarHeight.constant = height
+            refreshFeedbackClearance()
         }
-        seekBar.onFilmstripRequest = { [weak self] times in self?.requestFilmstrip(times) }
+        seekBar.onFilmstripRequest = { [weak self] times in
+            guard let self, !navigationRibbon.isPresenting || seekBar.showsFilmstrip else { return }
+            requestFilmstrip(times)
+        }
+        seekBar.onReadyFilmstripRequest = { [weak self] times in self?.filmstripLoader?.request(times, readyOnly: true) }
+        seekBar.filmstripHandoffWidth = { [weak self] shown in
+            guard let self else { return nil }
+            let hasMini = shown ? navigationRibbon.isPresenting
+                : miniFilmstripPinned && core.displayedFrame != nil && navigationPosition != nil
+            return hasMini ? navigationRibbon.handoffWidth : nil
+        }
+        seekBar.onFilmVisibilityChange = { [weak self] shown in
+            guard let self else { return }
+            if shown {
+                seekBar.closeMiniLensControls()
+                if navigationRibbon.isPresenting {
+                    seekBar.isHidden = false
+                    seekBar.alphaValue = 1
+                }
+            } else {
+                let stale = navigationRibbon.usesFullFilm && navigationPosition.map {
+                    navigationRibbon.journey?.target != $0
+                } == true
+                if miniFilmstripPinned {
+                    if navigationRibbon.journey == nil || stale { showKeptMiniPosition(revealing: false) }
+                } else if !globalConfig.navigationFilmstrip || stale {
+                    navigationRibbon.clear()
+                }
+            }
+            navigationRibbon.showWithFullFilm(shown, animatingPictures: !shown && miniFilmstripPinned)
+            refreshNavigationRibbon()
+        }
+        seekBar.onNavigationPicturesChanged = { [weak self] projection in
+            guard let self else { return }
+            navigationRibbon.setProjection(projection, geometry: videoView.geometry)
+        }
+        seekBar.onThumbnailFitChange = { [weak self] crop, stretch in
+            self?.navigationRibbon.configureThumbnailFit(crop: crop, stretch: stretch)
+        }
+        seekBar.onMiniFilmSizeChange = { [weak self] width, height in
+            guard let self else { return }
+            preferences.updateCoalesced(["navigation-filmstrip-width", "navigation-filmstrip-height"], onError: { [weak self] in
+                self?.showMessage("Cannot save settings: \($0)", duration: 4)
+            }) {
+                $0.navigationFilmstripWidth = width
+                $0.navigationFilmstripHeight = height
+            }
+        }
+        seekBar.onLensPopoverClosed = { [weak self] in self?.navigationRibbon.setSettingsOpen(false) }
+        navigationRibbon.onSettings = { [weak self] anchor in
+            guard let self else { return }
+            navigationRibbon.setSettingsOpen(seekBar.showMiniLensControls(relativeTo: anchor))
+        }
+        seekBar.navigationScale = navigationRibbon.scale
+        navigationRibbon.onSampleRadiusChanged = { [weak self] radius in
+            guard let self else { return }
+            seekBar.navigationSampleRadius = radius
+            refreshNavigationRibbon()
+        }
+        navigationRibbon.onScaleChanged = { [weak self] in
+            guard let self else { return }
+            seekBar.navigationScale = navigationRibbon.scale
+            refreshNavigationRibbon()
+            prewarmFilmstrip()
+        }
+        navigationRibbon.onJourneyChanged = { [weak self] journey in
+            self?.seekBar.navigationJourney = journey
+            if journey == nil {
+                self?.seekBar.closeMiniLensControls()
+                self?.filmstripLoader?.cancelNavigation()
+            }
+        }
+        navigationRibbon.onPresentationChanged = { [weak self] in self?.refreshFeedbackClearance() }
+        navigationRibbon.onPin = { [weak self] in self?.pinMiniFilmstrip() }
+        applyMiniFilmstripSelection()
         seekBar.onEditFragment = { [weak self] span in self?.selectVirtualCutFragment(span) }
         seekBar.onAnalysisFragment = { [weak self] fragment in
             guard let self, let owner = pluginAnalysisOwner, virtualCut == nil, !showsHome,
@@ -1822,7 +2299,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         seekBar.onCutEdgePreview = { [weak self] frame in
             guard let self, virtualCutReturn?.originalReady == true, !showsHome else { return }
-            if self.window?.firstResponder !== videoView { self.window?.makeFirstResponder(videoView) }
+            focusVideo()
             if !core.isPaused { core.pause() }
             core.seek(toFrame: frame)
         }
@@ -1877,8 +2354,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.onFilmClickPreview = { [weak self] seconds in self?.seekFilm(to: seconds, previewsFrames: true) }
         transport.onToggleMute = { [weak self] in self?.runFromSeekBar(.cycleMute) }
         transport.onVolume = { [weak self] in
-            self?.core.setVolume($0)
-            self?.revealSeekBar()
+            guard let self else { return }
+            core.setVolume($0)
+            seekBar.revealPlaybackControls()
         }
         core.onIndexReady = { [weak self] in
             if let cut = self?.virtualCut, let source = cut.loadedSource { cut.rememberIndex($0, for: source) }
@@ -1887,6 +2365,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             self?.pluginGrabber?.updateIndex($0)
             self?.sceneSearch?.updateIndex($0)
             self?.prewarmFilmstrip()
+            self?.refreshNavigationRibbon()
             self?.retryVirtualPictureWithExactIndex($0)
         }
         core.onIndexProgress = { [weak self] in self?.showIndexing($0) }
@@ -1907,7 +2386,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             } else if let playlist, playlist.files.indices.contains(row) {
                 openFile(playlist.files[row])
             }
-            self.window?.makeFirstResponder(videoView)   // not the buildViews parameter (would retain the window)
+            self.focusVideo()
             slots.playlistChosePlay()
         }
         playlistPanel.onFilter = { [weak self] text in
@@ -1928,7 +2407,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         playlistPanel.onSubmitFilter = { [weak self] in
             guard let self else { return }
             if let listPlaylist {
-                self.window?.makeFirstResponder(videoView)
+                self.focusVideo()
                 if let target = listRowIndices.first(where: { $0 != listPlaylist.currentIndex }) {
                     openListItem(at: target)
                     slots.playlistChosePlay()
@@ -1938,7 +2417,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             whenFolderRead { [weak self] in
                 guard let self, let playlist else { return }
                 let anchor = playlistAnchor
-                self.window?.makeFirstResponder(videoView)   // not the buildViews parameter
+                self.focusVideo()
                 if let target = playlist.files.first(where: { $0 != anchor }) {   // the first match other than this file
                     openFile(target)
                     slots.playlistChosePlay()
@@ -1948,7 +2427,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         playlistPanel.onEndFilter = { [weak self] in
             guard let self else { return }
             _ = slots.escape(in: playlistPanel)
-            self.window?.makeFirstResponder(videoView)
+            self.focusVideo()
         }
 
         goToField.onSubmit = { [weak self] text in
@@ -1957,6 +2436,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 return virtualCut == nil ? "Enter a time like 1:23.5 or a frame like f1234." : "Enter a time like 1:23.5."
             }
             if virtualCut != nil, case .frame = target { return "Enter a time within the cut, such as 1:23.5." }
+            let origin = navigationPosition
+            defer { recordNavigation(from: origin) }
             positionWillMove()
             core.inputIsFresh = true
             if virtualCut != nil, case let .seconds(seconds) = target {
@@ -1967,7 +2448,16 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         goToField.onClose = { [weak self] in
             guard let self else { return }
-            self.window?.makeFirstResponder(videoView)   // not the buildViews parameter (would retain the window)
+            self.focusVideo()
+        }
+        keyHelp.onClose = { [weak self] in self?.setShortcutHelp(open: false) }
+        windowKeys = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
+            guard let self, event.window === self.window else { return event }
+            if event.type == .keyUp {
+                if helpTransitionKey == event.keyCode { helpTransitionKey = nil }
+                return event
+            }
+            return self.handleWindowKey(event) ? nil : event
         }
         videoView.onKeyDown = { [weak self] in self?.handleKey($0) }
         videoView.onKeyUp = { [weak self] in
@@ -2072,15 +2562,50 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             haptics.from(.menu) { self.core.seekFromBar(toFrame: self.previewPin?.frame ?? self.frame(atBarFraction: fraction)) }   // the bar is silent
             revealSeekBar()
         }
-        window.makeFirstResponder(videoView)
+        focusVideo()
     }
 
     /// A menu item's command (its key equivalent counts as the keyboard).
-    func runCommand(_ command: Command) { runInput(command, from: menuSource) }
+    func runCommand(_ command: Command) {
+        if command == .deleteFile, showsHome { trashFileViewSelection(); return }
+        runInput(command, from: menuSource)
+    }
 
-    /// Edit > Copy (⌘C, nil target) reaches the player through the responder chain (VideoView -> window ->
-    /// this controller), so a focused text field handles it first and the player copies the frame otherwise.
-    @objc func copy(_ sender: Any?) { runInput(.copyFrame, from: menuSource) }
+    private var focusedFileView: HomeBrowserView? {
+        guard showsHome, !keyHelp.isOpen, let window, window.attachedSheet == nil,
+              let browser = home?.browser, window.firstResponder === browser,
+              FileViewClipboard.folder(in: browser.location) != nil else { return nil }
+        return browser
+    }
+
+    /// Text fields handle the standard Copy action before it reaches the window controller.
+    @objc func copy(_ sender: Any?) {
+        if let browser = focusedFileView { FileViewClipboard.copy(browser.selectedEntries) }
+        else { runInput(.copyFrame, from: menuSource) }
+    }
+
+    @objc func paste(_ sender: Any?) { pasteFileViewItems(moving: false) }
+    @objc func moveFileViewItemsHere(_ sender: Any?) { pasteFileViewItems(moving: true) }
+
+    private func pasteFileViewItems(moving: Bool) {
+        guard let browser = focusedFileView, let folder = FileViewClipboard.folder(in: browser.location) else { return }
+        homeSource?.pasteFiles(into: folder, moving: moving)
+    }
+
+    var canTrashFileViewSelection: Bool { focusedFileView?.selectedEntries.contains(where: \.canTrash) == true }
+
+    private func trashFileViewSelection() {
+        guard let browser = focusedFileView else { return }
+        homeSource?.trashFiles(browser.selectedEntries)
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(copy(_:)): return !showsHome || focusedFileView?.selectedEntries.isEmpty == false
+        case #selector(paste(_:)), #selector(moveFileViewItemsHere(_:)): return focusedFileView != nil && FileViewClipboard.hasFiles
+        default: return true
+        }
+    }
 
     /// A haptic event from outside the player (a clip written by the app's queue, or not).
     func playHaptic(_ event: HapticEvent) { haptics.play(event) }
@@ -2118,7 +2643,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         let geometry = DisplayGeometry.resolve(mode: aspectMode, upright: upright, rotationClockwise: info.rotationClockwise,
                                                sampleAspect: info.sampleAspect, detectedCrop: detectedCrop)
         let changed = geometry.displaySize(of: upright) != videoView.geometry.displaySize(of: upright)
-        if applyToPicture { videoView.geometry = geometry }
+        if applyToPicture, geometry != videoView.geometry {
+            videoView.geometry = geometry
+            renderHoverPicture()
+        }
         core.displayGeometry = geometry
         // Automatic crop detection can finish while paused, with no subsequent position update.
         updateSeekBar()
@@ -2128,8 +2656,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     /// Black bars are looked for once per file, on keyframes spread over it, by a decoder of its own.
     private func startCropSampler() {
-        guard let url = core.url, let index = core.index, let info = core.info else { return }
-        let sampler = CropSampler(url: url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache,
+        guard let index = core.index, let info = core.info, !info.isHLS else { return }
+        let sampler = CropSampler(url: info.url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache,
                                   policy: core.networkPolicy)
         cropSampler = sampler
         sampler.start { [weak self] crop in
@@ -2202,15 +2730,121 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func rememberFrame() {
+#if DEBUG
+        if lifecycleBench != nil { return }
+#endif
         guard let window, window.isVisible, !isFullScreen else { return }
         UserDefaults.standard.set(NSStringFromRect(window.frame), forKey: Self.frameKey)
     }
 
     // MARK: Input
 
+    private func focusVideo() {
+        guard !keyHelp.isOpen, let window, window.firstResponder !== videoView else { return }
+        window.makeFirstResponder(videoView)
+    }
+
+    private func keyCommand(for event: NSEvent) -> Command? {
+        let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode, characters: KeyboardLayout.characters(for: event),
+                                          modifiers: Modifiers(event.modifierFlags))
+        return chord.flatMap { inputMap.command(for: $0) }
+    }
+
+    private func handleWindowKey(_ event: NSEvent) -> Bool {
+        if event.isARepeat, helpTransitionKey == event.keyCode { return true }
+        if keyHelp.isOpen {
+            let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+            if modifiers.isEmpty {
+                switch event.keyCode {
+                case 53:
+                    helpTransitionKey = event.keyCode
+                    setShortcutHelp(open: false)
+                    return true
+                case 116, 121:
+                    keyHelp.scrollPage(down: event.keyCode == 121)
+                    return true
+                default: break
+                }
+            }
+            if modifiers == .command, KeyboardLayout.characters(for: event)?.lowercased() == "f" {
+                keyHelp.focusSearch()
+                return true
+            }
+            return false   // ordinary keys go to the search field
+        }
+        guard showsHome, !(window?.firstResponder is NSText),
+              homeSource?.everythingHasKeyboardFocus != true else { return false }
+        if event.keyCode == 53, returnFromHome() { return true }
+        if event.keyCode == 51, focusedFileView != nil,
+           event.modifierFlags.intersection([.command, .shift, .option, .control]) == .command {
+            if !event.isARepeat { trashFileViewSelection() }
+            return true
+        }
+        // Home's cards own keyboard navigation. These bindings act on the whole window.
+        guard let command = keyCommand(for: event), command == .toggleSubjectFocusPanel || command == .showKeys else {
+            return false
+        }
+        if !event.isARepeat {
+            if command == .showKeys { helpTransitionKey = event.keyCode }
+            runInput(command, from: .keyboard)
+        }
+        return true
+    }
+
+    private func shortcutHelpContent() -> CheatSheetView.Sheet {
+        ShortcutHelpContent.sheet(for: inputMap, pluginActions: shownPluginActions, menuRows: AppDelegate.menuShortcutRows())
+    }
+
+    private func setShortcutHelp(open: Bool) {
+        guard open != keyHelp.isOpen else { return }
+        if open {
+            endHoldSpeed()
+            cancelTourBoxInput()
+            receiveD100H(.cancelled, at: ProcessInfo.processInfo.systemUptime)
+            seekBar.cancelInteraction()
+            cancelMouseInput()
+            videoView.cancelTrackpadGestures()
+            videoView.cancelFilmSeekPreview()
+            showCursorAfterScrub()
+            keyHelp.show(shortcutHelpContent())
+        } else {
+            keyHelp.hide()
+        }
+        updatePrecisionWheel()
+    }
+
+    /// The real player window, including layout on the first open and return visits.
+    func runShortcutHelpBench() {
+        guard let window, let content = window.contentView else { exit(1) }
+        let previousResponder = window.firstResponder
+        let escape = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                      windowNumber: window.windowNumber, context: nil, characters: "\u{1b}",
+                                      charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53)
+        guard let escape else { exit(1) }
+        for round in 1...6 {
+            let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            runCommand(.showKeys)
+            content.layoutSubtreeIfNeeded()
+            let opened = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            focusVideo()
+            guard keyHelp.isOpen, (window.firstResponder as? NSTextView)?.isFieldEditor == true,
+                  handleWindowKey(escape), !keyHelp.isOpen, window.firstResponder === previousResponder else {
+                print("keys-and-gestures: failed to open, capture search focus, or restore focus")
+                exit(1)
+            }
+            content.layoutSubtreeIfNeeded()
+            let closed = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            let openMS = Double(opened - start) / 1_000_000
+            let closeMS = Double(closed - opened) / 1_000_000
+            print(String(format: "keys-and-gestures %d: open %.2f ms, close %.2f ms", round, openMS, closeMS))
+        }
+        exit(0)
+    }
+
     /// A key for the player, from the video view or one the plugin page left unhandled; `stillDown` is false when the
     /// page's answer came after the key-up (a hold must not start then).
     private func handleKey(_ event: NSEvent, stillDown: Bool = true) {
+        guard !keyHelp.isOpen else { return }
         hideCursorOverVideo()
         if event.keyCode == 53, seekBar.cancelCutEdgeGesture() { return }
         if event.keyCode == 53, core.edgeDrag != nil {   // Esc cancels a live edge drag, and only that
@@ -2218,7 +2852,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             cancelEdgeDrag()
             return
         }
-        if keyHelp.isShown, event.keyCode == 53 { keyHelp.hide(); return }   // Esc closes the cheat sheet first
+        if event.keyCode == 53, isOpeningWeb {
+            cancelWebOpen()
+            return
+        }
         if let session = virtualCut, session.playback.failure != nil,
            event.keyCode == 36 || event.keyCode == 76 {
             if let request = session.playback.retry() {
@@ -2235,17 +2872,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             showHome()   // ⌘[ on a video: Home over it
             return
         }
-        guard let chord = KeyChord.fromKeyEvent(keyCode: event.keyCode,
-                                                characters: KeyboardLayout.characters(for: event),
-                                                modifiers: Modifiers(event.modifierFlags)),
-              let command = inputMap.command(for: chord) else { return }
+        guard let command = keyCommand(for: event) else { return }
         if event.isARepeat && !command.repeatsWhenHeld { return }   // holding p must not flicker pause
+        if command == .showKeys, stillDown { helpTransitionKey = event.keyCode }
         if command == .holdSpeed {
             guard holdKeyCode == nil, !tourBoxHoldsSpeed, stillDown, !showsHome else { return }
             gestures.cancelScrubMomentum()
             holdKeyCode = event.keyCode
             core.beginHoldSpeed()
-            hud.show(.speed(core.speed * Double(core.direction)), hold: true)
+            showPlaybackFeedback(.speed(core.speed * Double(core.direction)), hold: true)
             return
         }
         runInput(command, from: .keyboard, fresh: !event.isARepeat)
@@ -2260,7 +2895,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// A file opened by next / previous plays at a kept speed other than 1× (`keep-speed`): its icon replaces the step's,
     /// so a faster or slower file is never a surprise.
     private func showKeptSpeed(after outcome: OpenOutcome) {
-        if outcome == .opened, core.speed != 1 { hud.show(.speed(core.speed)) }
+        if outcome == .opened, core.speed != 1 { showPlaybackFeedback(.speed(core.speed)) }
     }
 
     /// The key held for hold-speed (backlog 4.5); its key-up, the window losing focus, or the keyboard moving between
@@ -2284,6 +2919,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// `toggle-*` / `cycle-*` that switched something (no `.error` on the way; not `cycle pause`) plays `.toggle`. `fresh`: not a key's
     /// auto-repeat, not a wheel notch of the same spin (a step against the first / last frame bumps again).
     private func runInput(_ command: Command, from source: MouseHaptics.Source, fresh: Bool = true) {
+        if keyHelp.isOpen, source != .menu, command != .showKeys { return }
         if showsHome, !command.worksWithoutPlayer { return }   // the video behind Home is paused and stays so
         gestures.cancelScrubMomentum()
         videoView.cancelFilmSeekPreview()
@@ -2311,6 +2947,18 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private var menuSource: MouseHaptics.Source { NSApp.currentEvent?.type == .keyDown ? .keyboard : .menu }
 
     private func run(_ command: Command) {
+        switch command {
+        case .frameStep, .frameBackStep:
+            if !navigationRibbon.isPresenting { navigationRibbon.clear() }
+        case .showProgress: navigationRibbon.clear()
+        default: break
+        }
+        let origin: Double? = switch command {
+        case .seek, .keyframeStep, .keyframeBackStep, .markNext, .markPrev, .revertSeek: navigationPosition
+        case .frameStep, .frameBackStep: navigationRibbon.isPresenting ? navigationPosition : nil
+        default: nil
+        }
+        defer { recordNavigation(from: origin) }
         if runVirtualCutCommand(command) { return }
         sceneFrameOSDToDrop = nil
         if Self.movesPosition(command) { seekBar.cancelFilmScroll(); cancelSceneSearch() }
@@ -2334,7 +2982,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .scrub, .ignore:
             break
         case let .addAutoColorStrength(delta):
-            addAutoColorStrength(delta)
+            runColorOutcome(colorMemory.addStrength(delta, for: .autoColor, global: globalConfig))
+        case let .addVibranceStrength(delta):
+            runColorOutcome(colorMemory.addStrength(delta, for: .vibrance, global: globalConfig))
         case let .addArtifactStrength(delta):
             addArtifactStrength(delta)
         case .scrubEdge:
@@ -2361,9 +3011,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .showInFolder:
             showInFolder()
         case .showKeys:
-            if keyHelp.isShown { keyHelp.hide() } else { keyHelp.show(inputMap, pluginActions: shownPluginActions) }
+            setShortcutHelp(open: !keyHelp.isOpen)
         case .goTo:
             guard core.index != nil else { showMessage("No video open"); return }
+            setShortcutHelp(open: false)
             goToField.open(with: FrameNaming.timecode(virtualCut?.playback.position ?? core.currentSeconds),
                            allowsFrames: virtualCut == nil)
         case .cycleMouseProfile:
@@ -2461,12 +3112,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
     }
 
-    /// `add auto-color-strength ±d` (the panel + wheel): the file's strength on the 0.05 grid within 0…1 (`ColorMemory`);
-    /// `.limit` at an end, `.detent` on or past 0.25 / 0.5 / 0.75, else `.step`.
-    private func addAutoColorStrength(_ delta: Double) {
-        runColorOutcome(colorMemory.addStrength(delta, global: globalConfig))
-    }
-
+    /// Adjusts the shared artifact-filter preference on its 0.05 grid.
     private func addArtifactStrength(_ delta: Double) {
         let settings = preferences.config.artifactFilters
         let (value, event) = AdjustStep.apply(settings.strength, by: delta, step: 0.05, range: 0...1,
@@ -2558,10 +3204,15 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         switch result {
         case let .found(frame):
             sceneFrameOSDToDrop = nil
+            let origin = navigationPosition
             core.jumpToScene(frame: frame)   // exact, keeps play / pause, sets the revert point; glued to locked segments
-            hud.show(direction > 0 ? .sceneNext : .scenePrevious)
             sceneFrameOSDToDrop = core.position
-            showMessage("Scene \(direction > 0 ? "→" : "←") \(FrameNaming.timecode(core.currentSeconds))")
+            if !recordNavigation(from: origin) {
+                showPlaybackFeedback(direction > 0 ? .sceneNext : .scenePrevious)
+                showMessage("Scene \(direction > 0 ? "→" : "←") \(FrameNaming.timecode(core.currentSeconds))")
+            } else if osd.visibleText?.hasPrefix("Searching for") == true {
+                osd.hide()
+            }
         case .none:
             showMessage(direction > 0 ? "No next scene" : "No previous scene")
         case let .notWithin(frame):
@@ -2579,8 +3230,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// The open file's scene search, made on first use.
     private func currentSceneSearch() -> SceneSearch? {
         if let sceneSearch { return sceneSearch }
-        guard let url = core.url, let index = core.index, let info = core.info else { return nil }
-        let search = SceneSearch(url: url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache,
+        guard let index = core.index, let info = core.info else { return nil }
+        let search = SceneSearch(url: info.url, index: index, rotationClockwise: info.rotationClockwise, readCache: core.readCache,
                                  threshold: core.config.sceneThreshold, lookahead: core.config.sceneLookahead,
                                  checkTime: core.config.sceneCheckTime, searchTime: core.config.sceneSearchTime,
                                  preferHardware: core.config.hwdec.prefersHardware)
@@ -2598,8 +3249,10 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func seekFilm(to seconds: Double, previewsFrames: Bool, dragging: Bool = false) {
+        let originTime = navigationPosition
+        defer { recordNavigation(from: originTime) }
         if seekVirtualCut(to: seconds, continuous: seekBar.isContinuousSeek) {
-            revealSeekBar()
+            if !seekBar.isScrollingFoldedFilm { revealSeekBar() }
             return
         }
         guard let index = core.index else { return }
@@ -2623,7 +3276,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 videoView.previewFilmSeek(thumbnails: thumbnails, target: target, settings: settings)
             }
         }
-        revealSeekBar()
+        if !seekBar.isScrollingFoldedFilm { revealSeekBar() }
     }
 
     /// Forgets waiting presses; what the search has looked at stays cached for the file.
@@ -2780,9 +3433,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             case .scrubFrames where showsHome, .scrubEdge where showsHome:
                 continue   // the wheel over Home scrolls Home
             case let .scrubFrames(frames, ticks):
+                let origin = navigationPosition
                 positionWillMove(keepingTrackpadScrub: true)
                 core.inputIsFresh = fresh
                 haptics.from(source) { if !scrubVirtualCut(frames) { core.scrub(by: frames, ticks: ticks) } }
+                recordNavigation(from: origin)
             case let .command(command): runInput(command, from: source, fresh: fresh)
             case let .scrubEdge(edge, frames): scrubEdge(edge, by: frames, heldButton: heldButton, from: source, fresh: fresh)
             case .zoomBy: break   // `handleMagnify` gives the continuous zoom's pinch to the view
@@ -2842,6 +3497,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         tourBoxRouter.accelerates = core.config.tourBoxAccelerates
         tourBoxRouter.accelerationStart = core.config.tourBoxAccelerationStart
         tourBoxRouter.scrollPointsPerPulse = core.config.tourBoxScrollPoints
+        tourBoxRouter.invertsScroll = core.config.tourBoxInvertsScroll
+        tourBoxRouter.swapsKnobModifiers = core.config.tourBoxSwapsKnobModifiers
         guard tourBoxEnabled != core.config.tourBox else { return }
         tourBoxEnabled = core.config.tourBox
         if tourBoxEnabled { tourBoxBridge.start() } else { tourBoxBridge.stop() }
@@ -2849,7 +3506,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     private var acceptsTourBox: Bool {
         NSApp.isActive && window?.isKeyWindow == true && window?.attachedSheet == nil && !showsHome && core.info != nil
-            && !isTerminating
+            && !isTerminating && !keyHelp.isOpen
     }
 
     private func receiveTourBox(_ bytes: [UInt8]) {
@@ -2892,7 +3549,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 switch action {
                 case let .command(command): runInput(command, from: .menu)
                 case let .scrub(frames):
+                    let origin = navigationPosition
                     positionWillMove(); core.inputIsFresh = true; if !scrubVirtualCut(frames) { core.scrub(by: frames) }
+                    recordNavigation(from: origin)
                 case let .edge(edge, frames):
                     seekBar.cancelMarkDrag()
                     if !tourBoxEditsEdge {
@@ -2908,7 +3567,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     guard holdKeyCode == nil, !tourBoxHoldsSpeed else { return }
                     tourBoxHoldsSpeed = true
                     core.beginHoldSpeed()
-                    hud.show(.speed(core.speed * Double(core.direction)), hold: true)
+                    showPlaybackFeedback(.speed(core.speed * Double(core.direction)), hold: true)
                 case .endSpeedHold:
                     if tourBoxHoldsSpeed { core.endHoldSpeed(); tourBoxHoldsSpeed = false; hud.hide() }
                 case let .colorStrength(set, delta):
@@ -2921,9 +3580,39 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     }
                     showMessage(enabled ? "TourBox: accelerated scrub" : "TourBox: linear scrub")
                 case .reversePlayback: core.reversePlaybackDirection()
-                case let .filmScroll(points): seekBar.scrollFilm(by: points)
+                case let .filmScroll(points):
+                    let compact = globalConfig.navigationFilmstrip && !seekBar.showsFilmstrip
+                    if compact, !seekBar.isScrollingFoldedFilm { updateSeekBar() }
+                    seekBar.scrollFilm(by: points, reveal: !compact)
                 }
             }
+        }
+    }
+
+    private func receiveD100H(_ input: D100HInput, at time: Double) {
+        guard input != .cancelled, acceptsD100H else {
+            _ = d100hProfile.receive(.cancelled, at: time)
+            d100hGestures.resetScroll()
+            d100hLastTurnTime = nil
+            return
+        }
+        guard let action = d100hProfile.receive(input, at: time) else { return }
+        switch action {
+        case let .command(command):
+            runInput(command, from: .menu)
+        case let .edge(fromEnd):
+            let offset = core.config.d100hEdgeOffset / 100
+            let target = core.durationSeconds * (fromEnd ? 1 - offset : offset)
+            runInput(.seek(target - core.currentSeconds, .byConfig), from: .menu)
+        case let .scroll(step, fast):
+            d100hGestures.inputMap = inputMap
+            d100hGestures.scrubber.settings = core.config.scrub
+            d100hGestures.scrubber.videoFPS = core.info?.frameRate ?? 30
+            let sample = ScrollSample(deltaX: 0, deltaY: Double(step), precise: false, momentum: false,
+                                      began: false, time: time, modifiers: [], rightButton: fast)
+            let fresh = EndBump.isFreshNotch(at: time, previous: d100hLastTurnTime)
+            d100hLastTurnTime = time
+            perform(d100hGestures.route(sample, allowsScrubMomentum: false), from: .menu, fresh: fresh)
         }
     }
 
@@ -2984,6 +3673,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if playerInFront { showMessage(mode == .freeSpin ? "Free spin · Precision Scroll" : "Ratchet") }
         }
         bridge.onSmartShift = { [weak self] pressed, time in self?.smartShiftButton(pressed: pressed, at: time) }
+        bridge.onD100HInput = { [weak self] input, time in self?.receiveD100H(input, at: time) }
         wheelWants = WheelWants(precision: false, freeSpin: true, playerInFront: false, overVideo: false)
         updatePrecisionWheel()
     }
@@ -3028,6 +3718,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// side button only with the pointer over a FrameScrub window. A release while FrameScrub is in the background
     /// (the package releases held buttons on deactivation) cancels instead of acting.
     private func mouseButton(_ button: MouseButton, pressed: Bool, at time: Double) {
+        guard !keyHelp.isOpen else { return }
         guard pressed else {
             guard NSApp.isActive else { cancelMouseInput(); return }
             homeButtons.mouseRelease(button, at: time)
@@ -3074,6 +3765,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func updateSeekBarForPointer() {
         guard !showsHome, failureView.isHidden else { return }
         let point = window?.mouseLocationOutsideOfEventStream
+        if navigationRibbon.updatePointer(point) { return }
         seekBar.updateFilmPointer(point)
         if seekBar.isInRevealZone(point) || seekBar.isInteracting {
             hideSeekBarWork?.cancel()
@@ -3088,6 +3780,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // No file: nothing to show, and over the Stash page the bar would take its clicks.
         if showsHome || !failureView.isHidden || (core.url == nil && virtualCut == nil) { return }
         seekBar.isHidden = false
+        navigationRibbon.showWithFullFilm(seekBar.showsFilmstrip)
         updateSeekBar()
         backButton.title = switch returnTab {
         case .stash: "Stash"
@@ -3101,6 +3794,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.refreshVisibility()
         seekBar.setPlaybackControlsVisible(true)
         seekBar.revealPlaybackControls()
+        refreshFeedbackClearance()
         showBackButton(true, duration: 0.15)
         if linger { scheduleSeekBarHide(after: 1.5) }
     }
@@ -3119,6 +3813,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                     self.seekBar.animator().alphaValue = 0
                 }
             }
+            refreshFeedbackClearance()
             if !isPointer(over: backButton) { showBackButton(false, duration: 0.2) }
             hideCursorOverVideo()
         }
@@ -3188,8 +3883,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     /// it, nor over another window floating above the video (Spotlight, Raycast).
     func updatePrecisionWheel() {
         guard let mouseBridge else { return }
+        mouseBridge.requestD100HInput(acceptsD100H, muteDetents: core.config.d100hMuteDetents)
         let inFront = playerInFront
-        let overVideo = isPointer(over: videoView) && !isPointer(over: seekBar)
+        let overVideo = !keyHelp.isOpen && isPointer(over: videoView) && !isPointer(over: seekBar)
             && !(slots?.isPointerOverShownSlot ?? false)
             && !(window.map { isPointerOnStats(at: $0.mouseLocationOutsideOfEventStream) } ?? false)
             && NSWindow.windowNumber(at: NSEvent.mouseLocation, belowWindowWithWindowNumber: 0) == window?.windowNumber
@@ -3255,59 +3951,88 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         return !(slots?.isPointerOverShownSlot ?? false)
     }
 
-    /// Hover pictures follow `preview`; the filmstrip has its own visibility and utility decoder.
+    /// Hover pictures follow `preview`; the filmstrip has its own visibility and utility loader.
     private func configurePreview(force: Bool = false) {
         let scale = window?.backingScaleFactor ?? 2
         let key = PreviewKey(enabled: core.config.preview, width: CGFloat(core.config.previewWidth), url: core.url, scale: scale)
         if !force, key == previewKey { return }
         previewKey = nil
+        seekPreviewPool = nil
         filmstripPrewarmFrames.removeAll()
         pausedFilmstripPrewarmPosition = nil
         filmstripLoader?.stop()
         filmstripLoader = nil
+        seekBar.samplesFilmstripByTime = false
         if virtualCut == nil { seekBar.resetFilmstrip() }
         previewProvider?.stop()
         previewProvider = nil
         hover(nil)
-        guard let url = core.url, let index = core.index, let info = core.info else { return }
+        guard let index = core.index, let info = core.info else { return }
+        let storyboard: StashStoryboard.Source?
+        if virtualCut == nil, case let .stash(sceneID, _) = origin, let base = URL(string: core.config.stashURL) {
+            storyboard = StashStoryboard.Source(base: base, apiKey: core.config.stashAPIKey, sceneID: sceneID)
+        } else {
+            storyboard = nil
+        }
+        seekBar.samplesFilmstripByTime = storyboard != nil
         previewKey = key   // set before the provider exists: an unavailable file is not retried until the key changes
-        let imagePool = PreviewImagePool(url: url, rotationClockwise: info.rotationClockwise)
+        let imagePool = PreviewImagePool(url: info.url, rotationClockwise: info.rotationClockwise)
+        seekPreviewPool = imagePool
         if core.config.preview, virtualCut == nil {
-            let provider = FrameScrubCore.PreviewProvider(url: url, index: index, rotationClockwise: info.rotationClockwise,
+            let provider = FrameScrubCore.PreviewProvider(url: info.url, index: index, rotationClockwise: info.rotationClockwise,
                                            widthPixels: Int(core.config.previewWidth * scale), readCache: core.readCache,
                                            policy: core.networkPolicy, imagePool: imagePool, frameCache: core.cache)
             provider.onImage = { [weak self] result in
                 guard let self else { return }
                 let start = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
-                if seekBar.filmstripEnabled { seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds) }
-                guard previewSample != nil else { return }
-                previewImage = videoView.geometry.thumbnail(of: result.image, context: Self.thumbnailContext) ?? result.image
-                updatePreviewView()
+                if seekBar.filmstripEnabled, !seekBar.samplesFilmstripByTime {
+                    seekBar.setFilmstripImage(result.image, seconds: result.frameSeconds)
+                }
+                guard previewSample?.seconds == result.requestedSeconds else { return }
+                hoverOriginal = result
+                renderHoverPicture()
+#if DEBUG
+                benchPreviewCallback?((PlaybackDiagnostics.now() - start) * 1000)
+#endif
                 if PlaybackDiagnostics.enabled {
                     let report = PlaybackDiagnostics.shared
                     report.record("callback_ui_ms", (PlaybackDiagnostics.now() - start) * 1000, group: "preview.ui")
-                    report.record("request_to_ui_ready_ms", (PlaybackDiagnostics.now() - result.requestedAt) * 1000, group: "preview.ui")
                 }
             }
             provider.onUnavailable = { [weak self] in
                 self?.previewProvider?.stop()
                 self?.previewProvider = nil
+                self?.hoverOriginal = nil
+                self?.hoverRenderGeneration += 1
                 self?.previewImage = nil
                 self?.updatePreviewView()
             }
             previewProvider = provider
         }
-        let loader = FilmstripPreviewLoader(url: url, index: index, rotation: info.rotationClockwise,
+        let loader = FilmstripPreviewLoader(url: info.url, index: index, rotation: info.rotationClockwise,
                                             width: Int(160 * scale), cache: core.readCache, policy: core.networkPolicy,
-                                            imagePool: imagePool, frameCache: core.cache, exactSample: virtualCut != nil)
+                                            imagePool: imagePool, frameCache: core.cache,
+                                            exactSample: virtualCut != nil || (storyboard != nil && info.isHLS),
+                                            storyboardSource: storyboard, shouldYield: core.previewShouldYield)
+        loader.mayShowStoryboard = { [weak self] in
+            guard let self else { return false }
+            return permitsNavigationPictures || (seekBar.allowsVisibleFilmstripRequests && !showsHome && !isTerminating)
+        }
+        loader.mayReuse = { [weak self] in
+            guard let self else { return false }
+            return permitsNavigationPictures ||
+                (virtualCut == nil && seekBar.allowsReadyFilmstripRequests && !showsHome && !isTerminating)
+        }
         loader.mayRead = { [weak self] in
             guard let self else { return false }
-            guard seekBar.allowsVisibleFilmstripRequests, !showsHome else { return false }
+            guard permitsNavigationPictures || (seekBar.allowsVisibleFilmstripRequests && !showsHome && !isTerminating)
+            else { return false }
             return core.allowsBackgroundPreview && virtualCut?.playback.pending == nil && virtualCut?.warm?.preview == nil
         }
         loader.mayPrewarm = { [weak self] readyOnly in
             guard let self else { return false }
             return (readyOnly || core.isPaused) && seekBar.filmstripEnabled && !seekBar.showsFilmstrip && !seekBar.isInteracting
+                && !navigationRibbon.isPresenting
                 && previewFraction == nil && !showsHome && !core.isExporting && window?.inLiveResize == false
                 && window?.occlusionState.contains(.visible) == true && core.allowsBackgroundPreview
         }
@@ -3319,13 +4044,27 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         filmstripLoader = loader
         prewarmFilmstrip()
+        refreshNavigationRibbon()
     }
 
-    private func requestFilmstrip(_ times: [Double]) {
-        guard let cut = virtualCut else { filmstripLoader?.request(times); return }
+    private var permitsNavigationPictures: Bool {
+        navigationRibbon.isPresenting && !seekBar.showsFilmstrip && !showsHome && !isTerminating && !core.isExporting &&
+            window?.occlusionState.contains(.visible) == true && virtualCut?.playback.pending == nil
+    }
+
+    private func requestFilmstrip(_ times: [Double], navigation: Bool = false) {
+        guard let loader = filmstripLoader else { return }
+        func submit(_ keys: [Double], readyOnly: Bool = false) {
+            if navigation {
+                loader.requestNavigation(keys, readyOnly: readyOnly, settle: core.networkPolicy.previewSettle)
+            } else {
+                loader.request(keys, readyOnly: readyOnly)
+            }
+        }
+        guard let cut = virtualCut else { submit(times); return }
         cut.filmSamples = [:]
         guard let source = cut.loadedSource, let active = cut.playback.activeSpan, cut.playback.pending == nil else {
-            filmstripLoader?.request([])
+            submit([])
             return
         }
         let timeline = cut.playback.timeline
@@ -3340,9 +4079,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 let span = timeline.spans[active]
                 return span.sourceStart <= time && time < span.sourceEnd
             }
-            filmstripLoader?.request(sample.map { [$0] } ?? [])
+            submit(sample.map { [$0] } ?? [])
         } else {
-            filmstripLoader?.request(sourceTimes, readyOnly: !core.isPaused)
+            submit(sourceTimes, readyOnly: !core.isPaused && !navigation)
         }
         requestUpcomingCutPoster(cut)
     }
@@ -3353,7 +4092,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.updateTimeline(index: core.index, duration: core.durationSeconds, paused: core.isPaused,
                                uprightSize: uprightVideoSize, geometry: videoView.geometry,
                                previewSettle: core.networkPolicy.previewSettle)
-        let times = seekBar.prewarmFilmstripTimes(center: core.currentSeconds)
+        if let size = uprightVideoSize { navigationRibbon.setPictureAspect(videoView.geometry.aspect(of: size)) }
+        let times = seekBar.prewarmFilmstripTimes(center: core.currentSeconds, includeNavigation: globalConfig.navigationFilmstrip)
         pausedFilmstripPrewarmPosition = core.isPaused ? core.position : nil
         filmstripPrewarmFrames = core.isPaused ? [] : Set(times.map { index.frameNumber(forSeconds: $0) })
         loader.prewarm(times, paused: core.isPaused)
@@ -3397,7 +4137,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     private func stepFolder(_ direction: Int) {
         if let target = playlist?.neighbour(direction, skipping: isUnreadable) {
             _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
-            hud.show(direction > 0 ? .playlistNext : .playlistPrevious)
+            showPlaybackFeedback(direction > 0 ? .playlistNext : .playlistPrevious)
             slots.videoChanged(cause: .key)
             openFile(target, stepped: direction) { [weak self] outcome in self?.showKeptSpeed(after: outcome) }
         } else {
@@ -3417,7 +4157,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         _ = playlistEndBump.stepped(moved: true, direction: direction, fresh: core.inputIsFresh)
         openListItem(at: target)
-        hud.show(openedHUD(direction > 0 ? .playlistNext : .playlistPrevious))
+        showPlaybackFeedback(openedHUD(direction > 0 ? .playlistNext : .playlistPrevious))
     }
 
     /// Opens the list's item at `index` (a scene's file is looked for only now), at the item's own time when the page
@@ -3737,6 +4477,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             previewPin = nil
             seekBar.previewFrame = nil
             previewImage = nil
+            hoverOriginal = nil
+            hoverRenderGeneration += 1
             previewSample = nil
             previewView.hide()
             return
@@ -3757,13 +4499,20 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     }
 
     private func updateCutHover() {
-        guard let fraction = cutHoverFraction, let timeline = virtualCut?.playback.timeline else { return }
+        guard let fraction = cutHoverFraction, let session = virtualCut else { return }
+        let timeline = session.playback.timeline
         let seconds = fraction * timeline.duration
         guard let location = timeline.location(at: seconds) else { return }
         let span = timeline.spans[location.spanIndex]
         let heading = "Fragment \(location.spanIndex + 1)/\(timeline.spans.count)  ·  \(FrameNaming.timecode(seconds))"
-        let source = "Source  \(FrameNaming.timecode(span.sourceStart)) – \(FrameNaming.timecode(span.sourceEnd))"
-        previewView.show(image: nil, scale: 1, time: heading + "\n" + source, lens: nil, playhead: 0)
+        let index = session.loadedSource == span.source ? core.index : session.reusedIndex(for: span.source)
+        var source = "Source  \(FrameNaming.timecode(location.sourceTime))"
+        if let index, index.isExact {
+            let frame = min(index.frameNumber(forSeconds: location.sourceTime), index.frameNumber(before: span.sourceEnd))
+            source += "  ·  Frame \(frame.formatted())"
+        }
+        let range = "\(FrameNaming.timecode(span.sourceStart)) – \(FrameNaming.timecode(span.sourceEnd))"
+        previewView.show(image: nil, scale: 1, time: [heading, source, range].joined(separator: "\n"), lens: nil, playhead: 0)
         placeTimelinePreview(at: fraction)
     }
 
@@ -3772,6 +4521,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // The timecode tracks the pointer continuously. The image only needs a new keyframe.
         let seconds = index.seconds(forFrame: index.keyframe(atOrBefore: frame))
         if let previewProvider, previewSample?.seconds != seconds || previewSample?.exact != index.isExact {
+            hoverOriginal = nil
+            hoverRenderGeneration += 1
             previewSample = (seconds, index.isExact)
             previewProvider.request(seconds: seconds)
         }
@@ -3797,7 +4548,29 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         revealSeekBar()
     }
 
-    private static let thumbnailContext = CIContext(options: [.cacheIntermediates: false])
+    private func renderHoverPicture() {
+        guard let original = hoverOriginal else { return }
+        hoverRenderGeneration += 1
+        let generation = hoverRenderGeneration
+        let geometry = videoView.geometry, requestedAt = original.requestedAt
+        let deliver: @MainActor @Sendable (CGImage) -> Void = { [weak self] image in
+            guard let self, self.hoverRenderGeneration == generation else { return }
+            self.previewImage = image
+            self.updatePreviewView()
+            if PlaybackDiagnostics.enabled {
+                let elapsed = (PlaybackDiagnostics.now() - requestedAt) * 1000
+                PlaybackDiagnostics.shared.record("request_to_ui_ready_ms", elapsed, group: "preview.ui")
+#if DEBUG
+                self.benchPreviewReady?(elapsed)
+#endif
+            }
+        }
+        if geometry == .identity {
+            deliver(original.image)
+        } else {
+            hoverRenderer.submit(HoverPictureRender(image: original.image, geometry: geometry, deliver: deliver))
+        }
+    }
 
     private func updatePreviewView() {
         let diagnosticStart = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : 0
@@ -3862,6 +4635,82 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         seekBar.transport.update(volume: core.volume, muted: core.isMuted, paused: core.isPaused, speed: core.speed)
     }
 
+    private var fullNavigationFilmVisible: Bool {
+        seekBar.showsFilmstrip && !seekBar.isHidden && seekBar.alphaValue > 0.01
+    }
+
+    private var navigationPosition: Double? {
+        guard globalConfig.navigationFilmstrip || miniFilmstripPinned || fullNavigationFilmVisible, !showsHome, failureView.isHidden,
+              window?.occlusionState.contains(.visible) == true else { return nil }
+        return virtualCut?.playback.position ?? (core.index == nil ? nil : core.currentSeconds)
+    }
+
+    @discardableResult private func recordNavigation(from origin: Double?) -> Bool {
+        guard let origin, let target = navigationPosition else { return false }
+        let duration = virtualCut?.playback.timeline.duration ?? core.durationSeconds
+        navigationRibbon.showWithFullFilm(fullNavigationFilmVisible)
+        guard navigationRibbon.record(from: origin, to: target, duration: duration,
+                                      frames: navigationFrames) else { return false }
+        refreshNavigationRibbon()
+        if let text = osd.visibleText, isNavigationText(text) { osd.hide() }
+        return true
+    }
+
+    private func navigationFrames(from origin: Double, to target: Double) -> NavigationJourney.FrameInfo? {
+        guard let index = core.index, index.isExact, index.frameCount > 0 else { return nil }
+        if let cut = virtualCut {
+            guard origin != target else { return nil }
+            let timeline = cut.playback.timeline
+            guard let before = timeline.location(at: origin), let after = timeline.location(at: target),
+                  before.spanIndex == after.spanIndex, cut.loadedSource == timeline.spans[after.spanIndex].source
+            else { return nil }
+            let last = index.frameNumber(before: timeline.spans[after.spanIndex].sourceEnd)
+            let firstFrame = min(last, index.frameNumber(forSeconds: before.sourceTime))
+            let lastFrame = min(last, index.frameNumber(forSeconds: after.sourceTime))
+            return .init(delta: lastFrame - firstFrame)
+        }
+        let frame = core.position
+        let delta = origin == target ? 0 : frame - index.frameNumber(forSeconds: origin)
+        return .init(delta: delta, position: (frame, index.frameCount - 1))
+    }
+
+    private func refreshNavigationRibbon() {
+        guard navigationRibbon.isPresenting, let journey = navigationRibbon.journey else {
+            filmstripLoader?.cancelNavigation()
+            return
+        }
+        if let size = uprightVideoSize { navigationRibbon.setPictureAspect(videoView.geometry.aspect(of: size)) }
+        let projection = seekBar.navigationProjection(near: journey.target)
+        navigationRibbon.setProjection(projection, geometry: videoView.geometry)
+        requestFilmstrip(projection.missingTimes, navigation: true)
+    }
+
+    private func isNavigationText(_ text: String) -> Bool {
+        if text.hasPrefix("Frame ") { return text == core.frameText }
+        let progress = core.progressText
+        return text == progress || text == progress + " K"
+    }
+
+    private func showPlaybackFeedback(_ feedback: Feedback, hold: Bool = false) {
+        if case let .seek(seconds) = feedback {
+            if seekBar.alphaValue > 0.01, seekBar.transport.alphaValue > 0.01 {
+                seekBar.transport.acknowledgeSeek(seconds: seconds)
+                hud.hide()
+                return
+            }
+            if navigationPosition != nil { return }
+        }
+        refreshFeedbackClearance()
+        hud.show(feedback, hold: hold)
+    }
+
+    private func refreshFeedbackClearance() {
+        let timelineHeight = !seekBar.isHidden && seekBar.alphaValue > 0.01
+            ? (seekBar.playbackVisible ? seekBar.preferredHeight : seekBar.visibleFilmHeight) : 0
+        let miniHeight = navigationRibbon.isPresenting ? navigationRibbonSize.height.constant : 0
+        hud.bottomClearance = 16 + max(timelineHeight, miniHeight)
+    }
+
     /// A click on a seek bar control: the command as its key runs it, silently (the bar plays no haptics), and the
     /// bar stays up.
     private func runFromSeekBar(_ command: Command) {
@@ -3908,7 +4757,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         slots.onFocusVideo = { [weak self] in
             guard let self else { return }
-            window?.makeFirstResponder(videoView)
+            focusVideo()
         }
         slots.onPageDropped = { [weak self] page in
             guard let self else { return }
@@ -3942,6 +4791,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         }
         page.onUnhandledKey = { [weak self, weak page] event, stillDown in
             guard let self else { return }
+            guard !keyHelp.isOpen else { return }
             // Esc the page left alone hides its slot when the slot lies over the video.
             if event.keyCode == 53, !event.isARepeat, let page, slots.escape(in: page) { return }
             handleKey(event, stillDown: stillDown)
@@ -4179,7 +5029,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case let .actions(list):
             pluginDone(request, result: declarePluginActions(list, page: request.page ?? 0).json)
             return
-        case .focusPlayer: window?.makeFirstResponder(videoView)
+        case .focusPlayer: focusVideo()
         case let .open(.file(url, landing)):
             whenFramesAllowed(request, origin: origin, verb: "open") { [self] in
                 notePageFacts(request, replacing: false)
@@ -4196,7 +5046,19 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             whenFramesAllowed(request, origin: origin, verb: "open") { [self] in
                 notePageFacts(request, replacing: false)
                 page.map(slots.pageChosePlay)
-                open(url, landing: landing) { [weak self] in self?.answerOpen(request, $0, name: url.absoluteString) }
+                beginWebOpen(WebOpenRequest(url: url, input: .direct, landing: landing)) { [weak self] in
+                    self?.answerWebOpen(request, $0)
+                }
+            }
+            return
+        case let .open(.page(url, landing)):
+            guard !isStashURL(url) else { pluginFailed(request, Self.stashURLRefusal("open")); return }
+            whenFramesAllowed(request, origin: origin, verb: "open") { [self] in
+                notePageFacts(request, replacing: false)
+                page.map(slots.pageChosePlay)
+                beginWebOpen(WebOpenRequest(url: url, input: .page, landing: landing)) { [weak self] in
+                    self?.answerWebOpen(request, $0)
+                }
             }
             return
         case .info, .marks, .playlist, .frame: answerPluginRequest(request); return
@@ -4262,7 +5124,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
                 return
             }
             if pluginGrabber == nil {
-                pluginGrabber = PluginFrameGrabber(url: url, index: index, rotationClockwise: info.rotationClockwise,
+                pluginGrabber = PluginFrameGrabber(url: info.url, index: index, rotationClockwise: info.rotationClockwise,
                                                    readCache: core.readCache)
             }
             pluginGrabber?.grab(frame: n, maxSide: frameRequest.maxSize) { [weak self] result in
@@ -4309,6 +5171,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         case .opened: pluginDone(request)
         case .failed: pluginFailed(request, "open: cannot open \(name)")
         case .superseded: pluginFailed(request, "open: replaced by another open")
+        }
+    }
+
+    private func answerWebOpen(_ request: PluginRequest, _ outcome: OpenOutcome) {
+        switch outcome {
+        case .opened: pluginDone(request)
+        case let .failed(failure): pluginFailed(request, failure.reason)
+        case .superseded: pluginFailed(request, "open: cancelled or replaced by another open")
         }
     }
 
@@ -4530,7 +5400,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         // video: that menu item, not the input.conf binding, is what ⌘C does there.
         panel.plainKey = { [weak self] event in
             guard let self else { return }
-            window?.makeFirstResponder(videoView)
+            focusVideo()
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask).subtracting(.capsLock)
             if flags == .command, event.keyCode == 8 {   // kVK_ANSI_C, on any layout
                 copy(nil)
@@ -4555,8 +5425,65 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     var statsVisible: Bool { statsPanel.isVisible }
     var filmstripShown: Bool { seekBar.showsFilmstrip }
     var filmstripPinned: Bool { seekBar.filmPinned }
-    func toggleFilmstrip() { seekBar.toggleFilmVisibility(); revealSeekBar() }
-    func pinFilmstrip() { seekBar.toggleFilmPin(); revealSeekBar() }
+    var miniFilmstripAutoShow: Bool { globalConfig.navigationFilmstrip }
+    var miniFilmstripSaved: Bool { miniFilmstripPinned }
+
+    func toggleFilmstrip() {
+        if seekBar.showsFilmstrip, !miniFilmstripPinned { navigationRibbon.clear() }
+        seekBar.toggleFilmVisibility()
+        revealSeekBar()
+    }
+
+    func pinFilmstrip() {
+        seekBar.toggleFilmPin()
+        dismissMiniFilmstrip(animated: false)
+        revealSeekBar()
+    }
+
+    func toggleMiniFilmstripAutoShow() {
+        guard !showsHome, core.url != nil || virtualCut != nil else { return }
+        preferences.updateCoalesced(["navigation-filmstrip"], onError: { [weak self] error in
+            self?.showMessage("Cannot save settings: \(error)", duration: 4)
+        }) { $0.navigationFilmstrip.toggle() }
+        showMessage(preferences.config.navigationFilmstrip ? "Mini Filmstrip auto-show on" : "Mini Filmstrip auto-show off")
+    }
+
+    func pinMiniFilmstrip() {
+        guard !showsHome, core.url != nil || virtualCut != nil else { return }
+        if miniFilmstripPinned {
+            dismissMiniFilmstrip()
+        } else {
+            miniFilmstripPinned = true
+            UserDefaults.standard.set(true, forKey: Self.miniPinKey)
+            applyMiniFilmstripSelection()
+        }
+    }
+
+    private func dismissMiniFilmstrip(animated: Bool = true) {
+        guard miniFilmstripPinned else { return }
+        UserDefaults.standard.set(false, forKey: Self.miniPinKey)
+        miniFilmstripPinned = false
+        applyMiniFilmstripSelection()
+        navigationRibbon.clear(animated: animated)
+    }
+
+    private func applyMiniFilmstripSelection() {
+        seekBar.prefersMiniFilmstrip = miniFilmstripPinned
+        navigationRibbon.setKeptOpen(miniFilmstripPinned, pinned: miniFilmstripPinned)
+        if miniFilmstripPinned {
+            seekBar.foldForMiniFilmstrip()
+            showKeptMiniPosition()
+        }
+    }
+
+    private func showKeptMiniPosition(revealing: Bool = true) {
+        guard miniFilmstripPinned, !seekBar.showsFilmstrip, core.displayedFrame != nil, let time = navigationPosition else { return }
+        let duration = virtualCut?.playback.timeline.duration ?? core.durationSeconds
+        if revealing { navigationRibbon.showWithFullFilm(false) }
+        if navigationRibbon.showPosition(time, duration: duration, frames: navigationFrames(from: time, to: time)), revealing {
+            refreshNavigationRibbon()
+        }
+    }
 
     /// For the ticks of Playback › Colour: the open file's colour over framescrub.conf.
     var colorConfig: Config { core.config }
@@ -4698,6 +5625,13 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
 
     // MARK: PlayerCoreDelegate
 
+    func player(_ player: PlayerCore, previewBackwardSeek frames: ClosedRange<Int>) {
+        guard !showsHome, virtualCut == nil, let index = player.index, let info = player.info,
+              let preview = seekPreviewPool?.seekPreview(url: info.url, rotationClockwise: info.rotationClockwise,
+                                                        index: index, frames: frames) else { return }
+        videoView.previewCachedSeek(preview.image, target: frames.lowerBound)
+    }
+
     func player(_ player: PlayerCore, display frame: DecodedFrame) {
         if let cut = virtualCut {
             guard cut.playback.pending == nil, cut.playback.failure == nil else { return }
@@ -4752,7 +5686,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             cut.waitingForFirstPicture = false
             hideHome()
             window?.title = cut.cut.title + " — Virtual Cut"
-            seekBar.setFilmRevealed(true, force: true)
+            if !miniFilmstripPinned { seekBar.setFilmRevealed(true, force: true) }
             revealSeekBar()
             if cut.playback.wantsPlayback { core.play() }
         }
@@ -4783,7 +5717,8 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         virtualCut?.playback.update(sourceTime: core.currentSeconds)
         maybeWarmVirtualCut()
         if core.edgeDrag == nil, seekBar.isDraggingMark { seekBar.cancelMarkDrag() }
-        videoView.updateFilmSeekPreview(position: core.position, paused: core.isPaused)
+        videoView.updateFilmSeekPreview(position: core.position, paused: core.isPaused,
+                                        unavailable: core.cache.isUndecodable(core.position))
         if core.isPaused != wasPaused || (core.isPaused && pausedFilmstripPrewarmPosition != core.position) {
             prewarmFilmstrip()
         }
@@ -4796,6 +5731,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             if wasPaused, virtualCut == nil { stashSession?.saveProgress() }
         }
         if seekBar.alphaValue > 0 { updateSeekBar() }
+        showKeptMiniPosition()
     }
 
     func player(_ player: PlayerCore, showOSD text: String) {
@@ -4803,13 +5739,14 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
             sceneFrameOSDToDrop = nil   // one chance: any other OSD ends it
             if frame == core.position, text == core.frameText { return }   // the decoded jump target: the scene line stays
         }
+        if navigationRibbon.journey != nil, isNavigationText(text) { return }
         osd.onClick = text.hasPrefix("Saved") ? { [weak self] in self?.revealFrames() } : nil
         if text.hasPrefix("Saved") { videoView.flash() }
         osd.show(text, duration: 1.5)
     }
 
     func player(_ player: PlayerCore, showFeedback feedback: Feedback) {
-        hud.show(feedback)
+        showPlaybackFeedback(feedback)
         switch feedback {
         case .volume, .mute: updateTransport()   // a key's change shows on the slider
         default: break
@@ -4895,6 +5832,9 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowWillClose(_ notification: Notification) {
         showCursorAfterScrub()
         shutdown()
+#if DEBUG
+        if lifecycleBench?.mode == .close { return }
+#endif
         // The app has exactly one player window; without it nothing can play, even if Settings is still open.
         // AppKit waits in a nested run loop for .terminateLater. Enter it from the run loop, not a main-queue
         // block: that block would prevent the main-actor persistence task from running and replying to AppKit.
@@ -4904,6 +5844,7 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
     func windowDidChangeScreen(_ notification: Notification) { updateScreenPixelSize() }
     func windowDidMove(_ notification: Notification) { rememberFrame() }
     func windowDidResignKey(_ notification: Notification) {
+        helpTransitionKey = nil
         videoView.cancelTrackpadGestures()
         endHoldSpeed()   // the key-up goes elsewhere
         videoView.cancelFilmSeekPreview()
@@ -4922,8 +5863,11 @@ final class PlayerWindowController: NSWindowController, NSWindowDelegate, Player
         if visible {
             refreshLowLatency()
             prewarmFilmstrip()
+            showKeptMiniPosition()
             filmstripLoader?.resume()
         } else {
+            navigationRibbon.clear()
+            filmstripLoader?.cancelVisible()
             seekBar.cancelFilmDragMotion()
             videoView.cancelFilmSeekPreview()
             videoView.lowLatency.clear()
@@ -5054,6 +5998,7 @@ extension PlayerWindowController {
 
     private func leaveVirtualCut() {
         guard virtualCut != nil else { return }
+        navigationRibbon.clear()
         rememberVirtualCut()
         virtualCut?.scrubOpen?.cancel()
         virtualCut?.stopWarming()
@@ -5610,6 +6555,202 @@ extension PlayerWindowController {
 }
 
 extension PlayerWindowController {
+    static func runNavigationRibbonBench() -> Never {
+        setbuf(stdout, nil)
+        guard let flag = CommandLine.arguments.firstIndex(of: "--fixture"),
+              CommandLine.arguments.indices.contains(flag + 1) else { exit(EXIT_FAILURE) }
+        let url = URL(fileURLWithPath: CommandLine.arguments[flag + 1])
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        app.finishLaunching()
+        var config = Config()
+        config.autoplay = false
+        config.volume = 0
+        config.preview = false
+        config.ontop = true
+        config.networkMode = CommandLine.arguments.contains("--network") ? .yes : .no
+        let state = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let preferences = PreferencesStore(config: config, url: state.appendingPathExtension("conf"))
+        let controller = PlayerWindowController(config: config, inputMap: InputMap(),
+            preferences: preferences,
+            folderColors: FolderColors(url: nil), folderSorts: FolderSorts(url: nil),
+            unreadable: UnreadableFiles(), resumeStore: ResumeStore(url: state))
+        preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
+        controller.showWindow(nil)
+        controller.window?.level = .floating
+        controller.window?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        controller.window?.center()
+        controller.window?.makeKeyAndOrderFront(nil)
+        controller.window?.orderFrontRegardless()
+        app.activate()
+        Task { @MainActor in
+            controller.openFile(url)
+            @MainActor func wait(_ seconds: TimeInterval, for condition: @MainActor () -> Bool) async -> Bool {
+                let end = ProcessInfo.processInfo.systemUptime + seconds
+                repeat {
+                    if condition() { return true }
+                    try? await Task.sleep(for: .milliseconds(5))
+                } while ProcessInfo.processInfo.systemUptime < end
+                return condition()
+            }
+            let decoded = await wait(8, for: { controller.core.index?.isExact == true && controller.lastFrame != nil })
+            // Opening a video can move and relevel its window. Raise the settled window for the AppKit checks.
+            controller.window?.center()
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.window?.orderFrontRegardless()
+            app.activate(ignoringOtherApps: true)
+            guard decoded, await wait(3, for: { controller.window?.occlusionState.contains(.visible) == true }) else {
+                print("navigation-ribbon: fixture not ready (index=\(controller.core.index?.isExact == true), decoded=\(controller.lastFrame != nil), visible=\(controller.window?.occlusionState.contains(.visible) == true))")
+                exit(EXIT_FAILURE)
+            }
+            controller.core.play()
+            controller.seekBar.setFilmRevealed(false, force: true)
+            controller.configurePreview(force: true)
+            let started = ProcessInfo.processInfo.systemUptime
+            controller.runInput(.seek(9, .exact), from: .menu)
+            guard let target = controller.navigationRibbon.journey?.target, controller.navigationRibbon.isPresenting else {
+                print("navigation-ribbon: compact strip did not open")
+                exit(EXIT_FAILURE)
+            }
+            func nearbyCount() -> Int {
+                let projection = controller.seekBar.navigationProjection(near: target)
+                let center = projection.pictures.count / 2
+                return projection.pictures[(center - 1)...(center + 2)].compactMap { $0 }.count
+            }
+            let initial = nearbyCount()
+            let arrived = await wait(0.85, for: { nearbyCount() >= 2 })
+            let elapsed = (ProcessInfo.processInfo.systemUptime - started) * 1000
+            print(String(format: "navigation-ribbon: %d → %d destination pictures in %.1f ms, %d side decodes",
+                         initial, nearbyCount(), elapsed, controller.filmstripLoader?.decodeCount ?? -1))
+            if CommandLine.arguments.contains("--verify-mini-keys") {
+                controller.core.pause()
+                let defaults = UserDefaults.standard
+                let savedMini = defaults.object(forKey: miniPinKey)
+                let savedFull = defaults.object(forKey: "timeline-film-pinned")
+                defer {
+                    defaults.set(savedMini, forKey: miniPinKey)
+                    defaults.set(savedFull, forKey: "timeline-film-pinned")
+                }
+                controller.dismissMiniFilmstrip()
+                controller.seekBar.foldForMiniFilmstrip()
+                AppDelegate.withFilmstripBenchMenu(for: controller) { menu in
+                    func press(_ flags: NSEvent.ModifierFlags) -> Bool {
+                        let text = flags.contains(.shift) ? "L" : "l"
+                        let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags, timestamp: 0,
+                            windowNumber: controller.window?.windowNumber ?? 0, context: nil,
+                            characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: 37)!
+                        return menu.performKeyEquivalent(with: event)
+                    }
+                    precondition(press([.option, .command]) && !preferences.config.navigationFilmstrip &&
+                                 !controller.navigationRibbon.isPresenting && !controller.miniFilmstripSaved,
+                                 "Option-Command-L should disable automatic mini strip reveals and dismiss the current one")
+                    precondition(controller.osd.visibleText == "Mini Filmstrip auto-show off")
+                    controller.runInput(.seek(-1, .exact), from: .menu)
+                    precondition(!controller.navigationRibbon.isPresenting, "Navigation should respect disabled auto-show")
+                    precondition(press([.command]) && controller.filmstripShown && !preferences.config.navigationFilmstrip,
+                                 "Command-L should open the full strip independently of auto-show")
+                    precondition(press([.option, .command]) && preferences.config.navigationFilmstrip &&
+                                 controller.filmstripShown && !controller.navigationRibbon.isPresenting,
+                                 "Turning auto-show on should leave the full strip open")
+                    precondition(controller.osd.visibleText == "Mini Filmstrip auto-show on")
+                    precondition(press([.command]) && !controller.filmstripShown &&
+                                 preferences.config.navigationFilmstrip && !controller.navigationRibbon.isPresenting,
+                                 "Command-L should fold the full strip without changing auto-show or revealing the mini strip")
+                    controller.runInput(.seek(1, .exact), from: .menu)
+                    precondition(controller.navigationRibbon.isPresenting,
+                                 "The next navigation should reveal the mini strip after auto-show was enabled")
+                    precondition(press([.command]) && controller.filmstripShown && !controller.navigationRibbon.isPresenting,
+                                 "Command-L should give the full strip precedence over an active mini strip")
+                    precondition(press([.command]) && !controller.filmstripShown && !controller.navigationRibbon.isPresenting,
+                                 "Folding the full strip should not bring back the previous automatic reveal")
+                    precondition(press([.shift, .option, .command]) && controller.miniFilmstripSaved &&
+                                 defaults.bool(forKey: miniPinKey),
+                                 "Shift-Option-Command-L should remember the mini strip")
+                    controller.openFile(url)
+                }
+                let restored = await wait(8, for: {
+                    controller.lastFrame != nil && controller.navigationRibbon.isPresenting && controller.miniFilmstripSaved
+                })
+                precondition(restored, "The pin should restore the mini strip after opening another video")
+                var config = controller.globalConfig
+                config.navigationFilmstripWidth = 75
+                controller.applyConfig(config)
+                controller.window?.contentView?.layoutSubtreeIfNeeded()
+                let width = controller.navigationRibbon.frame.width
+                let available = controller.visibleArea.frame.width - 24
+                precondition(abs(width - available * 0.75) < 1, "The chosen percentage should size the real mini strip")
+                try? await Task.sleep(for: .milliseconds(200))
+                AppDelegate.withFilmstripBenchMenu(for: controller) { menu in
+                    let full = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.command],
+                        timestamp: 0, windowNumber: controller.window?.windowNumber ?? 0, context: nil,
+                        characters: "l", charactersIgnoringModifiers: "l", isARepeat: false, keyCode: 37)!
+                    precondition(menu.performKeyEquivalent(with: full) && controller.filmstripShown &&
+                                 controller.miniFilmstripSaved && !controller.navigationRibbon.isPresenting,
+                                 "Command-L should temporarily hide a pinned mini strip without forgetting its pin")
+                    precondition(controller.seekBar.alphaValue == 1 && !controller.seekBar.subviews.contains {
+                        $0.layer?.animation(forKey: "film-reveal") != nil
+                    }, "Replacing a visible mini strip must keep the new playhead fully visible")
+                    if Chrome.Motion.duration(0.18) > 0 {
+                        precondition(controller.seekBar.subviews.contains {
+                            $0.layer?.mask?.animation(forKey: "filmstrip-handoff-width") != nil
+                        }, "Full film pictures must expand from the mini strip's width")
+                    }
+                    let previousTarget = controller.navigationRibbon.journey?.target
+                    controller.core.goTo(.frame(96))
+                    let currentTime = controller.core.currentSeconds
+                    precondition(previousTarget != currentTime, "Move while the full filmstrip is open")
+                    controller.window?.displayIfNeeded()
+                    precondition(menu.performKeyEquivalent(with: full) && !controller.filmstripShown &&
+                                 controller.miniFilmstripSaved && controller.navigationRibbon.isPresenting &&
+                                 controller.navigationRibbon.journey?.target == currentTime,
+                                 "Folding the full strip should restore the pinned mini strip at the current position")
+                    precondition(controller.navigationRibbon.alphaValue == 1 &&
+                                 controller.navigationRibbon.layer?.animation(forKey: "strip-reveal-opacity") == nil,
+                                 "Restoring the mini strip must keep its playhead and caption visible")
+                    if Chrome.Motion.duration(0.18) > 0 {
+                        precondition(controller.navigationRibbon.subviews.contains {
+                            $0.layer?.animation(forKey: "filmstrip-handoff-opacity") != nil
+                        }, "Mini pictures must fade in independently of the playhead")
+                        precondition(controller.seekBar.subviews.contains {
+                            !$0.isHidden && $0.layer?.mask?.animation(forKey: "filmstrip-handoff-width") != nil &&
+                                $0.layer?.animation(forKey: "film-fold-opacity") != nil
+                        }, "Folding must keep the old pictures visible while their width contracts")
+                    }
+                    let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [.shift, .command],
+                        timestamp: 0, windowNumber: controller.window?.windowNumber ?? 0, context: nil,
+                        characters: "L", charactersIgnoringModifiers: "L", isARepeat: false, keyCode: 37)!
+                    precondition(menu.performKeyEquivalent(with: event) && controller.filmstripPinned &&
+                                 !controller.miniFilmstripSaved && !defaults.bool(forKey: miniPinKey),
+                                 "Shift-Command-L should switch from a mini pin to the full strip pin")
+                    precondition(controller.navigationRibbon.alphaValue == 0 && !controller.seekBar.subviews.contains {
+                        $0.layer?.animation(forKey: "film-reveal") != nil
+                    }, "Switching the pin must transfer the playhead without fading both strips")
+                }
+                print("mini-shortcuts: auto-show, full strip independence, persisted pin and percentage width passed")
+                if CommandLine.arguments.contains("--demo-filmstrip-handoff"), let window = controller.window {
+                    var config = controller.globalConfig
+                    config.navigationFilmstripWidth = Config().navigationFilmstripWidth
+                    controller.applyConfig(config)
+                    window.setContentSize(NSSize(width: 1180, height: 664))
+                    window.center()
+                    controller.pinMiniFilmstrip()
+                    controller.core.goTo(.frame(255))
+                    print("filmstrip-handoff-window: \(window.windowNumber)")
+                    try? await Task.sleep(for: .seconds(2))
+                    controller.toggleFilmstrip()
+                    try? await Task.sleep(for: .milliseconds(750))
+                    controller.core.goTo(.frame(380))
+                    try? await Task.sleep(for: .milliseconds(750))
+                    controller.toggleFilmstrip()
+                    try? await Task.sleep(for: .seconds(2))
+                }
+            }
+            exit(arrived ? EXIT_SUCCESS : EXIT_FAILURE)
+        }
+        app.run()
+        exit(EXIT_FAILURE)
+    }
+
     /// Run with a configured provider and a short cut containing at least two different sources.
     func runVirtualCutBench(card: String) {
         Task { @MainActor [weak self] in
@@ -5992,3 +7133,310 @@ extension PlayerWindowController {
         }
     }
 }
+
+#if DEBUG
+extension PlayerWindowController {
+    /// Drives the real controller with a Range server and test extractor. The bench uses an isolated app bundle.
+    func runWebOpenBench(origin: URL) {
+        Task { @MainActor [weak self] in
+            guard let self else { exit(EXIT_FAILURE) }
+            func fail(_ message: String) -> Never {
+                FileHandle.standardError.write(Data("web-open: \(message)\n".utf8))
+                exit(EXIT_FAILURE)
+            }
+            @MainActor func wait(for condition: @MainActor () -> Bool) async -> Bool {
+                let deadline = ContinuousClock.now + .seconds(12)
+                while ContinuousClock.now < deadline {
+                    if condition() { return true }
+                    try? await Task.sleep(for: .milliseconds(15))
+                }
+                return false
+            }
+
+            let media = origin.appendingPathComponent("initial.mp4")
+            var link = URLComponents()
+            link.scheme = "framescrub"
+            link.host = "open"
+            link.queryItems = [.init(name: "url", value: media.absoluteString), .init(name: "t", value: "2")]
+            guard let linkURL = link.url, let target = OpenLink.target(from: linkURL) else { fail("external link rejected") }
+            (NSApp.delegate as? AppDelegate)?.application(NSApp, open: [linkURL])
+            guard target.time == 2, await wait(for: { core.url == media && core.displayedFrame != nil }),
+                  core.currentSeconds >= 1.9 else { fail("external link did not land") }
+            core.pause()
+            print("web-open: external link landed")
+
+            let slow = origin.appendingPathComponent("slow.mp4")
+            var cancellation: [OpenOutcome] = []
+            beginWebOpen(WebOpenRequest(url: slow)) { cancellation.append($0) }
+            try? await Task.sleep(for: .milliseconds(150))
+            guard isOpeningWeb, core.url == media, core.displayedFrame != nil,
+                  webStatus.visibleText?.hasPrefix("Connecting") == true else { fail("preparation replaced playback or lost progress") }
+            cancelWebOpen()
+            guard cancellation == [.superseded], !isOpeningWeb, core.url == media, webStatus.visibleText == nil else { fail("cancel did not retain playback") }
+            print("web-open: preparation and cancellation retained playback")
+
+            let nonexistent = origin.appendingPathComponent("missing.mp4")
+            openWebURL(nonexistent)
+            guard await wait(for: { failedWebRequest?.url == nonexistent }), core.url == media else {
+                fail("an unsuccessful web request replaced playback")
+            }
+            print("web-open: failure retained playback and can retry")
+
+            let page = origin.appendingPathComponent("page")
+            guard let plugin = PluginOrigin(url: origin),
+                  let message = PluginMessage(json: ["cmd": "open", "page": page.absoluteString, "t": 3]) else {
+                fail("plugin input rejected")
+            }
+            pluginMessage(PluginRequest(message: message), from: plugin)
+            guard await wait(for: { core.url == page && core.displayedFrame != nil }),
+                  core.currentSeconds >= 2.9, core.stats?.selectedWebFormat?.videoBitrateKbps == 4200,
+                  let item = RecentVideoPages.items.first(where: { $0.url == page && $0.itemID != nil }) else {
+                fail("plugin page did not land with format metadata and Recent item")
+            }
+            openRecentVideo(item)
+            guard await wait(for: { !isOpeningWeb && currentWebRequest?.itemID == item.itemID }),
+                  failedWebRequest == nil else { fail("Recent did not reopen the selected item") }
+            print("web-open: plugin page and Recent use the selected video")
+
+            core.pause()
+            core.seek(toSeconds: 4)
+            guard await wait(for: { core.displayedFrame == core.position }),
+                  let previousStream = core.info?.url else { fail("could not prepare the reconnect position") }
+            reconnectStream()
+            guard await wait(for: {
+                !isOpeningWeb && currentWebRequest?.itemID == item.itemID && core.info?.url != previousStream
+                    && core.displayedFrame == core.position
+            }), core.isPaused, abs(core.currentSeconds - 4) < 0.1 else { fail("reconnect lost the paused frame") }
+            print("web-open: reconnect refreshed the media URL and restored the paused frame")
+            core.close()
+            exit(EXIT_SUCCESS)
+        }
+    }
+}
+#endif
+
+#if DEBUG
+extension PlayerWindowController {
+    func runWindowLifecycleBench(_ bench: WindowLifecycleBench) {
+        Task { @MainActor in
+            guard await benchWait({ self.window?.isVisible == true && self.window?.screen != nil }) else {
+                WindowLifecycleBench.fail("window never became visible on a display")
+            }
+            switch bench.mode {
+            case .home: await benchHomeReturn(bench)
+            case .open, .close: await benchOpenRequests(bench)
+            case .hover: await benchHover(bench)
+            }
+            await withCheckedContinuation { answer in PlaybackDiagnostics.shared.flush { answer.resume() } }
+            exit(EXIT_SUCCESS)
+        }
+    }
+
+    private func benchWait(_ condition: @MainActor () -> Bool) async -> Bool {
+        let end = PlaybackDiagnostics.now() + 6
+        repeat {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        } while PlaybackDiagnostics.now() < end
+        return false
+    }
+
+    private func benchPressClose() {
+        guard let window, let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "w",
+                charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13),
+              NSApp.mainMenu?.performKeyEquivalent(with: event) == true
+        else { WindowLifecycleBench.fail("Close key equivalent was not handled") }
+    }
+
+    private func benchOpenPicture(_ url: URL) async {
+        openFile(url)
+        guard await benchWait({ self.core.url == url && self.videoView.displayedImage != nil }) else {
+            WindowLifecycleBench.fail("fixture picture did not arrive")
+        }
+    }
+
+    private func benchHomeReturn(_ bench: WindowLifecycleBench) async {
+        for round in 0..<3 {
+            let order = round == 1 ? Array(bench.urls.reversed()) : bench.urls
+            var expectedHeights: [URL: Int] = [:]
+            for (index, url) in order.enumerated() {
+                await benchOpenPicture(url)
+                videoView.geometry = DisplayGeometry(crop: .init(x: 0, y: 0.16, width: 1, height: 0.68),
+                                                      pixelAspect: 0.6 + Double(index + round) * 0.09)
+                expectedHeights[url] = benchThumbnailHeight()
+            }
+            let url = order[order.count - 1], expectedHeight = expectedHeights[url]
+            var cardAt: Double?
+            benchRecentPicture = { id, image in
+                if id == "recent:" + url.path, image.height == expectedHeight, cardAt == nil {
+                    cardAt = PlaybackDiagnostics.now()
+                }
+            }
+            let listings = homeSource?.benchRecentListings ?? 0
+            let cpu = StartupTrace.threadCPU()
+            let start = PlaybackDiagnostics.now()
+            benchPressClose()
+            let closeCPU = StartupTrace.threadCPU() - cpu
+            await Task.yield()
+            guard showsHome, let window, let home, !home.isHidden else { WindowLifecycleBench.fail("Home did not appear") }
+            window.displayIfNeeded()
+            let visible = (PlaybackDiagnostics.now() - start) * 1000
+            let input = window.makeFirstResponder(home.browser)
+            let updated = await benchWait { cardAt != nil }
+            let card = cardAt.map { ($0 - start) * 1000 } ?? -1
+            let peak = bench.work.withLock { $0.peakPending }
+            print(String(format: "home round=%d visible_ms=%.1f main_cpu_ms=%.1f card_ms=%.1f input=%@ peak_pending=%d rss_mib=%d",
+                round + 1, visible, closeCPU, card, String(input), peak, WindowLifecycleBench.rssMiB()))
+            guard updated, input, let listCount = homeSource?.benchRecentListings, listCount <= listings + 1 else {
+                WindowLifecycleBench.fail("Home did not accept focus and update the visible card through its existing listing")
+            }
+            if bench.delay > 0, visible >= bench.delay * 1000 || peak > 2 {
+                WindowLifecycleBench.fail("Home waited for the delayed write or retained too many pictures")
+            }
+            if bench.delay > 0 {
+                let previous = order[order.count - 2], expected = expectedHeights[previous], store = thumbnails
+                let previousSaved = await Task.detached(priority: .utility) { store.image(for: previous)?.height == expected }.value
+                guard previousSaved else { WindowLifecycleBench.fail("the previous distinct video's thumbnail was lost") }
+            }
+        }
+        if bench.delay > 0 { await benchReopenDuringWrite(bench) }
+    }
+
+    private func benchReopenDuringWrite(_ bench: WindowLifecycleBench) async {
+        let url = bench.urls[0], next = bench.urls[1]
+        await benchOpenPicture(url)
+        videoView.geometry = DisplayGeometry(crop: .init(x: 0, y: 0, width: 1, height: 0.50), pixelAspect: 1)
+        benchPressClose()
+        await benchOpenPicture(url)
+        videoView.geometry = DisplayGeometry(crop: .init(x: 0, y: 0, width: 1, height: 0.34), pixelAspect: 1)
+        let newestHeight = benchThumbnailHeight()
+        var updated = false
+        benchRecentPicture = { id, picture in
+            if id == "recent:" + url.path, picture.height == newestHeight { updated = true }
+        }
+        benchPressClose()
+        guard await benchWait({ updated }) else { WindowLifecycleBench.fail("reopened file's latest thumbnail was lost") }
+
+        await benchOpenPicture(url)
+        videoView.geometry = DisplayGeometry(crop: .init(x: 0, y: 0, width: 1, height: 0.27), pixelAspect: 1)
+        let hiddenHeight = benchThumbnailHeight()
+        var deliveredWhileHidden = false
+        benchRecentPicture = { [weak self] _, _ in
+            if self?.showsHome == false { deliveredWhileHidden = true }
+        }
+        benchPressClose()
+        await benchOpenPicture(next)
+        let store = thumbnails
+        let deadline = PlaybackDiagnostics.now() + 6
+        var saved = false
+        repeat {
+            saved = await Task.detached(priority: .utility) { store.image(for: url)?.height == hiddenHeight }.value
+            if saved { break }
+            try? await Task.sleep(for: .milliseconds(50))
+        } while PlaybackDiagnostics.now() < deadline
+        guard saved, !deliveredWhileHidden, !showsHome, core.url == next else {
+            WindowLifecycleBench.fail("leave during write: saved=\(saved), hidden delivery=\(deliveredWhileHidden), Home visible=\(showsHome)")
+        }
+        print("home same-file reopen and leave-during-write passed")
+    }
+
+    private func benchThumbnailHeight() -> Int {
+        guard let image = videoView.displayedImage else { WindowLifecycleBench.fail("missing displayed picture") }
+        let size = videoView.geometry.displaySize(of: image.extent.size)
+        return Int((size.height * min(1, thumbnails.maxSide / max(size.width, size.height))).rounded())
+    }
+
+    private func benchOpenRequests(_ bench: WindowLifecycleBench) async {
+        var results: [URL: [String]] = [:]
+        var latestAt: Double?
+        func request(_ url: URL) {
+            openFile(url) { outcome in
+                let status: String
+                switch outcome {
+                case .opened: status = "opened"
+                case .superseded: status = "superseded"
+                case .failed: status = "failed"
+                }
+                results[url, default: []].append(status)
+                if url == bench.urls.last { latestAt = PlaybackDiagnostics.now() }
+            }
+        }
+        request(bench.urls[0])
+        guard await benchWait({ bench.work.withLock { $0.started.contains(bench.urls[0]) } }) else {
+            WindowLifecycleBench.fail("A did not reach its gate")
+        }
+        for url in bench.urls.dropFirst().dropLast() { request(url) }
+        let latestStart = PlaybackDiagnostics.now()
+        request(bench.urls[9])
+        if bench.mode == .close { window?.performClose(nil) }
+        try? await Task.sleep(for: .milliseconds(600))
+        let latestBeforeRelease = latestAt != nil
+        let latestStartedBeforeRelease = bench.work.withLock { $0.started.contains(bench.urls[9]) }
+        let aCompletedBeforeRelease = results[bench.urls[0]] == ["superseded"]
+        bench.gate.signal()
+        guard await benchWait({ results.count == 10 && bench.work.withLock { $0.active == 0 } }) else {
+            WindowLifecycleBench.fail("open completions were lost")
+        }
+        let work = bench.work.withLock { $0 }
+        let latest = results[bench.urls[9]] ?? []
+        let exactlyOnce = results.values.allSatisfy { $0.count == 1 }
+        let superseded = results.values.filter { $0 == ["superseded"] }.count
+        print(String(format: "open mode=%@ active=%d started=%d metadata_reads=%d cancelled_metadata=%d J=%@ J_ms=%.1f J_before_release=%@ completions=%d superseded=%d exactly_once=%@",
+            bench.mode.rawValue, work.peakActive, work.started.count, work.metadataReads, work.cancelledMetadata, latest.joined(separator: ","),
+            ((latestAt ?? latestStart) - latestStart) * 1000, String(latestBeforeRelease), results.count, superseded, String(exactlyOnce)))
+        guard exactlyOnce, aCompletedBeforeRelease, superseded == (bench.mode == .close ? 10 : 9),
+              latest == (bench.mode == .close ? ["superseded"] : ["opened"])
+        else { WindowLifecycleBench.fail("unexpected open completion") }
+        guard work.peakActive <= bench.openLimit, work.cancelledMetadata == 0 else {
+            WindowLifecycleBench.fail("an open exceeded the limit or started metadata I/O after cancellation")
+        }
+        if bench.mode == .open, latestStartedBeforeRelease != (bench.openLimit == 2) {
+            WindowLifecycleBench.fail("unexpected scheduling of J while A was gated")
+        }
+    }
+
+    private func benchHover(_ bench: WindowLifecycleBench) async {
+        await benchOpenPicture(bench.urls[0])
+        guard await benchWait({ self.core.index?.isExact == true }) else { WindowLifecycleBench.fail("exact index did not arrive") }
+        let samples = (0..<24).map { 0.03 + Double($0) * 0.039 }
+        for label in ["warmup", "identity", "crop-sar"] {
+            videoView.geometry = label == "crop-sar"
+                ? DisplayGeometry(crop: .init(x: 0.08, y: 0.15, width: 0.84, height: 0.7), pixelAspect: 1.42)
+                : .identity
+            var ui = DiagnosticSamples(), ready = DiagnosticSamples()
+            benchPreviewCallback = { ui.add($0) }
+            benchPreviewReady = { ready.add($0) }
+            let decodesBefore = previewProvider?.decodeCount ?? 0
+            let cpu = StartupTrace.threadCPU()
+            let repeats = label == "warmup" ? 1 : 4
+            for _ in 0..<repeats {
+                for fraction in samples {
+                    hover(fraction)
+                    try? await Task.sleep(for: .milliseconds(label == "warmup" ? 80 : 30))
+                }
+            }
+            hover(nil)
+            print(String(format: "hover %@ callbacks=%d decodes=%d callback_p95_ms=%.3f ready_p95_ms=%.3f main_cpu_ms=%.1f",
+                label, ui.summary().count, (previewProvider?.decodeCount ?? 0) - decodesBefore,
+                ui.summary().p95, ready.summary().p95, StartupTrace.threadCPU() - cpu))
+        }
+        hover(0.58)
+        guard await benchWait({ self.hoverOriginal != nil && self.previewImage != nil }), let original = hoverOriginal else {
+            WindowLifecycleBench.fail("hover picture did not arrive")
+        }
+        aspectMode = .ratio4x3
+        updateGeometry(reshapeWindow: false)
+        let size = videoView.geometry.displaySize(of: CGSize(width: original.image.width, height: original.image.height))
+        let height = Int((CGFloat(original.image.width) * size.height / size.width).rounded())
+        guard await benchWait({ self.previewImage?.height == height }) else {
+            WindowLifecycleBench.fail("hover picture did not adopt the new geometry")
+        }
+        renderHoverPicture()
+        hover(nil)
+        try? await Task.sleep(for: .milliseconds(150))
+        guard previewImage == nil, previewView.isHidden else { WindowLifecycleBench.fail("stale hover picture appeared") }
+        print("hover geometry change and pointer exit passed")
+    }
+}
+#endif

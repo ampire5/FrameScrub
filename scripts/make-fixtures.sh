@@ -104,3 +104,14 @@ cat "$tmp/a.ts" "$tmp/b.ts" > "$out/audio_layout_change.ts"
 rm -r "$tmp"
 
 ls -la "$out"
+
+# Direct HTTP HLS fixtures reuse the numbered 25 fps AVC/AAC source.
+for segment_type in mpegts fmp4; do
+    dir="$out/hls-$segment_type"
+    mkdir -p "$dir"
+    suffix=ts
+    if [[ "$segment_type" == fmp4 ]]; then suffix=m4s; fi
+    ff -i "$out/withaudio_gop25.mp4" -map 0:v:0 -map 0:a:0 -c copy -f hls -hls_time 1 \
+        -hls_playlist_type vod -hls_segment_type "$segment_type" \
+        -hls_segment_filename "$dir/segment%02d.$suffix" "$dir/media.m3u8"
+done

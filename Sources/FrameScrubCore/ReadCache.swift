@@ -5,7 +5,8 @@ import QuartzCore
 public struct ReadStats: Equatable, Sendable {
     public var bytesFromFile: Int64 = 0
     public var requests = 0          // AVIOContext reads by cached readers
-    public var hits = 0              // of those, served from cached blocks
+    public var hits = 0              // of those, shared with a completed or in-flight block
+    public var waits = 0             // requests that waited for bytes, including shared reads
     public var bytesPerSecond = 0.0  // over the last 2 s of file reads
     public var cacheEnabled = false
 
@@ -14,7 +15,7 @@ public struct ReadStats: Equatable, Sendable {
         let rate = String(format: "%.0f MB/s", bytesPerSecond / 1_000_000)
         guard cacheEnabled else { return String(format: "Read: %.0f MB from file, cache off, ", mb) + rate }
         let share = requests > 0 ? 100 * hits / requests : 0
-        return String(format: "Read: %.0f MB from file, cache hits %d%%, ", mb, share) + rate
+        return String(format: "Read: %.0f MB from file, cache hits %d%%, %d waits, ", mb, share, waits) + rate
     }
 }
 
@@ -117,17 +118,17 @@ public final class ReadCache: @unchecked Sendable {
     /// `cached: false` (the index scan) goes straight to the file so it does not evict useful blocks.
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer, cached: Bool,
               cursor: inout ReadCursor, readAhead: Bool = true) throws -> Int {
-        let useBlocks = lock.withLock { () -> Bool in
+        let readGeneration = lock.withLock { () -> Int? in
             if cached { counters.requests += 1 }   // the hit rate is about readers that use the cache
-            return cached && budget >= Self.blockSize
+            return cached && budget >= Self.blockSize ? generation : nil
         }
-        guard useBlocks else { return try readFile(at: offset, count: count, into: buffer) }
+        guard let readGeneration else { return try readFile(at: offset, count: count, into: buffer) }
         let b = offset / Int64(Self.blockSize)
         let n = try copy(block: b, from: Int(offset - b * Int64(Self.blockSize)), count: count, into: buffer)
         guard n > 0 else { return 0 }
         if b == cursor.lastBlock + 1 { cursor.run += 1 } else if b != cursor.lastBlock { cursor.run = 0 }
         cursor.lastBlock = b
-        if cursor.run >= 1, readAhead { prefetch(after: b) }
+        if cursor.run >= 1, readAhead { prefetch(after: b, generation: readGeneration) }
         return n
     }
 
@@ -137,6 +138,7 @@ public final class ReadCache: @unchecked Sendable {
         lock.lock()
         var waitingOn: PartialBlock?   // the load this reader waits for; its failure is this reader's
         var started = false
+        var waited = false
         while true {
             if closed { lock.unlock(); throw POSIXError(.ECANCELED) }
             if let partial = waitingOn, partial.done {
@@ -169,14 +171,24 @@ public final class ReadCache: @unchecked Sendable {
                 waitingOn = partial
                 if partial.filled > start {
                     if !started { counters.hits += 1 }
-                    lock.unlock()
                     // Bytes below `filled` are written once and never again; the reference keeps them alive.
                     let n = min(count, partial.filled - start)
-                    buffer.copyMemory(from: partial.storage + start, byteCount: n)
+                    lock.unlock()
+                    withExtendedLifetime(partial) {
+                        buffer.copyMemory(from: partial.storage + start, byteCount: n)
+                    }
                     return n
+                }
+                if !waited {
+                    counters.waits += 1
+                    waited = true
                 }
                 lock.wait()
                 continue
+            }
+            if !waited {
+                counters.waits += 1
+                waited = true
             }
             let partial = PartialBlock(length: Int(max(0, min(Int64(Self.blockSize), fileSize - b * Int64(Self.blockSize)))))
             loading[b] = partial
@@ -234,8 +246,10 @@ public final class ReadCache: @unchecked Sendable {
     }
 
     /// Loads block `b` on this thread unless it is in memory or loading (read-ahead).
-    private func loadIfNeeded(_ b: Int64) {
+    private func loadIfNeeded(_ b: Int64, generation expected: Int) {
         let partial = lock.withLock { () -> PartialBlock? in
+            guard generation == expected else { return nil }
+            queued.remove(b)
             guard !closed, blocks[b] == nil, loading[b] == nil else { return nil }
             let partial = PartialBlock(length: Int(max(0, min(Int64(Self.blockSize), fileSize - b * Int64(Self.blockSize)))))
             loading[b] = partial
@@ -254,28 +268,21 @@ public final class ReadCache: @unchecked Sendable {
         }
     }
 
-    private func prefetch(after b: Int64) {
-        let (wanted, current) = lock.withLock { () -> ([Int64], Int) in
+    private func prefetch(after b: Int64, generation expected: Int) {
+        // A demand read can return bytes after a jump. It must not refill the old read-ahead queue.
+        let wanted = lock.withLock { () -> [Int64] in
+            guard !closed, generation == expected else { return [] }
             let count = Int64((readAhead + Self.blockSize - 1) / Self.blockSize)
             let last = (fileSize - 1) / Int64(Self.blockSize)
-            guard b + 1 <= last else { return ([], generation) }
+            guard b + 1 <= last else { return [] }
             let wanted = (b + 1...min(b + count, last)).filter {
                 blocks[$0] == nil && loading[$0] == nil && !queued.contains($0)
             }
             queued.formUnion(wanted)
-            return (wanted, generation)
+            return wanted
         }
         for n in wanted {
-            prefetchQueue.async { [weak self] in
-                guard let self else { return }
-                let live = self.lock.withLock { () -> Bool in
-                    guard self.generation == current else { return false }
-                    self.queued.remove(n)
-                    return true
-                }
-                guard live else { return }
-                self.loadIfNeeded(n)
-            }
+            prefetchQueue.async { [weak self] in self?.loadIfNeeded(n, generation: expected) }
         }
     }
 

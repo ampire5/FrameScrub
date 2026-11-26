@@ -2,36 +2,30 @@ import AppKit
 import HomeChrome
 import FrameScrubCore
 
-/// Transport icons over the video, frameless like QuickTime's: seeks back on the left, forward on the right,
-/// play, pause and the rest in the centre. Covers the whole video and never takes clicks. A repeated event
-/// updates the icon in place, so holding a key does not make it blink. Sizes and places are fractions of the
-/// view, so the icon keeps its proportions in a small window and in full screen.
+/// Brief transport feedback at the video edge. Repeat actions update the same indicator in place.
 final class FeedbackHUD: NSView {
     private let stack = NSView()
     private let icon = NSImageView()
     private let caption = NSTextField(labelWithString: "")
     private var placement = Feedback.Placement.center
     private var hideWork: DispatchWorkItem?
-
-    /// Seek icons are 4.8 % of the width wide (as in QuickTime); the centre icons are 7.5 % of the height tall,
-    /// a little larger.
-    private static let seekWidth: CGFloat = 0.052   // the symbol has a little padding: draws ~4.8 %
-    private static let centerHeight: CGFloat = 0.075
-    /// Horizontal centre of a seek icon, as a fraction of the width from its side.
-    private static let seekInset: CGFloat = 0.245
-    /// Vertical centre of the icon, as a fraction of the height from the top (slightly above the middle).
-    private static let iconY: CGFloat = 0.47
+    var bottomClearance: CGFloat = 8 {
+        didSet {
+            if oldValue != bottomClearance, stack.alphaValue > 0 { needsLayout = true }
+        }
+    }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
         stack.wantsLayer = true
         stack.alphaValue = 0
-        // White with a soft shadow reads on dark and bright frames alike, without a plate behind it.
+        stack.layer?.cornerCurve = .continuous
+        stack.layer?.backgroundColor = NSColor(white: 0.06, alpha: 0.88).cgColor
         let shadow = NSShadow()
-        shadow.shadowColor = NSColor(white: 0, alpha: 0.75)
-        shadow.shadowBlurRadius = 5
-        shadow.shadowOffset = .zero
+        shadow.shadowColor = NSColor(white: 0, alpha: 0.45)
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = NSSize(width: 0, height: -1)
         stack.shadow = shadow
         icon.imageScaling = .scaleProportionallyUpOrDown
         icon.contentTintColor = NSColor(white: 1, alpha: 0.9)
@@ -48,44 +42,50 @@ final class FeedbackHUD: NSView {
 
     override func layout() {
         super.layout()
-        let aspect = icon.image.map { $0.size.width / max($0.size.height, 1) } ?? 1
-        let height = placement == .center ? (bounds.height * Self.centerHeight).rounded()
-            : (bounds.width * Self.seekWidth / aspect).rounded()
-        let iconSize = CGSize(width: (height * aspect).rounded(), height: height)
-        let fractionX: CGFloat = switch placement {
-        case .leading: Self.seekInset
-        case .center: 0.5
-        case .trailing: 1 - Self.seekInset
+        let prominent = placement == .center
+        let size = caption.stringValue.isEmpty ? .zero : caption.intrinsicContentSize
+        let padding: CGFloat = prominent ? 15 : 7
+        let iconWidth: CGFloat = prominent ? 24 : 15
+        let height: CGFloat = prominent ? 46 : 24
+        let gap: CGFloat = size.width > 0 ? (prominent ? 8 : 4) : 0
+        let contentWidth = iconWidth + gap + size.width
+        let width = max(contentWidth + 2 * padding, prominent && size.width > 0 ? 110 : 0)
+        let x: CGFloat = switch placement {
+        case .leading: 12
+        case .center: ((bounds.width - width) / 2).rounded()
+        case .trailing: max(8, bounds.width - width - 12)
         }
-        let centerX = bounds.width * fractionX
-        let centerY = bounds.height * (1 - Self.iconY)   // AppKit's y grows upwards
-        caption.font = .monospacedDigitSystemFont(ofSize: max(11, (height * 0.4).rounded()), weight: .semibold)
-        let captionSize = caption.stringValue.isEmpty ? .zero : caption.intrinsicContentSize
-        let gap: CGFloat = captionSize == .zero ? 0 : 4
-        let width = max(iconSize.width, captionSize.width)
-        // The icon stays at its spot; a caption hangs below it.
-        stack.frame = CGRect(x: (centerX - width / 2).rounded(),
-                             y: (centerY - iconSize.height / 2 - gap - captionSize.height).rounded(),
-                             width: width, height: iconSize.height + gap + captionSize.height)
-        icon.frame = CGRect(x: ((width - iconSize.width) / 2).rounded(), y: captionSize.height + gap,
-                            width: iconSize.width, height: iconSize.height)
-        caption.frame = CGRect(x: ((width - captionSize.width) / 2).rounded(), y: 0,
-                               width: captionSize.width, height: captionSize.height)
+        let y = min(max(bottomClearance, prominent ? 24 : 8), max(0, bounds.height - height))
+        let iconX = ((width - contentWidth) / 2).rounded()
+        let captionX = iconX + iconWidth + gap
+        stack.frame = NSRect(x: x, y: y, width: width, height: height)
+        stack.layer?.cornerRadius = prominent ? 12 : 7
+        icon.frame = NSRect(x: iconX, y: ((height - iconWidth) / 2).rounded(), width: iconWidth, height: iconWidth)
+        caption.frame = NSRect(x: captionX, y: ((height - size.height) / 2).rounded(), width: size.width, height: size.height)
     }
 
     /// Shows `feedback`, then fades out; `hold: true` keeps it until the next `show` or `hide`.
     func show(_ feedback: Feedback, hold: Bool = false) {
-        icon.image = Icons.symbol(feedback.symbolName, pointSize: 96)   // a 120 pt box, scaled down: crisp at any size
-        caption.stringValue = feedback.caption ?? ""
+        let prominent = feedback.placement == .center
+        icon.image = Icons.symbol(feedback.symbolName, pointSize: prominent ? 22 : 13, weight: .medium)
+        caption.font = .monospacedDigitSystemFont(ofSize: prominent ? 18 : 12, weight: prominent ? .semibold : .medium)
+        if case let .seek(seconds) = feedback { caption.stringValue = String(format: "%+.3g s", seconds) }
+        else { caption.stringValue = feedback.caption ?? "" }
         placement = feedback.placement
         needsLayout = true
         layoutSubtreeIfNeeded()
         hideWork?.cancel()
-        if stack.alphaValue < 0.99 { appear() }
+        if stack.alphaValue < 0.99 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Chrome.Motion.duration(0.08)
+                stack.animator().alphaValue = 1
+            }
+        }
         guard !hold else { return }
         let work = DispatchWorkItem { [weak self] in self?.fade() }
         hideWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        let dwell = prominent ? 0.7 : 0.45
+        DispatchQueue.main.asyncAfter(deadline: .now() + dwell, execute: work)
     }
 
     func hide() {
@@ -93,28 +93,9 @@ final class FeedbackHUD: NSView {
         fade()
     }
 
-    private func appear() {
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.1
-            stack.animator().alphaValue = 1
-        }
-        // A slight grow from the icon's centre (the layer's anchor is its corner, hence the translations).
-        guard let layer = stack.layer else { return }
-        let w = stack.bounds.width / 2, h = stack.bounds.height / 2
-        var start = CATransform3DMakeTranslation(w, h, 0)
-        start = CATransform3DScale(start, 0.85, 0.85, 1)
-        start = CATransform3DTranslate(start, -w, -h, 0)
-        let grow = CABasicAnimation(keyPath: "transform")
-        grow.fromValue = start
-        grow.toValue = CATransform3DIdentity
-        grow.duration = 0.15
-        grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
-        layer.add(grow, forKey: "grow")
-    }
-
     private func fade() {
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.25
+            context.duration = Chrome.Motion.duration(0.16)
             stack.animator().alphaValue = 0
         }
     }

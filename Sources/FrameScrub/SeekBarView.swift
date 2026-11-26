@@ -4,6 +4,25 @@ import HomeChrome
 
 /// The filmstrip is the seek surface when visible. A compact track takes over when folded.
 final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
+    private let filmGlass = TimelineGlass(radius: 8)
+    private let filmPictures = TimelineInk()
+    private let ink = TimelineInk()
+    private let foldingFilm = TimelineInk()
+    private let foldingPixels = CALayer()
+    private let foldingLabels = CALayer()
+    private var collapsingFilm: (layout: TimelineFilmLayout, rect: NSRect)?
+    private var foldGeneration = 0
+    override var needsDisplay: Bool {
+        get { super.needsDisplay }
+        set {
+            super.needsDisplay = newValue
+            if newValue {
+                if showsFilmstrip { filmPictures.needsDisplay = true }
+                ink.needsDisplay = true
+            }
+        }
+    }
+
     var onSeek: ((Double) -> Void)?
     var onFilmSeek: ((Double) -> Void)?
     var onEditFragment: ((Int) -> Void)?
@@ -18,7 +37,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     var onMarkDragMove: ((Double) -> Void)?
     var onMarkDragEnd: ((Bool) -> Void)?
     var onFilmstripRequest: (([Double]) -> Void)?
+    var onReadyFilmstripRequest: (([Double]) -> Void)?
     var onFilmstripFold: (() -> Void)?
+    var onFilmVisibilityChange: ((Bool) -> Void)?
+    var filmstripHandoffWidth: ((Bool) -> CGFloat?)?
+    var onNavigationPicturesChanged: ((NavigationRibbonView.Projection) -> Void)?
+    var onThumbnailFitChange: ((Double, Double) -> Void)?
+    var onMiniFilmSizeChange: ((Double, Double) -> Void)?
+    var onLensPopoverClosed: (() -> Void)?
+    var navigationScale: NavigationRibbonView.Scale = .near
+    var navigationSampleRadius = NavigationRibbonView.Projection.defaultRadius
+    var prefersMiniFilmstrip = false
     var onHover: ((Double?) -> Void)?
     var onScroll: ((NSEvent) -> Void)?
     var onEnterExit: (() -> Void)?
@@ -28,8 +57,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     let transport = TransportControls()
     let modeControl = TimelineModeControl()
     private(set) var filmMode = TimelineFilmMode(rawValue: UserDefaults.standard.integer(forKey: "timeline-film-mode")) ?? .lens
-    private var filmHover: (point: NSPoint, seconds: Double)?
-    var filmPointer: NSPoint? { filmHover?.point }
+    private(set) var filmPointer: NSPoint?
     private var pictureAspect: CGFloat = 16.0 / 9
     private var pictureGeometry = DisplayGeometry.identity
     private var filmSettle = 0.25
@@ -39,6 +67,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var scrollTime: Double?
     private var filmTransition: Timer?
     private var presentedFilmTime: Double?
+    private var filmClickProjectionCenter: Double?
     private var transitionFrame: Int?
     private var outgoingFilm: (layout: TimelineFilmLayout, opacity: CGFloat)?
     private var animatesFilmClicks = UserDefaults.standard.object(forKey: "timeline-click-inertia") as? Bool ?? true
@@ -53,8 +82,9 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         : UserDefaults.standard.double(forKey: "timeline-lens-seconds")
     private var lensFocus = UserDefaults.standard.object(forKey: "timeline-lens-focus") == nil ? 0.3
         : UserDefaults.standard.double(forKey: "timeline-lens-focus")
-    private var lensCrop = UserDefaults.standard.object(forKey: "timeline-lens-crop") == nil ? 0.7
+    private(set) var lensCrop = UserDefaults.standard.object(forKey: "timeline-lens-crop") == nil ? 0.7
         : UserDefaults.standard.double(forKey: "timeline-lens-crop")
+    private(set) var thumbnailStretch = UserDefaults.standard.double(forKey: "timeline-thumbnail-stretch")
     private var lensMagnification = UserDefaults.standard.object(forKey: "timeline-lens-magnification") == nil ? 2.75
         : UserDefaults.standard.double(forKey: "timeline-lens-magnification")
     private var lensDensity = UserDefaults.standard.object(forKey: "timeline-lens-density") == nil ? 2.75
@@ -62,9 +92,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var layoutKey: [Double] = []
     private var cachedFilmLayout: TimelineFilmLayout?
     private let lensPopover = NSPopover()
+    private var miniLensPopover = false
+    private var miniFilmSize = CGSize(width: Config().navigationFilmstripWidth, height: Config().navigationFilmstripHeight)
     private(set) var playbackVisible = true
     private var contextMenuOpen = false
     private var filmAutoRevealSuppressed = false
+    private var filmAwaitsPointer = false
     private(set) var filmPinned = UserDefaults.standard.bool(forKey: "timeline-film-pinned") {
         didSet { if filmPinned != oldValue { modeControl.setPinned(filmPinned) } }
     }
@@ -80,13 +113,19 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private var leadIns: [ClosedRange<Int>] = []
     private var openMark: Int?
     private var hovering = false
+    private(set) var overviewHoverFraction: Double?
     private var pointerInside = false
     private var hideControls: DispatchWorkItem?
     private var thumbnailDwell: DispatchWorkItem?
+    private var requestedReadyTimes: [Double] = []
     private var requestedTimes: [Double] = []
+    var samplesFilmstripByTime = false
     private var images: [Double: (picture: NSImage, source: CGImage)] = [:]
     private var imageOrder: [Double] = []
     private var cutPosters: [Int: NSImage] = [:]
+    var navigationJourney: NavigationJourney? {
+        didSet { if showsFilmstrip { needsDisplay = true } }
+    }
     private var cutPosterOrder: [Int] = []
     private struct CutEdgeGesture {
         let edges: VirtualCutFragmentEdges
@@ -120,29 +159,36 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     var filmstripEnabled: Bool { stripHeight > 0 }
     var showsFilmstrip: Bool { filmstripEnabled && (filmRevealed || filmPinned) }
     private var wantsFilm: Bool { showsFilmstrip }
-    private var visibleFilmHeight: CGFloat { showsFilmstrip ? stripHeight : 0 }
+    var visibleFilmHeight: CGFloat { showsFilmstrip ? stripHeight : 0 }
     var isThumbnailInteraction: Bool {
-        blocksVisibleFilmstripRequests || drag != nil || overviewDrag || scrolling
+        blocksFilmstripRequests || isAnimatingFilmClick || drag != nil || overviewDrag || scrolling
     }
-    private var blocksVisibleFilmstripRequests: Bool {
+    private var blocksFilmstripRequests: Bool {
         cutEdgeGesture != nil || drag?.hasMoved == false || markDrag != nil || (scrolling && !scrollHasSought) ||
-            contextMenuOpen || transport.holding || isAnimatingFilmClick
+            contextMenuOpen || transport.holding
     }
-    var allowsVisibleFilmstripRequests: Bool {
-        wantsFilm && !isHidden && !blocksVisibleFilmstripRequests && alphaValue > 0.01 &&
+    var allowsReadyFilmstripRequests: Bool {
+        wantsFilm && !isHidden && !blocksFilmstripRequests && alphaValue > 0.01 &&
             window?.occlusionState.contains(.visible) == true
     }
+    var allowsVisibleFilmstripRequests: Bool { allowsReadyFilmstripRequests && !isAnimatingFilmClick }
     var isInteracting: Bool { isThumbnailInteraction || lensPopover.isShown }
     var isAnimatingFilm: Bool { filmTransition != nil }
     private var isAnimatingFilmClick: Bool { isAnimatingFilm && transitionFrame == nil }
     var previewFrame: Int? { didSet { if oldValue != previewFrame { needsDisplay = true } } }
     private var timelineBottom: CGFloat { visibleFilmHeight }
     private var timeline: NSRect { NSRect(x: 0, y: timelineBottom, width: bounds.width, height: 28) }
-    private var compactFilmControls: Bool { bounds.width >= TimelineModeControl.wideLayoutMinimum }
+    private var compactFilmControls: Bool { bounds.width >= 600 }
     private var transportBottom: CGFloat { timelineBottom + (wantsFilm ? (compactFilmControls ? 4 : 32) : 35) }
     private var transportHeight: CGFloat { 34 }
     var preferredHeight: CGFloat { transportBottom + transportHeight + 7 }
-    private var film: NSRect { NSRect(x: 12, y: 0, width: max(0, bounds.width - 24), height: visibleFilmHeight) }
+    private static let filmFoot: CGFloat = 6
+    private var film: NSRect { filmRect(height: visibleFilmHeight) }
+
+    private func filmRect(height: CGFloat) -> NSRect {
+        NSRect(x: 12, y: height > 0 ? Self.filmFoot : 0, width: max(0, bounds.width - 24),
+               height: max(0, height - Self.filmFoot))
+    }
     private var track: NSRect {
         NSRect(x: 12, y: timelineBottom + (hovering ? 6 : 7), width: max(0, bounds.width - 24), height: hovering ? 5 : 3)
     }
@@ -184,10 +230,11 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         let duration = cutTimeline.duration
         virtualTime = time
         updateTimeline(index: nil, duration: duration, paused: paused, previewSettle: previewSettle)
-        timelineStatus = "Cut \(span + 1)/\(cutTimeline.spans.count)  ·  \(FrameNaming.timecode(time)) / \(FrameNaming.timecode(duration))"
+        timelineStatus = "Fragment \(span + 1) / \(cutTimeline.spans.count)"
         let fraction = duration > 0 ? min(1, max(0, time / duration)) : 0
         update(frameCount: 10_001, position: Int((10_000 * fraction).rounded()), cached: [],
-               loopA: nil, loopB: nil, text: timelineStatus ?? "")
+               loopA: nil, loopB: nil,
+               text: [TimelinePositionText.position(time, duration: duration), timelineStatus].compactMap { $0 }.joined(separator: " · "))
     }
 
     func showSourceSegments(_ ranges: [ClosedRange<Int>], locked: Bool) {
@@ -236,9 +283,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         guard let fragment = analysisFragment(at: point), id == nil || id == fragment.id else { return nil }
         return convert(point, to: nil)
     }
+    private var filmDisplayTime: Double {
+        presentedFilmTime ?? (horizontalFilmScroll ? scrollTime : nil) ?? currentSeconds
+    }
     private var filmLayout: TimelineFilmLayout {
         if let markDrag { return markDrag.layout }
-        let displayedTime = presentedFilmTime ?? (horizontalFilmScroll ? scrollTime : nil) ?? currentSeconds
+        let displayedTime = filmClickProjectionCenter ?? filmDisplayTime
         let key = [Double(film.width), Double(stripHeight), Double(pictureAspect), duration, displayedTime,
                    lensSeconds, lensFocus, lensCrop, Double(effectiveFilmMode.rawValue), lensMagnification, lensDensity]
         if cachedFilmLayout == nil || layoutKey != key {
@@ -253,7 +303,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             cropStrength: lensCrop, mode: effectiveFilmMode, magnification: lensMagnification, outsideDensity: lensDensity)
     }
     /// The same samples that reveal will draw, without revealing, requesting a read or invalidating the view.
-    func prewarmFilmstripTimes(center: Double) -> [Double] {
+    func prewarmFilmstripTimes(center: Double, includeNavigation: Bool = false) -> [Double] {
         guard filmstripEnabled, !showsFilmstrip, film.width > 0, index?.isExact == true else { return [] }
         let layout = makeFilmLayout(center: center)
         var times: [Double] = []
@@ -262,7 +312,27 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             let key = imageTime(seconds)
             if images[key] == nil, !times.contains(key) { times.append(key) }
         }
-        return times
+        guard includeNavigation else { return times }
+        let nearby = Array(missingNavigationPictures(near: center).prefix(2 * NavigationRibbonView.Projection.defaultRadius + 1))
+        return Array((nearby + times.filter { !nearby.contains($0) }).prefix(max(nearby.count, times.count)))
+    }
+
+    private func missingNavigationPictures(near position: Double) -> [Double] {
+        missingNavigationPictures(in: navigationSamplePlan(near: position).slots)
+    }
+
+    private func missingNavigationPictures(in samples: [NavigationSlot?]) -> [Double] {
+        var nearby: [Double] = []
+        func append(_ slot: Int) {
+            if let key = samples[slot]?.key, images[key] == nil, !nearby.contains(key) { nearby.append(key) }
+        }
+        let center = samples.count / 2
+        append(center)
+        for distance in 1...center {
+            append(center + distance)
+            append(center - distance)
+        }
+        return nearby
     }
     private var scale: TimelineProjection { filmLayout.lens }
 
@@ -270,6 +340,22 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         super.init(frame: frame)
         wantsLayer = true
         appearance = NSAppearance(named: .darkAqua)
+        filmGlass.isHidden = true
+        addSubview(filmGlass)
+        filmPictures.wantsLayer = true
+        filmPictures.isHidden = true
+        filmPictures.paint = { [weak self] in self?.drawFilmPictures() }
+        addSubview(filmPictures)
+        ink.frame = bounds
+        ink.autoresizingMask = [.width, .height]
+        ink.paint = { [weak self] in self?.drawSurface() }
+        addSubview(ink)
+        foldingFilm.wantsLayer = true
+        foldingFilm.layer?.masksToBounds = true
+        foldingFilm.isHidden = true
+        foldingFilm.layer?.addSublayer(foldingPixels)
+        foldingFilm.layer?.addSublayer(foldingLabels)
+        addSubview(foldingFilm, positioned: .above, relativeTo: ink)
         transport.alphaValue = alwaysControls ? 1 : 0
         addSubview(transport)
         modeControl.alphaValue = transport.alphaValue
@@ -291,10 +377,18 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
 
     override func layout() {
         super.layout()
-        transport.frame = NSRect(x: 12, y: transportBottom, width: max(0, bounds.width - 24), height: transportHeight)
+        filmGlass.frame = NSRect(x: 8, y: 0, width: max(0, bounds.width - 16), height: visibleFilmHeight)
+        filmGlass.isHidden = !showsFilmstrip
+        if collapsingFilm == nil {
+            filmPictures.frame = NSRect(x: 0, y: 0, width: bounds.width, height: visibleFilmHeight)
+            filmPictures.isHidden = !showsFilmstrip
+        }
+        let width = min(TransportControls.width, max(0, bounds.width - 24))
+        transport.frame = NSRect(x: ((bounds.width - width) / 2).rounded(), y: transportBottom,
+                                 width: width, height: transportHeight)
         modeControl.isHidden = !showsFilmstrip
         modeControl.frame = compactFilmControls
-            ? NSRect(x: bounds.width - 300, y: transportBottom + 3, width: 150, height: 28)
+            ? NSRect(x: bounds.width - 162, y: transportBottom + 3, width: 150, height: 28)
             : NSRect(x: 44, y: timelineBottom + 10, width: 110, height: 19)
         transport.layoutSubtreeIfNeeded()
         onHeightChange?(preferredHeight)
@@ -305,11 +399,15 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     /// The player leaves an 8 pt inset below the bar. Once revealed, both rows
     /// and the controls hold the panel open as the pointer moves between them.
     func isInRevealZone(_ pointInWindow: NSPoint?) -> Bool {
+        isInRevealZone(pointInWindow, includesFoldedFilm: !filmAutoRevealSuppressed)
+    }
+
+    private func isInRevealZone(_ pointInWindow: NSPoint?, includesFoldedFilm: Bool) -> Bool {
         guard let pointInWindow else { return false }
         let point = convert(pointInWindow, from: nil)
         guard bounds.minX <= point.x, point.x < bounds.maxX, point.y >= -8 else { return false }
         let controlsTop = playbackVisible ? seekArea.maxY : (showsFilmstrip ? film.maxY + 24 : 16)
-        let revealTop = filmAutoRevealSuppressed ? controlsTop : max(controlsTop, stripHeight)
+        let revealTop = includesFoldedFilm ? max(controlsTop, stripHeight) : controlsTop
         if point.y < revealTop { return true }
         guard playbackVisible else { return false }
         return point.y < timeline.maxY || isOverControls(point)
@@ -321,10 +419,15 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     }
 
     func updateFilmPointer(_ pointInWindow: NSPoint?) {
+        if filmAutoRevealSuppressed, !isInRevealZone(pointInWindow, includesFoldedFilm: true) {
+            filmAutoRevealSuppressed = false
+        }
         if isInRevealZone(pointInWindow) {
+            filmAwaitsPointer = false
             hideFilmWork?.cancel(); hideFilmWork = nil
-            if filmstripEnabled, !filmAutoRevealSuppressed, !filmPinned { setFilmRevealed(true) }
-        } else if cutTimeline == nil, sourceSegments.isEmpty, !filmPinned, !isInteracting, filmRevealed, hideFilmWork == nil {
+            if filmstripEnabled, !filmAutoRevealSuppressed, !filmPinned, !prefersMiniFilmstrip { setFilmRevealed(true) }
+        } else if !filmAwaitsPointer, cutTimeline == nil, sourceSegments.isEmpty,
+                  !filmPinned, !isInteracting, filmRevealed, hideFilmWork == nil {
             let work = DispatchWorkItem { [weak self] in
                 guard let self else { return }
                 hideFilmWork = nil
@@ -337,10 +440,22 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
         }
     }
-    func setFilmRevealed(_ shown: Bool, force: Bool = false) {
+    func setFilmRevealed(_ shown: Bool, force: Bool = false, previouslyVisible: Bool? = nil) {
         guard force || filmRevealed != shown else { return }
+        if !shown {
+            filmAwaitsPointer = false
+            hideFilmWork?.cancel(); hideFilmWork = nil
+        }
+        let wasVisible = previouslyVisible ?? showsFilmstrip
+        let willBeVisible = filmstripEnabled && (shown || filmPinned)
+        let handoffWidth = wasVisible != willBeVisible ? filmstripHandoffWidth?(willBeVisible) : nil
+        if wasVisible && !willBeVisible {
+            animateFold(handoffWidth: handoffWidth)
+        }
         filmRevealed = shown
+        onFilmVisibilityChange?(showsFilmstrip)
         if !showsFilmstrip {
+            filmClickProjectionCenter = nil
             cancelCutEdgeGesture()
             cancelMarkDrag()
             stopFilmTransition()
@@ -352,26 +467,147 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         onHeightChange?(preferredHeight)
         needsLayout = true; needsDisplay = true
         layoutSubtreeIfNeeded(); updateDesiredImages()
+        if !wasVisible && showsFilmstrip {
+            if let handoffWidth { animateHandoff(from: handoffWidth) }
+            else { animateUnfold() }
+        }
+    }
+
+    private func animateHandoff(from width: CGFloat) {
+        let wasCollapsing = collapsingFilm != nil
+        let interruptedWidth = wasCollapsing ? filmPictures.layer?.mask?.presentation()?.bounds.width : nil
+        finishFold()
+        if wasCollapsing { layoutSubtreeIfNeeded() }
+        let duration = FilmstripHandoff.duration
+        guard duration > 0, window?.occlusionState.contains(.visible) == true,
+              let layer = filmPictures.layer, layer.bounds.width > 0 else { return }
+        for surface in [layer, ink.layer, filmGlass.layer] {
+            surface?.removeAnimation(forKey: "film-rise")
+            surface?.removeAnimation(forKey: "film-reveal")
+        }
+        let fullWidth = layer.bounds.width
+        FilmstripHandoff.animateWidth(of: layer, from: min(fullWidth, interruptedWidth ?? width), to: fullWidth,
+                                      duration: duration)
+        FilmstripHandoff.reveal(layer, from: 0.72, duration: duration)
+        FilmstripHandoff.reveal(filmGlass.layer, from: 0.3, duration: duration)
+    }
+
+    private func animateUnfold() {
+        finishFold()
+        let duration = Chrome.Motion.duration(0.17)
+        guard duration > 0, window != nil else { return }
+        let rise = CABasicAnimation(keyPath: "transform.translation.y")
+        rise.fromValue = -3
+        rise.toValue = 0
+        rise.duration = duration
+        rise.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 0.30
+        fade.toValue = 1
+        fade.duration = duration
+        for layer in [filmPictures.layer, ink.layer, filmGlass.layer].compactMap({ $0 }) {
+            layer.add(rise, forKey: "film-rise")
+            layer.add(fade, forKey: "film-reveal")
+        }
+    }
+
+    private func animateFold(handoffWidth: CGFloat?) {
+        let layer = filmPictures.layer
+        let width = layer?.mask?.presentation()?.bounds.width ?? filmPictures.bounds.width
+        let opacity = layer?.presentation()?.opacity ?? 1
+        finishFold()
+        let duration = handoffWidth == nil ? Chrome.Motion.duration(0.15) : FilmstripHandoff.duration
+        guard duration > 0, window != nil, let layer else { return }
+        if let handoffWidth, !filmPictures.isHidden, width > 1 {
+            // Keep the real picture surface in place while the controls switch.
+            // Layout may shrink the parent immediately and would otherwise clear this backing store.
+            collapsingFilm = (cutEdgeGesture?.layout ?? filmLayout, filmRect(height: filmPictures.frame.height))
+            FilmstripHandoff.animateWidth(of: layer, from: width, to: min(width, handoffWidth), duration: duration)
+            fadeFold(on: layer, from: opacity, duration: duration)
+            return
+        }
+        guard let contents = layer.contents, let snapshot = foldingFilm.layer else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        foldingFilm.frame = filmPictures.frame
+        foldingPixels.frame = filmPictures.frame
+        foldingPixels.contents = contents
+        foldingLabels.frame = ink.frame
+        foldingLabels.contents = ink.layer?.contents
+        foldingFilm.isHidden = false
+        fadeFold(on: snapshot, from: opacity, duration: duration)
+        CATransaction.commit()
+    }
+
+    private func fadeFold(on layer: CALayer, from opacity: Float, duration: TimeInterval) {
+        let generation = foldGeneration
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = opacity
+        fade.toValue = 0
+        fade.duration = duration
+        fade.timingFunction = FilmstripHandoff.timing
+        fade.fillMode = .forwards
+        fade.isRemovedOnCompletion = false
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { [weak self] in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.foldGeneration == generation else { return }
+                self.finishFold()
+            }
+        }
+        layer.add(fade, forKey: "film-fold-opacity")
+        CATransaction.commit()
+    }
+
+    private func finishFold() {
+        foldGeneration += 1
+        foldingFilm.isHidden = true
+        foldingFilm.layer?.removeAnimation(forKey: "film-fold-opacity")
+        foldingPixels.contents = nil
+        foldingLabels.contents = nil
+        if collapsingFilm != nil {
+            collapsingFilm = nil
+            filmPictures.isHidden = !showsFilmstrip
+            needsLayout = true
+        }
+        filmPictures.layer?.removeAnimation(forKey: "film-fold-opacity")
+        filmPictures.layer?.mask = nil
+        filmPictures.layer?.removeAnimation(forKey: FilmstripHandoff.opacityKey)
+        filmGlass.layer?.removeAnimation(forKey: FilmstripHandoff.opacityKey)
     }
     func toggleFilmVisibility() {
         if !filmstripEnabled { stripHeight = 48; UserDefaults.standard.set(48, forKey: "timeline-film-height") }
         if showsFilmstrip {
             filmPinned = false; UserDefaults.standard.set(false, forKey: "timeline-film-pinned")
-            filmAutoRevealSuppressed = true; setFilmRevealed(false, force: true)
-        } else { filmAutoRevealSuppressed = false; setFilmRevealed(true) }
+            filmAutoRevealSuppressed = true; setFilmRevealed(false, force: true, previouslyVisible: true)
+        } else {
+            filmAutoRevealSuppressed = false
+            filmAwaitsPointer = true
+            setFilmRevealed(true)
+        }
         onEnterExit?()
     }
     func toggleFilmPin() {
+        let wasVisible = showsFilmstrip
         if !filmstripEnabled { stripHeight = 48; UserDefaults.standard.set(48, forKey: "timeline-film-height") }
         filmPinned.toggle(); UserDefaults.standard.set(filmPinned, forKey: "timeline-film-pinned")
         filmAutoRevealSuppressed = false
-        if filmPinned { setFilmRevealed(true, force: true) }
-        else { setFilmRevealed(false, force: true) }
+        setFilmRevealed(filmPinned, force: true, previouslyVisible: wasVisible)
         onEnterExit?()
+    }
+
+    func foldForMiniFilmstrip() {
+        guard showsFilmstrip else { return }
+        if filmPinned {
+            filmPinned = false
+            UserDefaults.standard.set(false, forKey: "timeline-film-pinned")
+        }
+        setFilmRevealed(false, force: true, previouslyVisible: true)
     }
     func revealPlaybackControls() { showControls() }
     func setFilmMode(_ mode: TimelineFilmMode, save: Bool = true) {
         guard effectiveFilmMode != mode else { return }
+        filmClickProjectionCenter = nil
         cancelMarkDrag()
         stopFilmTransition()
         cancelCutEdgeGesture()
@@ -387,16 +623,36 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     }
     func configureLens(seconds: Double, focus: Double, crop: Double, magnification: Double? = nil,
                        density: Double? = nil, save: Bool = true) {
+        filmClickProjectionCenter = nil
         stopFilmTransition()
         lensSeconds = seconds.isFinite ? min(30, max(0.1, seconds)) : 1
         lensFocus = focus.isFinite ? min(0.75, max(0.08, focus)) : 0.3
-        lensCrop = crop.isFinite ? min(1, max(0, crop)) : 0.7
+        let crop = crop.isFinite ? min(1, max(0, crop)) : 0.7
+        if lensCrop != crop {
+            lensCrop = crop
+            onThumbnailFitChange?(lensCrop, thumbnailStretch)
+        }
         if let magnification { lensMagnification = magnification.isFinite ? min(3.8, max(1, magnification)) : 2.75 }
         if let density {
             lensDensity = density.isFinite ? min(TimelineFilmLayout.maximumOutsideDensity, max(0.5, density)) : 2.75
         }
         if save { saveLensPreferences() }
         requestedTimes = []; updateDesiredImages(); needsDisplay = true
+    }
+    private func configureThumbnailStretch(_ value: Double) {
+        let value = min(1, max(0, value))
+        guard value != thumbnailStretch else { return }
+        thumbnailStretch = value
+        UserDefaults.standard.set(value, forKey: "timeline-thumbnail-stretch")
+        onThumbnailFitChange?(lensCrop, thumbnailStretch)
+        needsDisplay = true
+    }
+
+    func setMiniFilmSize(width: Double, height: Double) {
+        let size = CGSize(width: width, height: height)
+        guard size != miniFilmSize else { return }
+        miniFilmSize = size
+        (lensPopover.contentViewController as? TimelineLensControls)?.setMiniSize(width: width, height: height)
     }
     private func saveLensPreferences() {
         for (key, value) in [("timeline-lens-seconds", lensSeconds), ("timeline-lens-focus", lensFocus),
@@ -431,6 +687,9 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     }
     func updateTimeline(index: FrameIndex?, duration: Double, paused: Bool,
                         uprightSize: CGSize? = nil, geometry: DisplayGeometry = .identity, previewSettle: Double = 0.25) {
+        if !paused || self.duration != duration || self.index?.isExact != index?.isExact {
+            filmClickProjectionCenter = nil
+        }
         self.index = index
         filmSettle = max(0, previewSettle)
         pictureGeometry = geometry
@@ -445,6 +704,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     }
     func update(frameCount: Int, position: Int, cached: [ClosedRange<Int>], loopA: Int?, loopB: Int?,
                 marks: [ClosedRange<Int>] = [], leadIns: [ClosedRange<Int>] = [], openMark: Int? = nil, text: String) {
+        if position != self.position { filmClickProjectionCenter = nil }
         self.frameCount = frameCount; self.position = position; self.cached = cached
         if let transitionFrame, position != transitionFrame { stopFilmTransition() }
         self.loopA = loopA; self.loopB = loopB; self.marks = marks; self.leadIns = leadIns; self.openMark = openMark
@@ -452,31 +712,39 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         updateDesiredImages()
         if playbackVisible || wantsFilm { needsDisplay = true }
     }
-    /// Requested times have already been snapped to inexpensive keyframes, never decoded on this thread.
+    /// Bucket storyboard samples by time and ordinary video samples by their reusable keyframe.
     private func imageTime(_ seconds: Double) -> Double {
         if let cutTimeline, let location = cutTimeline.location(at: seconds) {
             let span = cutTimeline.spans[location.spanIndex]
             // A bucket can straddle a join. Keep its representative on the same side as its cell.
             return max(span.cutStart, min(span.cutEnd.nextDown, (seconds * 10).rounded() / 10))
         }
+        if samplesFilmstripByTime { return min(duration.nextDown, (seconds * 10).rounded() / 10) }
         guard let index, index.isExact else { return (seconds * 10).rounded() / 10 }
         return index.seconds(forFrame: index.keyframe(atOrBefore: index.frameNumber(forSeconds: seconds)))
     }
     private func updateDesiredImages() {
-        guard allowsVisibleFilmstripRequests, film.width > 0, virtualTime != nil || (index?.frameCount ?? 0) > 0 else {
+        guard allowsReadyFilmstripRequests, film.width > 0, virtualTime != nil || (index?.frameCount ?? 0) > 0 else {
             cancelFilmstripRequests(); return
         }
-        // Wheel transitions can animate toward an already selected sample. Read around its destination.
-        let layout = presentedFilmTime == nil ? filmLayout : makeFilmLayout(center: currentSeconds)
+        // Warm the final layout. A paused lens click can keep the original projection.
+        let layout = presentedFilmTime != nil && filmClickProjectionCenter == nil
+            ? makeFilmLayout(center: currentSeconds) : filmLayout
         var times: [Double] = []
-        // Centre first; requesting the same keyframe twice costs nothing and is removed here.
-        for cell in layout.cells.sorted(by: { abs($0.offset - layout.playheadOffset) < abs($1.offset - layout.playheadOffset) }) {
+        let playheadOffset = filmClickProjectionCenter == nil ? layout.playheadOffset : layout.lens.offset(for: currentSeconds)
+        for cell in layout.cells.sorted(by: { abs($0.offset - playheadOffset) < abs($1.offset - playheadOffset) }) {
             guard let seconds = cell.seconds else { continue }
             let key = imageTime(seconds)
             if !times.contains(key) { times.append(key) }
         }
         let missing = times.filter { images[$0] == nil }
-        guard missing != requestedTimes else { return }
+        if missing != requestedTimes, cutTimeline == nil, (isAnimatingFilmClick || filmSettle > 0),
+           missing != requestedReadyTimes,
+           let onReadyFilmstripRequest {
+            requestedReadyTimes = missing
+            onReadyFilmstripRequest(missing)
+        }
+        guard !isAnimatingFilmClick, missing != requestedTimes else { return }
         requestedTimes = missing
         // Keep the latest batch without postponing its deadline during playback or scrubbing.
         guard thumbnailDwell == nil else { return }
@@ -497,9 +765,11 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     private func cancelFilmstripRequests() {
         thumbnailDwell?.cancel(); thumbnailDwell = nil
         requestedTimes = []
+        requestedReadyTimes = []
         onFilmstripRequest?([])
     }
     func setFilmstripImage(_ image: CGImage, seconds: Double) {
+        navigationPictureCache = nil
         let thumbnail = NSImage(cgImage: image, size: .zero)
         images[seconds] = (thumbnail, image)
         if let span = cutTimeline?.location(at: seconds)?.spanIndex, cutPosters[span] == nil {
@@ -508,12 +778,16 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         imageOrder.removeAll { $0 == seconds }; imageOrder.append(seconds)
         // Two bounded screenfuls; decoder concurrency is still one.
         while imageOrder.count > TimelineFilmLayout.maximumCells * 2 { images[imageOrder.removeFirst()] = nil }
+        if !showsFilmstrip, let navigationJourney {
+            onNavigationPicturesChanged?(navigationProjection(near: navigationJourney.target))
+        }
         // A completion already in flight may arrive after folding. Keep it cached without waking the view.
         guard wantsFilm, !isHidden, alphaValue > 0.01,
               window?.occlusionState.contains(.visible) == true else { return }
         needsDisplay = true
-        // Paused video may have no subsequent input event to refresh AppKit's backing store.
-        if !isAnimatingFilmClick, !isHidden, alphaValue > 0.01, window != nil { displayIfNeeded() }
+        // Sprite tiles can arrive in quick succession. Let AppKit coalesce their invalidations.
+        // Ordinary paused video may have no subsequent input event to refresh its backing store.
+        if !samplesFilmstripByTime, !isAnimatingFilmClick, !isHidden, alphaValue > 0.01, window != nil { displayIfNeeded() }
     }
     func cachedSeekThumbnails(from origin: Double, to target: Double) -> [CGImage] {
         let low = min(origin, target), high = max(origin, target)
@@ -526,12 +800,94 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             return images[times[offset]]?.source
         }
     }
+
+    private struct NavigationSlot: Equatable {
+        let time: Double
+        let key: Double
+    }
+    private var navigationPictureCache: (slots: [NavigationSlot?], projection: NavigationRibbonView.Projection)?
+
+    private func navigationSamplePlan(near target: Double) -> (slots: [NavigationSlot?], fraction: Double, times: [Double?]) {
+        let position = max(0, min(target, duration.nextDown))
+        let stride = navigationScale.stride
+        let center = navigationSampleRadius
+        // The clip can pass the center of a partially visible edge cell. Keep one
+        // neighboring time on each side to interpolate that edge without loading another image.
+        let offsets = -(center + 1)...(center + 1)
+        let times: [Double?]
+        let slots: [NavigationSlot?]
+        if cutTimeline == nil, !samplesFilmstripByTime, let index, index.isExact,
+           index.frameCount > 0, index.keyframes.count != index.frameCount {
+            let keys = index.keyframes
+            let roundedFrame = index.frameNumber(forSeconds: position)
+            let frame = index.seconds(forFrame: roundedFrame) > position ? max(0, roundedFrame - 1) : roundedFrame
+            let ordinal = index.keyframeOffset(atOrBefore: frame)
+            let anchor = ordinal / stride * stride
+            times = offsets.map { offset in
+                let key = anchor + offset * stride
+                guard keys.indices.contains(key) else { return nil }
+                return index.seconds(forFrame: keys[key])
+            }
+            slots = times.dropFirst().dropLast().map { $0.map { NavigationSlot(time: $0, key: $0) } }
+        } else {
+            // A fixed cadence keeps the window stable through storyboard and cut updates.
+            let step = Double(stride)
+            let anchor = floor(position / step) * step
+            times = offsets.map { offset in
+                let time = anchor + Double(offset) * step
+                return time >= 0 && time < duration ? time : nil
+            }
+            slots = times.dropFirst().dropLast().map { $0.map { NavigationSlot(time: $0, key: imageTime($0)) } }
+        }
+        let lower = slots[center]?.time ?? position
+        let upper = slots[center + 1]?.time ?? duration
+        let fraction = upper > lower ? min(1, max(0, (position - lower) / (upper - lower))) : 0
+        return (slots, fraction, times)
+    }
+
+    func navigationProjection(near target: Double) -> NavigationRibbonView.Projection {
+        let (slots, fraction, times) = navigationSamplePlan(near: target)
+        if let cached = navigationPictureCache, cached.slots == slots, cached.projection.sampleTimes == times {
+            var projection = cached.projection
+            projection.fraction = fraction
+            return projection
+        }
+        let pictures = slots.enumerated().map { (index, slot) -> NSImage? in
+            guard let slot else { return nil }
+            if let picture = images[slot.key]?.picture { return picture }
+
+            // Keep a ready fallback within this cell's time interval and on its side of a cut.
+            let previous = index > 0 ? slots[index - 1]?.time : nil
+            let next = index + 1 < slots.count ? slots[index + 1]?.time : nil
+            let start = previous.map { ($0 + slot.time) / 2 } ?? max(0, slot.time - 0.5)
+            let end = next.map { (slot.time + $0) / 2 } ?? min(duration, slot.time + 0.5)
+            let span = cutTimeline?.location(at: slot.time)?.spanIndex
+            var nearest: Double?
+            for cached in images.keys where cached >= start && cached < end {
+                guard span == cutTimeline?.location(at: cached)?.spanIndex else { continue }
+                if let best = nearest, (abs(best - slot.time), best) <= (abs(cached - slot.time), cached) { continue }
+                nearest = cached
+            }
+            if let nearest { return images[nearest]?.picture }
+            return span.flatMap { cutPosters[$0] }
+        }
+        let projection = NavigationRibbonView.Projection(pictures: pictures, fraction: fraction,
+                                                         missingTimes: missingNavigationPictures(in: slots),
+                                                         placeholderIndices: Set(slots.indices.filter { slots[$0] != nil && pictures[$0] == nil }),
+                                                         sampleTimes: times)
+        navigationPictureCache = (slots, projection)
+        return projection
+    }
+
     func resetFilmstrip() {
+        finishFold()
+        navigationPictureCache = nil
+        filmClickProjectionCenter = nil
         cancelCutEdgeGesture()
         cancelMarkDrag()
         stopFilmTransition()
         thumbnailDwell?.cancel(); thumbnailDwell = nil
-        images.removeAll(); imageOrder.removeAll(); requestedTimes = []
+        images.removeAll(); imageOrder.removeAll(); requestedTimes = []; requestedReadyTimes = []
         cutPosters.removeAll(); cutPosterOrder.removeAll()
         drag = nil; overviewDrag = false
         clearHover()
@@ -542,8 +898,10 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
 
     func setCutPoster(_ image: CGImage, span: Int) {
         guard cutPosters[span] == nil else { return }
+        navigationPictureCache = nil
         storeCutPoster(NSImage(cgImage: image, size: .zero), span: span)
         if showsFilmstrip { needsDisplay = true }
+        else if let navigationJourney { onNavigationPicturesChanged?(navigationProjection(near: navigationJourney.target)) }
     }
 
     private func storeCutPoster(_ image: NSImage, span: Int) {
@@ -559,6 +917,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         updateDesiredImages()
     }
     func cancelInteraction() {
+        filmClickProjectionCenter = nil
         cancelCutEdgeGesture()
         cancelMarkDrag()
         stopFilmTransition()
@@ -572,6 +931,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
     }
     func refreshVisibility() {
         if window?.occlusionState.contains(.visible) != true || alphaValue <= 0.01 {
+            finishFold()
             cancelCutEdgeGesture()
             cancelMarkDrag()
             stopFilmTransition()
@@ -584,38 +944,48 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             ?? Double(frame) / Double(max(frameCount - 1, 1))
         return track.minX + track.width * CGFloat(min(1, max(0, fraction)))
     }
-    override func draw(_ dirtyRect: NSRect) {
+    private func drawSurface() {
         guard wantsFilm || playbackVisible else { return }
-        NSColor(white: 0, alpha: 0.58).setFill()
-        let height = wantsFilm ? visibleFilmHeight : timeline.maxY
-        let plate = NSRect(x: 0, y: 0, width: bounds.width, height: height)
-        NSBezierPath(roundedRect: plate, xRadius: 8, yRadius: 8).fill()
+        if !wantsFilm {
+            NSColor(white: 0, alpha: 0.58).setFill()
+            let plate = NSRect(x: 0, y: 0, width: bounds.width, height: timeline.maxY)
+            NSBezierPath(roundedRect: plate, xRadius: 8, yRadius: 8).fill()
+        }
         if wantsFilm, duration > 0 { drawFilm() }
         if playbackVisible { drawAnalysisTimeline() }
-        guard playbackVisible || (timelineStatus != nil && wantsFilm) else { return }
-        if !wantsFilm { drawPositionRanges(in: track) }
         let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
                                                   .foregroundColor: NSColor(white: 1, alpha: 0.84)]
-        let time = (timelineStatus ?? compactTime(currentSeconds)) as NSString
+        if wantsFilm {
+            drawFilmDetails(attributes: attrs)
+            return
+        }
+        guard playbackVisible else { return }
+        drawPositionRanges(in: track)
+        let text = if cutTimeline != nil, let timelineStatus {
+            "\(timelineStatus) · \(TimelinePositionText.position(currentSeconds, duration: duration))"
+        } else { timelineStatus ?? compactTime(currentSeconds) }
+        let time = text as NSString
         let labelSize = time.size(withAttributes: attrs)
-        var timeX = bounds.midX
-        if wantsFilm {
-            let clearance = 12 + labelSize.width / 2
-            timeX = compactFilmControls
-                ? min(timeX, modeControl.frame.minX - clearance)
-                : max(timeX, modeControl.frame.maxX + clearance)
-        }
-        let labelOrigin = NSPoint(x: timeX - labelSize.width / 2, y: timelineBottom + (wantsFilm ? 12 : 14))
-        if wantsFilm {
-            let badge = NSRect(origin: labelOrigin, size: labelSize).insetBy(dx: -6, dy: -2)
-            NSColor(white: 0, alpha: 0.72).setFill()
-            NSBezierPath(roundedRect: badge, xRadius: 5, yRadius: 5).fill()
-        }
-        time.draw(at: labelOrigin, withAttributes: attrs)
-        guard !wantsFilm else { return }
+        time.draw(at: NSPoint(x: bounds.midX - labelSize.width / 2, y: timelineBottom + 14), withAttributes: attrs)
         ("0:00" as NSString).draw(at: NSPoint(x: 12, y: timelineBottom + 14), withAttributes: attrs)
         let end = compactTime(duration) as NSString
         end.draw(at: NSPoint(x: bounds.width - 12 - end.size(withAttributes: attrs).width, y: timelineBottom + 14), withAttributes: attrs)
+    }
+
+    private func drawFilmDetails(attributes: [NSAttributedString.Key: Any]) {
+        let left = compactFilmControls ? film.minX : modeControl.frame.maxX + 10
+        let right = compactFilmControls ? transport.frame.minX - 10 : film.maxX
+        guard right > left else { return }
+        if let candidate = timelineStatus, !candidate.isEmpty {
+            let text = candidate as NSString
+            let size = text.size(withAttributes: attributes)
+            if size.width <= right - left {
+                let origin = NSPoint(x: left, y: timelineBottom + 13)
+                let badge = NSRect(origin: origin, size: size).insetBy(dx: -5, dy: -2)
+                TimelineGlass.drawChip(in: badge)
+                text.draw(at: origin, withAttributes: attributes)
+            }
+        }
     }
 
     private func drawAnalysisTimeline() {
@@ -655,27 +1025,94 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             context.fillPath()
         }
     }
+    private func drawFilmPictures() {
+        guard duration > 0, wantsFilm || collapsingFilm != nil else { return }
+        let layout = collapsingFilm?.layout ?? cutEdgeGesture?.layout ?? filmLayout
+        let rect = collapsingFilm?.rect ?? film
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: rect).addClip()
+        if let outgoingFilm, collapsingFilm == nil {
+            drawFilmContent(layout, in: rect, opacity: 1 - outgoingFilm.opacity)
+            drawFilmContent(outgoingFilm.layout, in: rect, opacity: outgoingFilm.opacity)
+        } else {
+            drawFilmContent(layout, in: rect)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     private func drawFilm() {
         let layout = cutEdgeGesture?.layout ?? filmLayout
+        let markers = cutMarkers(in: layout)
         NSGraphicsContext.saveGraphicsState()
         NSBezierPath(rect: film).addClip()
-        if let outgoingFilm {
-            drawFilmContent(layout, opacity: 1 - outgoingFilm.opacity)
-            drawFilmContent(outgoingFilm.layout, opacity: outgoingFilm.opacity)
-        } else {
-            drawFilmContent(layout)
-        }
         drawMarkHandles(layout)
-        drawCutMarkers(in: layout)
+        drawCutMarkers(markers)
         drawCutEdges(in: layout)
         NSGraphicsContext.restoreGraphicsState()
+        let progress = NSRect(x: track.minX, y: 1.5, width: track.width, height: 2.5)
+        NavigationJourney.drawProgress(in: progress, time: currentSeconds, duration: duration,
+                                       origin: navigationJourney?.origin, hover: overviewHoverFraction)
         let head = filmHead(in: layout)
-        if previewFrame != nil, let point = filmPointer {
-            let cursorX = min(film.maxX - 1, max(film.minX + 1, point.x)).rounded()
-            drawFilmCursor(at: cursorX, overPlayhead: abs(cursorX - head) <= 3)
+        if cutEdges == nil, !isDraggingMark {
+            FilmstripRuler.draw(in: film, projection: layout.lens, around: filmDisplayTime, avoiding: markers.map(\.rect))
         }
+        if let cursorX = filmCursorX, abs(cursorX - head) > 3 {
+            drawFilmCursor(at: cursorX)
+        }
+        FilmstripPlayhead.draw(x: head, bottom: film.minY, top: film.maxY)
+        drawFilmReadouts(in: layout, head: head)
     }
-    private func drawFilmContent(_ layout: TimelineFilmLayout, opacity: CGFloat = 1) {
+
+    private func drawFilmReadouts(in layout: TimelineFilmLayout, head: CGFloat) {
+        let y = cutEdges == nil ? film.minY + 3 : film.minY + 13
+        let row = NSRect(x: film.minX, y: y, width: film.width, height: film.maxY - y)
+        guard let readout = FilmstripReadout(time: currentSeconds, duration: duration, anchor: head, in: row),
+              readout.timeRect.height + 1 <= row.height else { return }
+        let target: (text: String, x: CGFloat)?
+        if let fraction = overviewHoverFraction {
+            target = ("File · \(TimelinePositionText.clock(fraction * duration))", film.minX + film.width * fraction)
+        } else if let point = filmPointer, let cursor = filmCursorX, abs(head - cursor) > 3 {
+            target = (TimelinePositionText.clock(filmTarget(at: point.x, in: layout)), cursor)
+        } else {
+            target = nil
+        }
+        var hover: NSRect?
+        if let target {
+            let text = NSAttributedString(string: target.text, attributes: FilmstripReadout.timeStyle)
+            let width = text.size().width + 10
+            let current = readout.timeRect.insetBy(dx: -10, dy: 0)
+            let x = min(row.maxX - width, max(row.minX, target.x - width / 2))
+            var positions = [x]
+            if overviewHoverFraction != nil {
+                positions.append(contentsOf: [current.minX - width, current.maxX].sorted {
+                    abs($0 - x) < abs($1 - x)
+                })
+            }
+            if let x = positions.first(where: {
+                $0 >= row.minX && $0 + width <= row.maxX && ($0 + width <= current.minX || $0 >= current.maxX)
+            }) {
+                let plate = NSRect(x: x, y: y - 1, width: width, height: text.size().height + 2)
+                TimelineGlass.drawChip(in: plate)
+                text.draw(at: NSPoint(x: x + 5, y: y))
+                hover = plate
+            }
+        }
+        var frames: [String] = []
+        if cutTimeline == nil, frameCount > 0 {
+            let current = position.formatted()
+            let last = (frameCount - 1).formatted()
+            frames = ["Frame \(current) / \(index?.isExact == true ? "" : "≈")\(last)", "Fr \(current)"]
+        }
+        readout.draw(in: row, frames: frames, journey: navigationJourney, avoiding: hover)
+    }
+
+    /// The seek target is visible even while the optional hover preview is unavailable.
+    var filmCursorX: CGFloat? {
+        guard wantsFilm, let point = filmPointer else { return nil }
+        return min(film.maxX - 1, max(film.minX + 1, point.x)).rounded()
+    }
+
+    private func drawFilmContent(_ layout: TimelineFilmLayout, in film: NSRect, opacity: CGFloat = 1) {
         guard opacity > 0, let context = NSGraphicsContext.current?.cgContext else { return }
         if opacity < 1 {
             context.saveGState()
@@ -686,12 +1123,11 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             guard let seconds = cell.seconds else { continue }
             let rect = NSRect(x: film.midX + CGFloat(cell.offset - cell.width / 2 + filmStretch), y: film.minY,
                               width: max(0, CGFloat(cell.width) - 2), height: film.height)
-            NSColor(white: 1, alpha: 0.06).setFill()
-            NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3).fill()
+            FilmstripThumbnail.drawBackground(in: rect)
             let span = cutTimeline?.location(at: seconds)?.spanIndex
             if let image = images[imageTime(seconds)]?.picture ?? span.flatMap({ cutPosters[$0] }) {
-                FilmstripThumbnail.draw(image, geometry: pictureGeometry, in: rect, opacity: 0.85,
-                                            cropToFill: cell.cropped, cropAmount: cell.cropAmount)
+                FilmstripThumbnail.draw(image, geometry: pictureGeometry, in: rect, opacity: 1,
+                                        cropSides: cell.cropped, cropAmount: cell.cropAmount, stretch: thumbnailStretch)
             }
         }
         let filmX: (Double) -> CGFloat = { self.film.midX + CGFloat(layout.lens.offset(for: $0)) }
@@ -700,20 +1136,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             let edge = NSRect(x: film.minX, y: film.minY, width: film.width, height: 2)
             drawPositionRanges(in: edge, projection: layout.lens)
         }
-        let head = filmHead(in: layout)
-        NSColor(white: 0.10, alpha: 1).setFill()
-        NSRect(x: head - 4, y: film.minY, width: 8, height: film.height).fill()
-        NSColor.white.setFill()
-        NSRect(x: head - 2, y: film.minY, width: 4, height: film.height).fill()
         if opacity < 1 {
             context.endTransparencyLayer()
             context.restoreGState()
         }
     }
     private func filmHead(in layout: TimelineFilmLayout) -> CGFloat {
-        let offset = isDraggingMark ? layout.lens.offset(for: currentSeconds) : layout.playheadOffset
+        let time = isDraggingMark ? currentSeconds : filmDisplayTime
+        let offset = isDraggingMark || filmClickProjectionCenter != nil ? layout.lens.offset(for: time) : layout.playheadOffset
         return min(film.maxX - 1, max(film.minX + 1, film.midX + CGFloat(offset))).rounded()
     }
+    var filmPlayheadX: CGFloat { filmHead(in: cutEdgeGesture?.layout ?? filmLayout) }
 
     private func markHandles(in layout: TimelineFilmLayout) -> [(handle: MarkEdgeHandle, rect: NSRect)] {
         guard onMarkDragBegin != nil, let index else { return [] }
@@ -751,7 +1184,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             NSColor(white: 0, alpha: 0.85).setFill()
             NSBezierPath(roundedRect: rect.insetBy(dx: -2, dy: -2), xRadius: 3, yRadius: 3).fill()
             FilmstripThumbnail.draw(reference, geometry: pictureGeometry, in: rect, opacity: 1,
-                                    cropToFill: false, cropAmount: 0)
+                                    cropSides: false, cropAmount: 0)
             let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 9, weight: .medium),
                                                         .foregroundColor: NSColor.white]
             let text = "Original" as NSString
@@ -871,12 +1304,13 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         return (convert(pressed, to: nil), convert(dragged, to: nil))
     }
 
-    private func drawCutMarkers(in layout: TimelineFilmLayout) {
+    private func drawCutMarkers(_ markers: [(span: Int, rect: NSRect)]) {
+        guard !markers.isEmpty else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
             .foregroundColor: NSColor.white
         ]
-        for (span, rect) in cutMarkers(in: layout) {
+        for (span, rect) in markers {
             NSColor(white: 0.07, alpha: 0.9).setFill()
             NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
             let title = String(span + 1) as NSString
@@ -884,24 +1318,12 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             title.draw(at: NSPoint(x: rect.midX - size.width / 2, y: rect.midY - size.height / 2), withAttributes: attributes)
         }
     }
-    private func drawFilmCursor(at x: CGFloat, overPlayhead: Bool) {
-        let top = film.maxY
-        let cursor = NSBezierPath()
-        cursor.move(to: NSPoint(x: x - 5, y: top + 7))
-        cursor.line(to: NSPoint(x: x + 5, y: top + 7))
-        cursor.line(to: NSPoint(x: x + 1, y: top))
-        if !overPlayhead {
-            cursor.line(to: NSPoint(x: x + 1, y: film.minY + 1))
-            cursor.line(to: NSPoint(x: x - 1, y: film.minY + 1))
-        }
-        cursor.line(to: NSPoint(x: x - 1, y: top))
-        cursor.close()
-        cursor.lineWidth = 2
-        cursor.lineJoinStyle = .round
-        NSColor(white: 0, alpha: 0.85).setStroke()
-        cursor.stroke()
-        NSColor(srgbRed: 0.46, green: 0.85, blue: 1, alpha: 1).setFill()
-        cursor.fill()
+    private func drawFilmCursor(at x: CGFloat) {
+        let line = NSRect(x: x - 0.5, y: film.minY + 1, width: 1, height: max(0, film.height - 2))
+        NSColor(white: 0, alpha: 0.8).setFill()
+        line.insetBy(dx: -0.5, dy: 0).fill()
+        NSColor(white: 1, alpha: 0.78).setFill()
+        line.fill()
     }
     private func compactTime(_ seconds: Double) -> String {
         let value = Int(max(0, seconds.isFinite ? seconds : 0))
@@ -1016,8 +1438,8 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         scheduleControlHide(); onEnterExit?(); needsDisplay = true
     }
     private func clearHover() {
-        let hadTarget = hovering || filmPointer != nil
-        hovering = false; filmHover = nil
+        let hadTarget = hovering || filmPointer != nil || overviewHoverFraction != nil
+        hovering = false; filmPointer = nil; overviewHoverFraction = nil
         if hadTarget { onHover?(nil); needsDisplay = true }
     }
     private func filmTarget(at x: CGFloat, in layout: TimelineFilmLayout) -> Double {
@@ -1031,14 +1453,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             clearHover()
             return
         }
-        hovering = !wantsFilm
-        if wantsFilm {
+        hovering = !wantsFilm || point.y < film.minY
+        overviewHoverFraction = nil
+        if wantsFilm, point.y >= film.minY {
             let seconds = filmTarget(at: point.x, in: filmLayout)
-            filmHover = (point, seconds)
+            filmPointer = point
             onHover?(seconds / duration)
         } else {
-            filmHover = nil
-            onHover?(fraction(point.x))
+            filmPointer = nil
+            let fraction = fraction(point.x)
+            if wantsFilm { overviewHoverFraction = fraction }
+            onHover?(fraction)
         }
         needsDisplay = true
     }
@@ -1055,6 +1480,17 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         if isOverAnalysisRow(point) {
             clearHover()
             if let fragment = analysisFragment(at: point) { onAnalysisFragment?(fragment) }
+            return
+        }
+        if wantsFilm, point.y < film.minY {
+            clearHover()
+            onFilmPress?()
+            stopFilmTransition()
+            cancelFilmScroll()
+            showControls()
+            overviewDrag = true
+            overviewMoved = false
+            onSeek?(fraction(point.x))
             return
         }
         if wantsFilm, let cutEdges, point.y < film.minY + 12,
@@ -1093,12 +1529,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 clearHover()
                 return
             }
-            // Playback can move the lens between hover and click. Keep the destination we showed.
-            if let filmHover, filmHover.point.x == point.x {
-                pressedFilmTime = filmHover.seconds
-            } else {
-                pressedFilmTime = filmTarget(at: point.x, in: clickedLayout)
-            }
+            pressedFilmTarget = (filmTarget(at: point.x, in: clickedLayout), clickedLayout.lens.center)
             let last = cutTimeline == nil ? index?.seconds(forFrame: max(0, frameCount - 1)) ?? duration : duration
             let markSeconds = index.map { index in
                 (marks.flatMap { [$0.lowerBound, $0.upperBound] } + [openMark].compactMap { $0 })
@@ -1117,7 +1548,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             overviewDrag = true; overviewMoved = false; onSeek?(fraction(point.x))
         }
     }
-    private var pressedFilmTime: Double = 0
+    private var pressedFilmTarget = (seconds: 0.0, projectionCenter: 0.0)
     override func mouseDragged(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         if var gesture = cutEdgeGesture {
@@ -1176,16 +1607,22 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             finishMarkDrag(commit: true)
             if !markDrag.started, let index { onFilmSeek?(index.seconds(forFrame: markDrag.handle.frame)) }
         } else if let drag, !drag.hasMoved, cutTimeline != nil {
-            onFilmSeek?(pressedFilmTime)
+            onFilmSeek?(pressedFilmTarget.seconds)
         } else if let drag, !drag.hasMoved {
             let origin = filmLayout
+            let originTime = filmDisplayTime
+            let target = pressedFilmTarget
             stopFilmTransition()
             if previewsSeekFrames, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, let onFilmClickPreview {
-                onFilmClickPreview(pressedFilmTime)
+                onFilmClickPreview(target.seconds)
             } else {
-                onFilmSeek?(pressedFilmTime)
+                onFilmSeek?(target.seconds)
             }
-            animateFilmClick(from: origin)
+            // Keep the pointer-down scale while paused at the clicked frame, so refocusing cannot move the head.
+            if paused, effectiveFilmMode == .lens, index?.frameNumber(forSeconds: target.seconds) == position {
+                filmClickProjectionCenter = target.projectionCenter
+            }
+            animateFilmClick(from: origin, time: originTime)
         } else if let drag, allowsFilmDragMotion {
             finishFilmDrag(drag, timestamp: event.timestamp)
         }
@@ -1244,12 +1681,15 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
 
     /// A controller's relative movement in timeline points, using exactly the horizontal trackpad's local scale.
     /// Keep subframe target time between pulses even when the displayed playhead has rounded to a frame.
-    func scrollFilm(by points: Double) {
+    var isScrollingFoldedFilm: Bool { scrolling && !showsFilmstrip }
+
+    func scrollFilm(by points: Double, reveal: Bool = true) {
         guard duration > 0, points.isFinite, points != 0 else { return }
         if horizontalFilmScroll { cancelFilmScroll() }
         hideFilmWork?.cancel(); hideFilmWork = nil
-        if !showsFilmstrip { setFilmRevealed(true) }
-        scrolling = true; scrollRest?.cancel(); showControls()
+        if reveal, !showsFilmstrip { setFilmRevealed(true) }
+        scrolling = true; scrollRest?.cancel()
+        if showsFilmstrip { showControls() }
         if !scrollHasSought { scrollHasSought = true; onFilmScrubBegan?() }
         clearHover()
         moveFilm(by: points)
@@ -1281,6 +1721,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
 
     override func scrollWheel(with event: NSEvent) {
         guard cutEdgeGesture == nil, markDrag == nil else { return }
+        if transport.handleVolumeScroll(event) { return }
         let point = convert(event.locationInWindow, from: nil)
         let continuingMomentum = horizontalFilmScroll && !event.momentumPhase.isEmpty
         if wantsFilm, duration > 0, continuingMomentum || (seekArea.contains(point) && !isOverControls(point)) {
@@ -1351,18 +1792,21 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             onEnterExit?()
         } else { onScroll?(event) }
     }
-    private func animateFilmClick(from origin: TimelineFilmLayout) {
+    private func animateFilmClick(from origin: TimelineFilmLayout, time: Double) {
         guard animatesFilmClicks, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-              wantsFilm, abs(currentSeconds - origin.lens.center) > 1e-9 else { return }
-        let motion = TimelineClickMotion(from: origin.lens.center, arrival: filmLayout.lens,
+              wantsFilm, abs(currentSeconds - time) > 1e-9 else { return }
+        let keepsProjection = filmClickProjectionCenter != nil
+        let arrival = keepsProjection ? makeFilmLayout(center: currentSeconds) : filmLayout
+        cancelFilmstripRequests()
+        let motion = TimelineClickMotion(from: time, arrival: arrival.lens,
                                          durationScale: filmSeekPreviewSettings.motionScale)
         let start = motion.sample(elapsed: 0, target: currentSeconds)
         presentedFilmTime = start.center
-        if start.outgoingOpacity > 0 { outgoingFilm = (origin, CGFloat(start.outgoingOpacity)) }
+        if !keepsProjection, start.outgoingOpacity > 0 { outgoingFilm = (origin, CGFloat(start.outgoingOpacity)) }
         startFilmTransition(duration: motion.duration) { view, elapsed in
             let sample = motion.sample(elapsed: elapsed, target: view.currentSeconds)
             view.presentedFilmTime = sample.center
-            view.outgoingFilm = sample.outgoingOpacity > 0 ? (origin, CGFloat(sample.outgoingOpacity)) : nil
+            view.outgoingFilm = !keepsProjection && sample.outgoingOpacity > 0 ? (origin, CGFloat(sample.outgoingOpacity)) : nil
         }
     }
 
@@ -1458,7 +1902,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         menu.addItem(.separator())
         let inertia = NSMenuItem(title: "Inertial Filmstrip Motion", action: #selector(toggleFilmClickInertia), keyEquivalent: "")
         inertia.target = self; inertia.state = animatesFilmClicks ? .on : .off; menu.addItem(inertia)
-        let pin = NSMenuItem(title: "Pin Filmstrip (⌥⌘L)", action: #selector(pinFilm), keyEquivalent: "")
+        let pin = NSMenuItem(title: "Pin Filmstrip (⇧⌘L)", action: #selector(pinFilm), keyEquivalent: "")
         pin.target = self; pin.state = filmPinned ? .on : .off; menu.addItem(pin)
         let hide = NSMenuItem(title: "Fold Filmstrip (⌘L)", action: #selector(foldFilm), keyEquivalent: "")
         hide.target = self; menu.addItem(hide)
@@ -1480,10 +1924,22 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         updateDesiredImages(); scheduleControlHide(); onEnterExit?()
     }
     @objc private func showLensControls() {
-        if lensPopover.isShown { lensPopover.performClose(nil); return }
+        presentLensControls(relativeTo: self, compact: false)
+    }
+
+    @discardableResult func showMiniLensControls(relativeTo anchor: NSView) -> Bool {
+        presentLensControls(relativeTo: anchor, compact: true)
+    }
+
+    func closeMiniLensControls() {
+        if miniLensPopover { lensPopover.performClose(nil) }
+    }
+
+    @discardableResult private func presentLensControls(relativeTo anchor: NSView, compact: Bool) -> Bool {
+        if lensPopover.isShown { lensPopover.performClose(nil); return false }
         clearHover()
         stopFilmTransition()
-        if filmstripEnabled { setFilmRevealed(true) }
+        if !compact, filmstripEnabled { setFilmRevealed(true) }
         let panel: TimelineLensControls
         if let existing = lensPopover.contentViewController as? TimelineLensControls { panel = existing }
         else {
@@ -1492,6 +1948,15 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
                 self?.configureLens(seconds: seconds, focus: focus, crop: crop, magnification: magnification, density: density)
             }
             panel.onHeightChange = { [weak self] in self?.configureFilmHeight($0) }
+            panel.onStretchChange = { [weak self] in self?.configureThumbnailStretch($0) }
+            panel.onMiniSizeChange = { [weak self] width, height in self?.onMiniFilmSizeChange?(width, height) }
+            panel.onContentSizeChange = { [weak self] size in
+                guard let self else { return }
+                lensPopover.contentSize = size
+                if lensPopover.isShown {
+                    DispatchQueue.main.async { [weak self] in self?.syncLensPopoverSize() }
+                }
+            }
             panel.onFramePreviewChange = { [weak self] enabled in
                 self?.previewsSeekFrames = enabled
                 UserDefaults.standard.set(enabled, forKey: "timeline-click-preview-frames")
@@ -1509,18 +1974,34 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             lensPopover.behavior = .transient; lensPopover.delegate = self
         }
         panel.setValues(seconds: lensSeconds, focus: lensFocus, crop: lensCrop,
-                        magnification: lensMagnification, density: lensDensity, mode: effectiveFilmMode, height: Double(stripHeight))
+                        magnification: lensMagnification, density: lensDensity, mode: effectiveFilmMode,
+                        height: Double(stripHeight), stretch: thumbnailStretch)
+        panel.setMiniSize(width: miniFilmSize.width, height: miniFilmSize.height)
+        panel.showMiniSection(compact)
         panel.previewsSeekFrames = previewsSeekFrames
         panel.previewSettings = filmSeekPreviewSettings
         panel.animatesFilmstrip = animatesFilmClicks
-        lensPopover.show(relativeTo: NSRect(x: bounds.midX - 1, y: film.minY, width: 2, height: visibleFilmHeight),
-                         of: self, preferredEdge: .maxY)
+        let source = compact ? anchor.bounds : NSRect(x: bounds.midX - 1, y: film.minY, width: 2, height: film.height)
+        miniLensPopover = compact
+        lensPopover.show(relativeTo: source, of: anchor, preferredEdge: .maxY)
+        return lensPopover.isShown
     }
+
+    private func syncLensPopoverSize() {
+        guard lensPopover.isShown, let panel = lensPopover.contentViewController as? TimelineLensControls else { return }
+        // AppKit can restore the previous popover size while it mounts the retained content view.
+        lensPopover.contentSize = panel.preferredContentSize
+        panel.scrollToTop()
+    }
+
+    func popoverDidShow(_ notification: Notification) { syncLensPopoverSize() }
     @objc private func selectFilmMode(_ item: NSMenuItem) {
         if let mode = TimelineFilmMode(rawValue: item.tag) { setFilmMode(mode) }
     }
     func popoverDidClose(_ notification: Notification) {
+        miniLensPopover = false
         saveLensPreferences()
+        onLensPopoverClosed?()
         updateFilmPointer(window?.mouseLocationOutsideOfEventStream)
         updateDesiredImages(); scheduleControlHide(); onEnterExit?()
     }
@@ -1528,6 +2009,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
         applyFilmHeight(CGFloat(item.tag), save: true)
     }
     private func applyFilmHeight(_ height: CGFloat, save: Bool) {
+        filmClickProjectionCenter = nil
         stopFilmTransition()
         clearHover()
         stripHeight = height
@@ -1538,6 +2020,7 @@ final class SeekBarView: NSView, NSMenuDelegate, NSPopoverDelegate {
             filmRevealed = false; filmPinned = false
             UserDefaults.standard.set(false, forKey: "timeline-film-pinned")
         }
+        onFilmVisibilityChange?(showsFilmstrip)
         onHeightChange?(preferredHeight); requestedTimes = []; needsLayout = true; needsDisplay = true
     }
     @objc private func pinFilm() { toggleFilmPin() }

@@ -104,16 +104,17 @@ import Testing
         stats.bytesFromFile = 734_000_000
         stats.requests = 10
         stats.hits = 4
+        stats.waits = 7
         stats.bytesPerSecond = 25_000_000
         stats.cacheEnabled = true
         let readLine = stats.text
-        #expect(readLine == "Read: 734 MB from file, cache hits 40%, 25 MB/s")
+        #expect(readLine == "Read: 734 MB from file, cache hits 40%, 7 waits, 25 MB/s")
         var p = player()
         p.readCache = readLine
         let scenes = "Scenes: 42 keyframes seen, 7 cuts, 3 GOPs checked · threshold 45"
         let pic = PictureStats(scaler: "MetalFX", skippedFrames: 0, aspect: "Aspect: Original 1.78:1", colour: "Colour: off", sceneSearch: scenes)
         let sections = StatsContent.sections(player: p, file: nil, picture: pic, stash: nil)
-        #expect(rows(sections, "Diagnostics")["Read cache"] == "734 MB from file, cache hits 40%, 25 MB/s")
+        #expect(rows(sections, "Diagnostics")["Read cache"] == "734 MB from file, cache hits 40%, 7 waits, 25 MB/s")
         #expect(rows(sections, "Picture")["Scene search"] == "42 keyframes seen, 7 cuts, 3 GOPs checked · threshold 45")
         #expect(rows(sections, "Diagnostics")["Read"] == nil && rows(sections, "Picture")["Scenes"] == nil)
     }

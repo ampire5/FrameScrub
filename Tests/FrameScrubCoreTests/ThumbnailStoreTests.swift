@@ -112,4 +112,16 @@ import Testing
         let relaunched = ThumbnailStore(directory: dir, encoding: .init(format: .heic, quality: 0.8))
         #expect(relaunched.has(url) && relaunched.image(for: url) != nil)
     }
+
+    @Test func aGeneratedPictureCanRepairAnUndecodableEntry() throws {
+        let dir = makeTemporaryDirectory(), url = try video()
+        let store = ThumbnailStore(directory: dir, encoding: .standard)
+        let catalog = MediaCatalog(url: dir.appendingPathComponent("catalog.sqlite"))
+        let identity = try #require(MediaFileIdentity.read(url))
+        let variant = "\(dir.lastPathComponent)-\(Int(store.maxSide))-v3-jpeg-q80"
+        try catalog.putImage(Data([0]), identity: identity, variant: variant, limit: store.limit)
+        #expect(store.image(for: url) == nil)
+        #expect(store.save(picture(64, 36), for: url, context: context, onlyIfMissing: true) != nil)
+        #expect(store.image(for: url)?.width == 64)
+    }
 }

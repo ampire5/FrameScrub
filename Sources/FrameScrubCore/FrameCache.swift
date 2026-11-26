@@ -13,23 +13,32 @@ public final class FrameCache: @unchecked Sendable {
     private var demotions = 0
     private var promotions = 0
     private var packed: [Int: PackedNV12Frame] = [:]
-    private var packable = Set<Int>()
+    private var residentRanges: [ClosedRange<Int>]?
+    private var packDistances: [Int: Int] = [:]
     private var packingDirty = false
+    private var exactClip: (frames: Int, fillRatio: Double)?
+    private var largestDecodedFrameBytes = 0
     private let packsNV12: Bool
     private let packingQueue = DispatchQueue(label: "framescrub.cache.pack", qos: .utility)
     private let restoringQueue = DispatchQueue(label: "framescrub.cache.restore", qos: .userInitiated)
     private var packingScheduled = false
     private var restoringScheduled = false
     private var tierObserver: (@Sendable (Int, Bool) -> Void)?
+    private var budgetObserver: (@Sendable () -> Void)?
     // Four nearby ready samples halved restore CPU in the NV12 display bench. Use
     // two on each side of the focus and leave a margin before demoting on a reversal.
     private static let readyRadius = 2
     private static let packDistance = 2 * readyRadius + 1
+    // 4K60 Bosphorus, 256 MiB on M4 Max: doubling the distance only for
+    // restored frames saved 4–7% of one core without losing a requested frame.
+    // See docs/bench/live-scrub-cache.md.
+    private static let restoredPackDistance = 2 * packDistance
     private var undecodable = Set<Int>()
     private var budget: Int
     private var used = 0
     private var focus = 0
     private var backShare = 0.6
+    private var keepsForwardFramesReady = false
 
     public init(budgetBytes: Int, packsNV12: Bool = false) {
         budget = budgetBytes
@@ -38,10 +47,19 @@ public final class FrameCache: @unchecked Sendable {
 
     /// The observer runs after publication and outside the cache lock. It wakes the
     /// filler to expand its plan, retry a failed restore, or deliver a ready frame.
-    func observeTierChanges(_ observer: (@Sendable (Int, Bool) -> Void)?) {
+    func observeTierChanges(budgetChanged: (@Sendable () -> Void)? = nil, _ observer: (@Sendable (Int, Bool) -> Void)?) {
         lock.withLock {
             generation += 1
             tierObserver = observer
+            budgetObserver = budgetChanged
+            packingDirty = true
+            scheduleMigrationLocked()
+        }
+    }
+
+    func setPackingClipFrameCount(_ count: Int?, fillRatio: Double) {
+        lock.withLock {
+            exactClip = count.map { ($0, fillRatio) }
             packingDirty = true
             scheduleMigrationLocked()
         }
@@ -49,7 +67,17 @@ public final class FrameCache: @unchecked Sendable {
 
     public var budgetBytes: Int {
         get { lock.withLock { budget } }
-        set { lock.withLock { budget = newValue; evictLocked(); scheduleMigrationLocked() } }
+        set {
+            let notify = lock.withLock { () -> (@Sendable () -> Void)? in
+                guard budget != newValue else { return nil }
+                packingDirty = true
+                budget = newValue
+                evictLocked()
+                scheduleMigrationLocked()
+                return budgetObserver
+            }
+            notify?()
+        }
     }
 
     public var usedBytes: Int { lock.withLock { used } }
@@ -68,10 +96,12 @@ public final class FrameCache: @unchecked Sendable {
         }
     }
 
-    public func setFocus(_ n: Int, backShare share: Double) {
+    /// Coarse forward scrubbing can keep decoded lookahead ready rather than packing it just before use.
+    public func setFocus(_ n: Int, backShare share: Double, keepsForwardFramesReady: Bool = false) {
         lock.withLock {
-            if focus != n { packingDirty = true }
+            if focus != n || self.keepsForwardFramesReady != keepsForwardFramesReady { packingDirty = true }
             focus = n
+            self.keepsForwardFramesReady = keepsForwardFramesReady
             backShare = min(max(share, 0.05), 0.95)
             evictLocked()
             scheduleMigrationLocked()
@@ -102,11 +132,17 @@ public final class FrameCache: @unchecked Sendable {
 
     public func insert(_ frame: DecodedFrame) {
         lock.withLock {
-            removeLocked(frame.number)
+            if !removeStorageLocked(frame.number) { residentRanges = nil }
             frames[frame.number] = frame
-            if packsNV12, PackedNV12Frame.supports(frame.pixelBuffer) {
-                packable.insert(frame.number)
-                packingDirty = true
+            if packsNV12 {
+                if frame.byteSize > largestDecodedFrameBytes {
+                    largestDecodedFrameBytes = frame.byteSize
+                    packingDirty = true
+                }
+                if PackedNV12Frame.supports(frame.pixelBuffer) {
+                    packDistances[frame.number] = Self.packDistance
+                    packingDirty = true
+                }
             }
             decodedInsertions += 1
             used += frame.byteSize
@@ -120,6 +156,12 @@ public final class FrameCache: @unchecked Sendable {
         lock.withLock {
             if !storedLocked(n) { undecodable.insert(n) }
             scheduleMigrationLocked()
+        }
+    }
+
+    func retryUndecodable(in range: ClosedRange<Int>) {
+        lock.withLock {
+            for number in range { undecodable.remove(number) }
         }
     }
 
@@ -162,16 +204,20 @@ public final class FrameCache: @unchecked Sendable {
 
     /// Runs of resident frames, including packed entries, for the seek bar.
     public func cachedRanges() -> [ClosedRange<Int>] {
-        let keys = lock.withLock { (Array(frames.keys) + Array(packed.keys)).sorted() }
-        var ranges: [ClosedRange<Int>] = []
-        for k in keys {
-            if let last = ranges.last, last.upperBound + 1 == k {
-                ranges[ranges.count - 1] = last.lowerBound...k
-            } else {
-                ranges.append(k...k)
+        lock.withLock {
+            if let residentRanges { return residentRanges }
+            let keys = (Array(frames.keys) + Array(packed.keys)).sorted()
+            var ranges: [ClosedRange<Int>] = []
+            for k in keys {
+                if let last = ranges.last, last.upperBound + 1 == k {
+                    ranges[ranges.count - 1] = last.lowerBound...k
+                } else {
+                    ranges.append(k...k)
+                }
             }
+            residentRanges = ranges
+            return ranges
         }
-        return ranges
     }
 
     public func removeAll() {
@@ -182,8 +228,10 @@ public final class FrameCache: @unchecked Sendable {
             promotions = 0
             frames.removeAll()
             packed.removeAll()
-            packable.removeAll()
+            residentRanges = nil
+            packDistances.removeAll()
             packingDirty = false
+            largestDecodedFrameBytes = 0
             undecodable.removeAll()
             used = 0
         }
@@ -208,12 +256,26 @@ public final class FrameCache: @unchecked Sendable {
     private func resolvedLocked(_ n: Int) -> Bool { storedLocked(n) || undecodable.contains(n) }
 
     private func removeLocked(_ n: Int) {
-        if let frame = frames.removeValue(forKey: n) { used -= frame.byteSize }
-        if let frame = packed.removeValue(forKey: n) { used -= frame.byteSize }
-        packable.remove(n)
+        if removeStorageLocked(n) { residentRanges = nil }
+    }
+
+    /// Frees storage. Replacing or moving a resident frame between tiers keeps its seek-bar position.
+    @discardableResult
+    private func removeStorageLocked(_ n: Int) -> Bool {
+        let ready = frames.removeValue(forKey: n)
+        let compressed = packed.removeValue(forKey: n)
+        used -= (ready?.byteSize ?? 0) + (compressed?.byteSize ?? 0)
+        packDistances.removeValue(forKey: n)
+        return ready != nil || compressed != nil
     }
 
     private var focusReadyLocked: Bool { frames[focus] != nil || undecodable.contains(focus) }
+
+    private var packingNeededLocked: Bool {
+        guard let exactClip, largestDecodedFrameBytes > 0 else { return true }
+        let uncompressedCapacity = budget / largestDecodedFrameBytes
+        return Double(exactClip.frames) > Double(uncompressedCapacity) * exactClip.fillRatio
+    }
 
     private func nextRestoreLocked() -> Int? {
         if packed[focus] != nil { return focus }
@@ -227,11 +289,15 @@ public final class FrameCache: @unchecked Sendable {
         return nil
     }
 
+    private func canPackLocked(_ number: Int, distance: Int) -> Bool {
+        abs(number - focus) >= distance && (!keepsForwardFramesReady || number < focus)
+    }
+
     private func nextPackLocked() -> DecodedFrame? {
-        guard focusReadyLocked && !restoringScheduled else { return nil }
-        return packable.lazy.filter { abs($0 - self.focus) >= Self.packDistance }
-            .max { score($0) < score($1) }
-            .flatMap { frames[$0] }
+        guard focusReadyLocked, !restoringScheduled, packingNeededLocked else { return nil }
+        return packDistances.lazy.filter { self.canPackLocked($0.key, distance: $0.value) }
+            .max { score($0.key) < score($1.key) }
+            .flatMap { frames[$0.key] }
     }
 
     private func scheduleMigrationLocked() {
@@ -240,7 +306,7 @@ public final class FrameCache: @unchecked Sendable {
             restoringScheduled = true
             restoringQueue.async { [weak self] in autoreleasepool { self?.restoreOne() } }
         }
-        if packingDirty, !packingScheduled, !packable.isEmpty, focusReadyLocked, !restoringScheduled {
+        if packingDirty, !packingScheduled, !packDistances.isEmpty, focusReadyLocked, !restoringScheduled, packingNeededLocked {
             packingDirty = false
             packingScheduled = true
             packingQueue.async { [weak self] in autoreleasepool { self?.packOne() } }
@@ -253,11 +319,12 @@ public final class FrameCache: @unchecked Sendable {
         let notification = lock.withLock { () -> ((@Sendable (Int, Bool) -> Void), Int)? in
             packingScheduled = false
             defer { scheduleMigrationLocked() }
-            guard let observer = tierObserver, work.1 == generation, let candidate = work.0, abs(candidate.number - focus) >= Self.packDistance,
+            guard let observer = tierObserver, work.1 == generation, let candidate = work.0, packingNeededLocked,
+                  let distance = packDistances[candidate.number], canPackLocked(candidate.number, distance: distance),
                   frames[candidate.number]?.pixelBuffer === candidate.pixelBuffer else { return nil }
             packingDirty = true
-            guard let result else { packable.remove(candidate.number); return nil }
-            removeLocked(candidate.number)
+            guard let result else { packDistances.removeValue(forKey: candidate.number); return nil }
+            removeStorageLocked(candidate.number)
             packed[candidate.number] = result
             demotions += 1
             used += result.byteSize
@@ -277,13 +344,15 @@ public final class FrameCache: @unchecked Sendable {
             defer { scheduleMigrationLocked() }
             guard let observer = tierObserver, let (number, entry) = candidate, packed[number] === entry,
                   abs(number - focus) <= Self.readyRadius else { return nil }
-            removeLocked(number)
             if let result {
+                removeStorageLocked(number)
                 frames[number] = result
-                packable.insert(number)
+                packDistances[number] = Self.restoredPackDistance
                 packingDirty = true
                 used += result.byteSize
                 evictLocked()
+            } else {
+                removeLocked(number)
             }
             let ready = frames[number] != nil
             if ready { promotions += 1 }

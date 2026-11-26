@@ -70,8 +70,7 @@ public final class ColorMemory {
         return Outcome(osd: "\(label): \(now ? "off" : "on") · file", haptic: .toggle)
     }
 
-    /// The panel and wheel: the effective strength one step on (0.05 grid, 0…1), written to the file. Against an end
-    /// the value is unchanged and nothing is written.
+    /// Adjusts the effective strength within 0…1 and remembers it for the open file.
     public func addStrength(_ delta: Double, for set: ColorSet = .autoColor, global: Config) -> Outcome {
         guard url != nil else { return Self.noVideo }
         let config = effective(global: global).config
@@ -79,7 +78,7 @@ public final class ColorMemory {
         let key = set == .autoColor ? "auto-color-strength" : "vibrance"
         let label = set == .autoColor ? "Auto colour" : "Vibrance"
         let enabled = set == .autoColor ? config.autoColor : config.vibranceOn
-        let (value, event) = AdjustStep.apply(current, by: delta, step: 0.05, range: 0...1, detents: [0.25, 0.5, 0.75])
+        let (value, event) = AdjustStep.apply(current, by: delta, step: 0.000001, range: 0...1, detents: [0.25, 0.5, 0.75])
         if value != current { writeFile([key: formatNumber(value)]) }
         return Outcome(osd: "\(label) strength \(String(format: "%.2f", value)) · file" + (enabled ? "" : " (off)"),
                        haptic: event)

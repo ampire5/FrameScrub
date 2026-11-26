@@ -90,6 +90,31 @@ import Testing
         #expect(OpenLink.target(from: link("file:///a.mp4"))?.sceneID == nil)
     }
 
+    @Test func decodesAWebURLWithItsOwnQueryAndLandingOptions() throws {
+        let page = link("HTTPS://example.com/watch/a%20b?v=3&token=z%2B%2F#clip")
+        let encoded = page.absoluteString.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let url = link("framescrub://open?url=\(encoded)&t=3.5&seg=1-5,7-9&lock=0&adv=next&plugin=https%3A%2F%2Fplugin.example%2F")
+        let target = try #require(OpenLink.target(from: url))
+        #expect(target.subject == .web(page))
+        #expect(target.landing == LinkTarget(time: 3.5, segments: [1...5, 7...9], lock: false, advance: .next))
+        #expect(target.plugin == link("https://plugin.example/"))
+        #expect(OpenLink.fileURL(from: url) == nil)
+    }
+
+    @Test func aWebURLMustHaveAnHTTPOrHTTPSHost() {
+        for bad in ["", "file:///a.mp4", "ftp://example.com/a", "http:///watch", "https:watch", "/watch"] {
+            let encoded = bad.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+            #expect(OpenLink.target(from: link("framescrub://open?url=\(encoded)")) == nil, "\(bad)")
+        }
+    }
+
+    @Test func aWebURLHasLowerPrecedenceThanAPathOrScene() {
+        let page = "url=https%3A%2F%2Fexample.com%2Fwatch"
+        #expect(OpenLink.target(from: link("framescrub://open?\(page)&scene=7&path=%2Fa.mp4"))?.subject == .file(link("file:///a.mp4")))
+        #expect(OpenLink.target(from: link("framescrub://open?\(page)&scene=7"))?.subject == .stashScene(id: "7"))
+        #expect(OpenLink.target(from: link("framescrub://open?\(page)&path=rel")) == nil)
+    }
+
     @Test func segmentText() {
         #expect(OpenLink.segment(from: "1-2") == 1...2)
         #expect(OpenLink.segment(from: "1.25 - 7") == 1.25...7)

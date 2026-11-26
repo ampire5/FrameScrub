@@ -264,6 +264,42 @@ public final class MediaCatalog: @unchecked Sendable {
             return data(s, 0)
         }
     }
+    /// Provisional posters for immediate children, addressed by path without checking the source files.
+    /// The ordinary image lookup validates the file identity when the folder card is refreshed.
+    func folderCoverImages(in folder: URL, preferred: String, fallback: String, limit: Int) throws -> [Data] {
+        guard folder.isFileURL, limit > 0 else { return [] }
+        let path = folder.standardizedFileURL.path
+        let prefix = path.hasSuffix("/") ? path : path + "/"
+        // A slash is immediately below "0" in SQLite's binary path order.
+        let upperBound = String(prefix.dropLast()) + "0"
+        return try lock.withLock {
+            try open()
+            let s = try statement("""
+                SELECT image.payload FROM images AS image
+                WHERE image.path >= ?1 AND image.path < ?2
+                  AND instr(substr(image.path, length(?1) + 1), '/') = 0
+                  AND (image.variant = ?3 OR (image.variant = ?4 AND NOT EXISTS (
+                    SELECT 1 FROM images AS preferred
+                    WHERE preferred.path = image.path AND preferred.variant = ?3
+                  )))
+                ORDER BY image.path LIMIT ?5
+                """)
+            defer { sqlite3_finalize(s) }
+            bind(prefix, 1, s)
+            bind(upperBound, 2, s)
+            bind(preferred, 3, s)
+            bind(fallback, 4, s)
+            sqlite3_bind_int64(s, 5, Int64(limit))
+            var images: [Data] = []
+            while true {
+                let code = sqlite3_step(s)
+                if code == SQLITE_DONE { return images }
+                guard code == SQLITE_ROW else { throw failure(code) }
+                images.append(data(s, 0))
+            }
+        }
+    }
+
     public func hasImage(_ id: MediaFileIdentity, variant: String) throws -> Bool {
         try lock.withLock {
             try open()
@@ -275,7 +311,8 @@ public final class MediaCatalog: @unchecked Sendable {
             return code == SQLITE_ROW
         }
     }
-    public func putImage(_ bytes: Data, identity id: MediaFileIdentity, variant: String, limit: Int) throws {
+    public func putImage(_ bytes: Data, identity id: MediaFileIdentity, variant: String, limit: Int,
+                         replacingVariant: String? = nil) throws {
         guard bytes.count <= limits.imageEntryBytes, bytes.count <= limits.imageBytes else { throw Failure.oversized }
         guard id.isCurrent else { throw Failure.stale }
         try lock.withLock {
@@ -287,6 +324,12 @@ public final class MediaCatalog: @unchecked Sendable {
                 bind(id.path, 1, s); bind(id.key, 2, s); bind(variant, 3, s); bind(bytes, 4, s)
                 sqlite3_bind_int64(s, 5, Int64(bytes.count)); sqlite3_bind_double(s, 6, Date().timeIntervalSince1970)
                 try done(s)
+                if let replacingVariant, replacingVariant != variant {
+                    let old = try statement("DELETE FROM images WHERE path=? AND identity=? AND variant=?")
+                    defer { sqlite3_finalize(old) }
+                    bind(id.path, 1, old); bind(id.key, 2, old); bind(replacingVariant, 3, old)
+                    try done(old)
+                }
                 let prune = try statement("DELETE FROM images WHERE rowid IN (SELECT rowid FROM images WHERE variant=? ORDER BY used DESC LIMIT -1 OFFSET ?)")
                 defer { sqlite3_finalize(prune) }
                 bind(variant, 1, prune); sqlite3_bind_int64(prune, 2, Int64(max(1, limit))); try done(prune)

@@ -11,6 +11,7 @@
 #include <libavutil/mastering_display_metadata.h>
 #include <libavutil/dovi_meta.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>

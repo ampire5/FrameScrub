@@ -24,6 +24,9 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   and plugin panel. Its large size is not permission to mix another independent subsystem into it.
 - `PlayerCore` is a main-thread state machine. It owns frame cache/filler, playback clock, audio and export state;
   its weak `PlayerCoreDelegate` delivers frames and state/feedback to the UI.
+- `PlayerWindowController` sends playback feedback to `FeedbackHUD` above the visible timeline and filmstrip.
+  The HUD updates one badge in place and replaces its one-shot fade deadline. Seeks can use the directional
+  transport button or the navigation filmstrip instead.
 - The optional playback provider can link the static `FrameScrubPlayback` product. A single worker owns
   `OnDemandVideo`, which uses `MediaSource`, `ReadCache` and `VideoDecoder` directly. The provider can
   duplicate a read-only descriptor into `FileByteSource` without resolving the file path. The cursor
@@ -65,16 +68,30 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   before opening their own decoder; Core Image construction/rendering stays on each provider's worker.
   Shared-pool hits can bypass a busy provider worker; delivery generations prevent an older cold result from
   replacing a newer ready image. Network throttling applies only to cold reads, with the first read immediate.
+  Hover applies crop and pixel aspect on a latest-only rendering worker. The controller delivers the result only
+  for the current hover request and geometry. Clearing hover or closing the file invalidates an outstanding result.
+  Page streams key the shared pool by the resolved video URL. A nominal index can reuse a pool image or
+  playback picture at its requested PTS when the decoded timestamp matches that PTS.
   The film loader selects reusable samples first, then centre-first misses, with one utility request in flight
   and at most `TimelineFilmLayout.maximumCells` pending times. `PlayerCore.allowsBackgroundPreview` requires
   resolved foreground work (cached or terminally undecodable current frame, also the next frame while playing).
+  A cold local filmstrip decode also checks foreground demand on its worker before opening or rendering and
+  during packet traversal. A deferred sample stays in its current visible or warm batch and is retried when the
+  player can spare the decoder. Ready images are served without asking for another decode.
+  Visible Stash filmstrips try matching ready pictures first, then sample time cues from `StashStoryboard`'s VTT
+  and sprite sheet. One utility request at a time fetches and crops bounded assets with same-origin authentication.
+  Each cell is keyed by its time. Hiding or replacing the filmstrip cancels its pending storyboard work. Missing
+  storyboards and cues fall back to the ordinary preview path. Folded warming reuses ready images while the
+  storyboard is available or still untested.
   `CacheFiller.onFocusUnavailable` reports the unresolved-to-undecodable focus transition outside its lock;
   PlayerCore checks session/current position and emits a state change even without a displayable frame.
   Visible drag and scroll scrubs replace the pending thumbnail batch as the playhead moves. The batch dwell
   keeps its deadline and the loader still waits for foreground readiness. Hidden/interaction gating and
   display/state callbacks defer/resume work without polling. Stop suppresses
   queued delivery/completion; old providers can only populate their old per-file pool.
-  The folded strip reveals as soon as the pointer enters its future height. A bounded preparation snapshot runs on
+  The folded strip reveals as soon as the pointer enters its future height. Folding cancels any pending pointer hide,
+  and a manual fold suppresses hover reveals until the pointer leaves the reveal zone. Opening by command waits for
+  the pointer to enter before arming pointer-based hiding. A bounded preparation snapshot runs on
   the same worker and yields to visible requests. During playback it reuses only the shared pool or playback cache.
   While paused it can decode misses one at a time. On network volumes a miss taking at least the existing preview
   settle interval ends speculative reads for that snapshot. A failed speculative read also ends the batch of misses
@@ -84,9 +101,44 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   sample can trigger planning, with no per-frame replan for all-intra media. Folded delivery caches without
   invalidation. Active hover preview, export, interactions, Home and occlusion gate preparation. It uses the same
   reader and introduces no full-file scan or timer.
-- Filmstrip clicks seek immediately through the normal player path. `SeekBarView` owns the presentation-only
-  coast on its finite main-run-loop transition timer. Distant clicks briefly blend the old geometry with the
-  destination neighborhood. Thumbnail requests resume for the settled view; intermediate positions never
+- With `navigation-filmstrip=yes`, the window controller records the actual positions before and after user navigation.
+  `NavigationRibbonView` keeps the first origin and uses one expiry job for the burst. The folded
+  presentation clips an aspect-sized row to the available width. Narrow images use more closely spaced samples, within
+  the same screenful limit as the full strip. `SeekBarView` chooses the samples and interpolates the actual
+  position between their times. The view repositions retained thumbnail layers and the row together beneath a fixed
+  playhead, drawing only new pictures. A shared Filmstrip popover controls side crop and stretch for both
+  strips. Its Mini Strip tab changes only the compact width and height. Fit changes reuse the existing pictures.
+  Both strips place whole-file progress under the thumbnails. The full strip's progress rail shows its own
+  hover time and seeks on that same linear scale.
+  Passive native glass backdrops share the over-media palette and leave timeline hit testing with the owning views. Hover
+  or an open settings popover holds the ribbon. The reveal uses one small rise and the exit fades out, both omitted
+  with Reduce Motion. The menu shortcut updates the same auto-show preference as Settings.
+  The mini strip pin is saved in user defaults. The full strip takes precedence while open and folding it restores
+  the pinned mini strip at the current position, which follows existing player state callbacks and shares the same
+  picture cache and loader. Temporarily hiding the mini strip keeps its bounded tile row available for reuse.
+  Idle preparation puts the selected scale's samples in the existing
+  bounded batch. While the ribbon is visible its missing pictures replace the loader's visible batch. Ready pictures and
+  playback frames can fill it during the foreground seek. Cold reads wait for foreground readiness and the existing
+  network dwell. Compact and open film share the same serial utility worker. Opening the full film or clearing the journey
+  discards the compact batch; an in-flight decode can still enter the same file's cache.
+  Both strips center the current time on the playhead and add a quieter duration when it fits. The mini scale
+  button reports the visible time span by interpolating its sample times at the clip edges. The full strip draws
+  relative time marks using its seek projection, with authored fragment markers taking precedence. When either
+  strip takes over from the other, the destination playhead and readout draw immediately. For 210 ms the full
+  picture surface expands from the compact width or shrinks toward it using a soft-edged compositor mask.
+  On the way back the mini pictures fade in while the full strip keeps its picture surface in place until the
+  animation finishes. The transition uses the existing pictures and adds no thumbnail work or timers. Reduce Motion
+  swaps the strips immediately.
+  Pending thumbnails reserve their cells.
+  The frame count requires an exact index and a single source fragment on a virtual cut.
+  The open strip keeps the current time at the playhead and labels the pointer's seek target when the labels fit separately.
+  Its detail row shows the virtual-cut fragment. Virtual-cut hover maps the target to source time,
+  with a frame index when the session already has the exact source index.
+- Filmstrip clicks capture the time under the pointer at mouse-down and seek on release through the normal player path.
+  After a paused Whole File Lens click lands on the requested frame, `SeekBarView` keeps that projection until
+  playback resumes or the position changes. The playhead coasts within that projection on the existing finite
+  main-run-loop transition timer. Elsewhere distant clicks can briefly blend the old and destination geometry.
+  Thumbnail requests resume for the settled view; intermediate positions never
   reach the decoder. File changes, other position input and hiding cancel the coast.
   The optional frame preview uses `VideoView`'s existing display link while paused. It checks for every ready
   intermediate frame in a corridor of up to 240 frames under one cache lock, or uses up to three existing
@@ -181,8 +233,10 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   grain output/staging, retaining only the mask. Comparison excludes that processed target.
   Sharpening, dither, directional cleanup, grain-only and non-MetalFX retain the general path.
   `grainUsesFusedPass` is a diagnostic for actual path selection, not an activation policy.
-  Normal source-frame scrubbing uses this same display pipeline. Moving zoom/pan remains
-  the existing cheap-transform path until it settles; hover/filmstrip thumbnails are separate.
+  Normal source-frame scrubbing uses this same display pipeline. A paused source picture can submit once
+  after the input turn using the latest view state when the current display interval has not submitted a picture.
+  The next tick can submit any newer pending state. Playback, filmstrip previews, moving zoom/pan, and timed
+  colour and focus transitions stay on the display tick. Hover/filmstrip thumbnails are separate.
 - `VideoView` applies optional Subject Focus before display scaling. `SubjectMasker` owns one mask worker and one
   replaceable pending job; recurrent model state stays on that worker. Models remain user supplied outside the repo.
   `SubjectMatting` keeps native half-float conversion on Apple Silicon; Intel uses Core's `HalfPrecisionAlpha` to convert raw IEEE binary16
@@ -198,6 +252,57 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   existing asynchronous user-state persistence. See [pipeline diagnostics](bench/playback-diagnostics.md).
 - Byte input → `ReadCache`/`ByteSource` → `MediaSource`/`VideoDecoder` → `DecoderBackend` (`VTBackend` or
   `FFmpegBackend`) → decoded frames → `FrameCache`. `CacheFiller` plans background work around the position.
+  Direct HTTP(S) `.m3u8` VOD opens use `HLSDemuxInput` with libavformat's HTTP and verified HTTPS transport.
+  Video and audio open their own demuxers under one `HLSMediaSession`. It shares cancellation and a bounded
+  in-memory cache for completed whole init and media responses. FFmpeg streams new bytes through as they arrive.
+  The HLS demuxers disable persistent HTTP connections so a failed init-segment request leaves the demuxer usable.
+  Byte ranges, redirects, playlists, cookie-dependent requests and oversize objects use native reads. The filler
+  interrupts obsolete reads on cold jumps, and audio interrupts old reads when its playback generation changes. An explicit seek can
+  retry frames skipped after a segment failure. VOD uses a duration and nominal-rate timeline without downloading the
+  full stream for indexing. The forward worker fills the bound ahead of the playhead and leaves played frames
+  in the existing decoded cache for backward scrub. A cold paused seek retains up to three nearby pre-roll frames
+  from that same decode and publishes the target first. During normal playback and pause it is the only video
+  decoder filling that window. During forward playback the clock holds both tracks when a requested video
+  frame is still loading. The HLS preview provider reuses ready frames only.
+  The file and HTTP Range paths use the byte cache. A newer distant cold jump outside the GOP in progress
+  can stop obsolete forward pre-roll at a packet boundary. An absolute paused jump to an earlier picture
+  in the same GOP can also stop it on a local file with an exact index and no loop or locked region. A later cold
+  target in that GOP can continue from the forward decoder's existing packet cursor. This uses the same
+  exact landing and nearby history as a demux seek. If the cursor ends or passes the target, the decoder
+  retries from the target's keyframe. Replacing an index stops pre-roll on local files.
+  The forward decoder repositions on its own worker. Shared
+  reads that have already started can finish into the cache. Reads started before the jump cannot schedule more
+  read-ahead for the cancelled generation. With an exact index on a local file, a cold paused landing retains
+  up to eight already traversed pictures within the planned cache window and publishes the target first.
+  For a long forward jump from the visible picture, the active preroll can separately send a single near-target
+  preview without caching it or requesting scrub audio. Both the worker and player validate the target before
+  publishing. The player checks its session, pause state and visible frame and excludes virtual cuts and locked
+  segments. A long paused backward jump can request an image already in the shared preview pool. It must be on the
+  path to the target, closer than the picture already shown and within one second and 60 frames of it. The
+  window presents it as a thumbnail while the exact picture is pending. It stays outside the decoded cache,
+  playback position and scrub-sound path. A replacement seek, playback, or a decoded picture clears it.
+  The paused local cache keeps more history for a reversal from unit forward steps and leaves upcoming
+  frames ready during coarse forward movement. During sustained local backward steps, it shifts the same byte
+  budget toward upcoming frames so longer pieces of a GOP can finish before the cursor passes them. Locked
+  regions keep their normal window.
+  The local backward worker also stops between packets when its chunk leaves the active window or playback mode.
+  A chunk overtaken by uninterrupted reverse playback still contributes to the decode-level estimate. When
+  their plans are full the workers sleep on focus, budget, cache-tier, and sibling progress events. The backward
+  worker retains its single jump-settle deadline. A waiting decoder arms a one-shot notification when enough
+  of its pixel buffers are released to return its pool.
+  The window owns a single web-open generation shared by File → Open URL,
+  the external `framescrub://open?url=` handler, Recent, and plugin bridge opens. It resolves pages on a serial worker
+  and prepares the selected stream off the main thread while leaving the active player in place. Replacing an open
+  cancels extraction or closes both caches. Late preparation is discarded. External URLs and plugin `open({page})`
+  resolve pages through the same route. Plugin `open({url})` is explicit direct media.
+
+  The resolver tries installed yt-dlp then gallery-dl, classifies bounded diagnostics, and reports stable item
+  identifiers and selected-format metadata. The window opens a specific item from Recent and never stores the signed
+  media addresses there. Core uses a page and item key for resume and marks, and reports the advertised format
+  in Info. Direct media started through the web path leaves no durable playback record. A terminal read failure
+  reaches the window while the current picture is still available. Reconnect resolves again with the last displayed
+  time and previous play/pause state. Split HTTP tracks have separate range caches and align to the same clock.
+  Extracted videos keep a nominal timeline to avoid a full remote index scan.
   The playback VideoToolbox decoder requests native lossless packed 10-bit surfaces for supported HEVC 4:2:0
   Main10 sources. It falls back to ordinary P010 on session or output incompatibility. The cache charges native
   packed surfaces by IOSurface allocation size. Separate decoders for exports, analysis and thumbnails retain their
@@ -211,12 +316,37 @@ The executable supplies UI and connects commands/delegate callbacks to the core.
   restore queue prioritizes the current target, then neighboring frames, and publishes through the filler's normal
   insertion callback. One utility compression job can be in flight. It yields when the focus is missing or a
   restore is pending. Both workers do pixel work outside the cache lock and validate the entry and current focus
-  before publication. Stop and index invalidation prevent stale work from repopulating the cache.
+  before publication. Restored NV12 surfaces stay ready farther from the playhead before becoming eligible
+  for packing again. Both tiers remain subject to the same byte budget. Stop and index invalidation prevent
+  stale work from repopulating the cache.
+  With an exact index, the filler supplies the clip's frame count and its planning fraction. The cache skips
+  new software NV12 compression while the entire clip fits that share of the byte budget at the largest
+  observed decoded-frame size. Existing packed entries still restore on demand. Budget, index or frame-size
+  changes can re-enable compression. Native packed Main10 remains a decoder output format.
   [Live scrub measurements](bench/live-scrub-cache.md) record the production cache and fill behavior.
+- Paused scrubbing takes ready pixels directly from the cache. Only a missing target needs a stand-in lookup.
+  The seek bar reuses its resident ranges until a frame enters or leaves the cache. Moving between packed
+  and ready storage preserves those ranges.
+- Paused audio uses a separate `ScrubAudio` decoder and a bounded PCM window. The picture on screen
+  primes that window when audio attaches and when playback pauses. The worker wakes on transport or picture
+  changes, continues a contiguous decode without seeking again and fills tape extensions in batches for
+  local media. Pause-to-play, mute and distant jumps can stop an extension between decoded buffers. Snippet
+  readiness checks coverage only. The worker prepares immutable tape snapshots outside the shared lock,
+  copies PCM in contiguous spans and applies fades at the edges of those spans. The audio render thread
+  uses the latest available snapshot without waiting for the worker. A reversed frame step seeds a bounded
+  velocity estimate with the new sign while the regular averaging span fills.
 - Browser → `FrameScrubHomeSource` → listings/posters/catalog → HomeScreenKit UI. Playlist navigation and
   persisted sort/history are application responsibilities at the integration boundary.
+  File View uses HomeScreenKit's ordered multi-selection. The Edit menu and context menu exchange file URLs with
+  Finder through the system clipboard. `FrameScrubHomeSource` dispatches one filesystem batch at a time to
+  `FileViewFileActions` off the main thread. Moves update favorite folder paths, and completed changes refresh the
+  affected listing through its existing subscription. Move and Trash report items still used by an export.
+  Permanent deletion on volumes without a Trash requires confirmation.
   `FrameScrubHomeSource` builds the Favorites source and sidebar shortcuts from `FolderFavorites` (ordered paths
-  in FrameScrub's defaults). Favorites requests the same folder covers as File View. Recursive browsing uses the same bounded listing worker and poster pipeline, with
+  in FrameScrub's defaults). Favorites requests the same folder covers as File View. Folder cards show available
+  posters from the media catalog before listing any child folder. The background listing then supplies the summary
+  and the normal identity-checked cover. Both passes discard results when the request is cancelled.
+  Recursive browsing uses the same bounded listing worker and poster pipeline, with
   a separate active result and the opening folder tab as the playback return destination. MediaCatalog serves
   the last successful walk provisionally and replaces it once a fresh walk succeeds.
   Folder renames update favorite descendants. Mount changes and Refresh recheck availability with a bounded utility worker pool
@@ -311,6 +441,13 @@ implementation rather than assuming all Core methods are safe on arbitrary threa
 selection, cancels superseded jobs, and suppresses their completion. Open/close must cancel obsolete media work.
 Do not add parallel probes or per-frame filesystem operations to the controller.
 
+`FileOpenPreparation` owns ordinary file preparation per player window. Two dispatch workers allow a new open past
+one stuck filesystem call. One replaceable request waits for a slot. A displaced request completes once on the main
+actor even while its worker is still blocked. The worker retains its slot until it returns and discards any stale
+result. Cancellation stops further metadata warmup after a blocked call returns. The controller still checks the
+generation before applying the answer. A prepared virtual fragment goes directly to playback. Web stream selection
+and preparation keep the current playback until a replacement is ready.
+
 Closing the sole player window requests termination through the run loop. Do not enter AppKit's async termination
 wait from a main-queue block: the main-actor user-state flush must be able to run and reply to `.terminateLater`.
 `FrameScrub --bench-close-window` checks the real launch/close/flush path in a separate process with a watchdog.
@@ -330,6 +467,13 @@ and last-viewed times in a bounded JSON store with a shared in-process snapshot 
 is user state, not disposable metadata. Follow identity and modification checks before reusing facts. `Config`, `PreferencesStore` and input preferences supply settings;
 `FrameScrubSettingsStore` adapts them to SettingsKit.
 
+`PlaybackThumbnailWriter` snapshots the displayed image, geometry and file identity when leaving playback. A serial
+utility worker saves one snapshot at a time. Two pending snapshots hold the latest distinct identities, with older
+ones dropped under load. Home can show immediately and the existing Recent picture queue updates the card by ID
+after the save. Generated Recent thumbnails fill missing entries, and an older in-flight card read cannot replace
+the newly published picture. Termination still awaits the separate user-state barrier. See the
+[window lifecycle measurements](bench/2026-11-26-window-lifecycle.md).
+
 HomeScreenKit supplies browser, slots and filmstrip UI; SettingsKit supplies settings presentation; InfoPanelKit
 supplies panel UI; StashKit supplies server/path/web integration. `StashSession` feeds activity batches to one
 main-actor `StashActivityQueue`: it serializes whole batches, coalesces unsent saves for one scene and only accepts
@@ -341,6 +485,13 @@ before that scene was closed and reopened; stale detail reads cannot overwrite t
 App Logitech input is bridged through MouseService
 (`LogiMouseBridge`); LogiHIDPP also supplies shared hardware types. See [kit workflow](kits.md).
 
+FrameScrub uses MouseService 0.5 or later for the Ulanzi D100H. Enable the viewing profile in
+`framescrub.conf` with `d100h=yes`. The active player window requests input through the shared MouseClient. Focus changes and connection loss cancel held gestures before they can run release actions.
+`D100HViewingProfile` maps inputs to existing playback commands, with an independent GestureRouter for the
+wheel's scroll and fast-scrub bindings. The clockwise turn produces the forward-scrub wheel delta.
+`d100h-edge-offset` is a percentage (default 10). Set
+`d100h-mute-detents=yes` to turn off the dial detents temporarily while the player has focus.
+
 Opt-in `tourbox=yes` starts the app's `TourBoxBridge`: one Console Max/MSP client on loopback TCP 50500, one
 32-byte asynchronous read in flight, with delivery and player commands on the main thread. Every byte is an event;
 TCP read boundaries are not message boundaries. `FrameScrubCore/TourBoxRouter` owns held/consumed buttons,
@@ -348,7 +499,8 @@ one-shot hold deadlines, and independent Knob sensitivity/progressive accelerati
 Bare Knob uses a continuous bounded quadratic gain above the configurable pulse-rate threshold, with time-based
 rise smoothing and immediate deceleration. Knob press toggles the existing `tourbox-accel` preference through
 PreferencesStore with OSD feedback; mode changes reset motion without losing the held click/duplicate guard.
-Tall+Knob changes volume, Tall+Top toggles mute and Short+Top calls `PlayerCore.reversePlaybackDirection`,
+Tall+Knob changes volume and Short+Knob changes speed by default. The router swaps these two Knob
+assignments when `tourbox-knob-modifiers-swap=yes`. Tall+Top toggles mute and Short+Top calls `PlayerCore.reversePlaybackDirection`,
 preserving speed/pause and restarting/refocusing the reverse/forward clock path when playing. There is no coarse
 multiplier. Modifier toggles act on each target down while the modifier stays held, consuming release taps.
 Reversal, idle and modifiers reset velocity; tied batch timestamps cannot manufacture speed. Top uses
@@ -358,10 +510,16 @@ mark boundaries. `ColorMemory.addStrength(for:)` handles either auto colour or V
 per-file persistence and independent enable flags. The controller samples one arrival time per batch and routes
 commands through existing player actions. Scroll emits timeline points: `SeekBarView.scrollFilm` shares the
 horizontal trackpad's local scale and fractional target time, with a one-shot idle completion. Other position input
-and TourBox cancellation reset that time to prevent stale jumps. Focus loss, Home, file/profile changes, disconnect
+and TourBox cancellation reset that time to prevent stale jumps. The router applies `tourbox-scroll-invert` when
+decoding Scroll pulses, so it also covers Tall+Scroll. Focus loss, Home, file/profile changes, disconnect
 and shutdown restore held speed, cancel deadlines and cancel unfinished edge edits.
 The bridge rejects extra clients and stops on disable/shutdown; it never polls or claims the USB device. The
 separate event preset is generated from a locally supplied vendor Lite template; the keyboard preset remains intact.
+
+The optional Everything Home source uses the `EverythingSearchUI` package and HomeScreenKit's page source.
+The app opens resolved file URLs through its normal window controller. Folder results go to File View.
+The page owns its search session and suspends requests off-screen. The shared package saves the latest search
+and library in the host app’s preferences. The source appears when Network Everything has saved connection settings.
 
 ## Change entry points and verification
 
@@ -376,6 +534,17 @@ separate event preset is generated from a locally supplied vendor Lite template;
 Run `swift test --jobs 4` with the native dependencies described in [README](../README.md). Use the real-window
 benches for navigation/control latency, and compare first visit with return separately. [User reference](reference.md)
 describes controls/settings, not internal ownership. No architectural change should silently alter kit pins.
+
+## Keys and Gestures
+
+`PlayerWindowController` presents SettingsKit's `CheatSheetView` over the player window. The controller
+routes Escape, Page Up/Down and ⌘F while the help is open. The search field handles typing, and the kit restores
+the previous first responder on close. Opening the help ends held player input and suspends precision scrolling
+over the picture. `ShortcutHelpContent` formats the same effective input map used for dispatch, including profile
+layers and plugin actions available in slots. It shares command labels with Key Bindings and uses the same menu
+shortcut list. Fixed video gestures are listed separately. Rebuilding the input map updates the sheet if open.
+The auto colour and vibrance strength commands route from the input map through the controller to `ColorMemory`,
+which stores each effect's strength for the open file.
 
 ## Gesture ownership
 

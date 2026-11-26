@@ -22,6 +22,7 @@ public enum IndexStatus: Equatable, Sendable {
 @MainActor
 public protocol PlayerCoreDelegate: AnyObject {
     func player(_ player: PlayerCore, display frame: DecodedFrame)
+    func player(_ player: PlayerCore, previewBackwardSeek frames: ClosedRange<Int>)
     func playerStateDidChange(_ player: PlayerCore)
     func player(_ player: PlayerCore, showOSD text: String)
     func playerDidReachEnd(_ player: PlayerCore)
@@ -30,6 +31,7 @@ public protocol PlayerCoreDelegate: AnyObject {
 }
 
 public extension PlayerCoreDelegate {
+    func player(_ player: PlayerCore, previewBackwardSeek frames: ClosedRange<Int>) {}
     func playerDidReachEnd(_ player: PlayerCore) {}
     func player(_ player: PlayerCore, showFeedback feedback: Feedback) {}
     func player(_ player: PlayerCore, copyImage data: Data, frame: Int, note: String?) {}
@@ -94,6 +96,10 @@ public final class PlayerCore {
         let next = min(index.frameCount - 1, max(0, position + direction))
         return cache.hasReadyFrame(next) || cache.isUndecodable(next)
     }
+    /// A per-file probe for utility decoder workers. It is never called via the main actor.
+    public var previewShouldYield: @Sendable () -> Bool {
+        { [weak filler] in filler?.hasUnresolvedFocus ?? false }
+    }
     public private(set) var index: FrameIndex?
     public private(set) var position = 0
     public private(set) var isPaused = true
@@ -145,7 +151,7 @@ public final class PlayerCore {
     public private(set) var indexStatus = IndexStatus.approximate
     public var isExporting: Bool { exportFlag != nil }
     public var hasAudio: Bool { audio != nil }
-    var hasScrubAudio: Bool { scrubAudio != nil }
+    public var hasScrubAudio: Bool { scrubAudio != nil }
     /// The time-pitch rate of the sound, nil without sound (tests).
     var audioRate: Float? { audio?.rate }
     /// Tests: how often the playback sound was (re)started.
@@ -158,6 +164,15 @@ public final class PlayerCore {
     private let byteSource: @Sendable (URL, Config) throws -> ByteSource
     private let now: () -> Double
     private var filler: CacheFiller?
+    private var hlsSession: HLSMediaSession?
+    private var isResolvedPage = false
+    public private(set) var isWebStream = false
+    private var webResumeKey: String?
+    private var resolvedWebTitle: String?
+    private var selectedWebFormat: ResolvedVideo.Format?
+    private var webInterruptionReported = false
+    private var externalAudioCache: ReadCache?
+    private var externalAudioFormat: MediaFormat.Audio?
     private var exporter: FrameExporter?
     private var exportFlag: CancellationFlag?
     private var indexFlag: CancellationFlag?
@@ -246,6 +261,8 @@ public final class PlayerCore {
     public var virtualPlaybackBounds: Range<Double>? { didSet { syncCacheRegions() } }
     private var virtualFrameBounds: ClosedRange<Int>?
     public var onVirtualPictureUnavailable: (() -> Void)?
+    /// Delivered on the main actor while the transport still reflects the user's playback intent.
+    public var onWebPlaybackInterrupted: (() -> Void)?
     public var onVirtualPlaybackBoundary: ((Int) -> Void)?
 
     public var currentSeconds: Double { index?.seconds(forFrame: position) ?? 0 }
@@ -265,23 +282,70 @@ public final class PlayerCore {
     /// that touches no player state: the caller may run it on another thread and hand the result to `open(_:)`.
     /// Making it touches nothing: even the volume's kind (a `statfs`, which waits for an SMB server) is asked when it
     /// runs. `cancellation` stops it while it reads.
-    public func preparation(for url: URL, cancellation: OpenCancellation? = nil, expectedVersion: String? = nil) -> @Sendable () throws -> PreparedOpen {
+    public func preparation(for url: URL, cancellation: OpenCancellation? = nil, expectedVersion: String? = nil,
+                            resolved: ResolvedVideo? = nil, webStream: Bool = false) -> @Sendable () throws -> PreparedOpen {
         let config = config, factor = pressureFactor, resumeStore = resumeStore
         let byteSource = byteSource
         return {
+            try cancellation?.check()
             resumeStore?.prepare()
-            let identity = MediaFileIdentity.read(url)
-            let policy = NetworkPolicy.resolve(config.networkMode, url: url)
+            try cancellation?.check()
+            let mediaURL = resolved?.video.url ?? url
+            let isWebStream = webStream || resolved != nil
+            let webResumeKey = resolved?.itemID.map { ResumeStore.webKey(page: url, itemID: $0) }
+            let resolvedWebTitle = resolved?.title
+            let selectedWebFormat = resolved?.selectedFormat
+            let identity = resolved == nil ? MediaFileIdentity.read(url) : nil
+            try cancellation?.check()
+            let policy = NetworkPolicy.resolve(config.networkMode, url: mediaURL)
+            try cancellation?.check()
+            if HLSDemuxInput.matches(mediaURL) {
+                guard expectedVersion == nil else { throw VirtualCutMediaVersion.Changed() }
+                let hlsSession = cancellation?.hlsSession ?? HLSMediaSession()
+                if let headers = resolved?.video.headers, !headers.isEmpty {
+                    hlsSession.requestHeaders = headers.sorted { $0.key < $1.key }
+                        .map { "\($0.key): \($0.value)\r\n" }.joined()
+                }
+                let source = try MediaSource(url: mediaURL, hlsSession: hlsSession)
+                return PreparedOpen(url: url, policy: policy, readCache: nil, source: source, identity: nil,
+                                    hlsSession: hlsSession, isResolvedPage: resolved != nil, isWebStream: isWebStream,
+                                    webResumeKey: webResumeKey, resolvedWebTitle: resolvedWebTitle,
+                                    selectedWebFormat: selectedWebFormat)
+            }
             let budget = Self.readCacheBudget(config: config, policy: policy, factor: factor)
-            let readCache = try ReadCache(url: url, budgetBytes: budget, source: byteSource(url, config))
+            let openingCancelled: @Sendable () -> Bool = { cancellation?.isCancelled ?? false }
+            let bytes: ByteSource
+            if let track = resolved?.video {
+                bytes = try HTTPByteSource(url: track.url, headers: track.headers, openingCancelled: openingCancelled)
+            } else if webStream, ByteSources.isRemote(url) {
+                bytes = try HTTPByteSource(url: url, headers: StashOpenPolicy.headers(for: url, config: config),
+                                           openingCancelled: openingCancelled)
+            } else {
+                bytes = try byteSource(url, config)
+            }
+            let readCache = try ReadCache(url: mediaURL, budgetBytes: budget, source: bytes)
             try cancellation?.watch(readCache)
             if let expectedVersion, try VirtualCutMediaVersion.read(from: readCache) != expectedVersion {
                 throw VirtualCutMediaVersion.Changed()
             }
-            let source = try MediaSource(url: url, readCache: readCache)
+            let source = try MediaSource(url: mediaURL, readCache: readCache)
             if let identity { FileFactsStore.shared.store(source.metadata, identity: identity) }
             readCache.probe = StreamProbe(source)
-            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source, identity: identity)
+            if let track = resolved?.audio {
+                try cancellation?.check()
+                let bytes = try HTTPByteSource(url: track.url, headers: track.headers, openingCancelled: openingCancelled)
+                let audioCache = try ReadCache(url: track.url, budgetBytes: 2 * ReadCache.blockSize, source: bytes)
+                try cancellation?.watch(audioCache)
+                let audio = try AudioDecoder(url: track.url, zeroSeconds: nil, readCache: audioCache, hlsSession: nil)
+                return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source, identity: nil,
+                                    isResolvedPage: true, isWebStream: true, webResumeKey: webResumeKey, resolvedWebTitle: resolvedWebTitle,
+                                    selectedWebFormat: selectedWebFormat,
+                                    externalAudio: audio, externalAudioCache: audioCache)
+            }
+            return PreparedOpen(url: url, policy: policy, readCache: readCache, source: source, identity: identity,
+                                isResolvedPage: resolved != nil, isWebStream: isWebStream, webResumeKey: webResumeKey,
+                                resolvedWebTitle: resolvedWebTitle,
+                                selectedWebFormat: selectedWebFormat)
         }
     }
 
@@ -291,7 +355,7 @@ public final class PlayerCore {
         let url = prepared.url, readCache = prepared.readCache, source = prepared.source
         networkPolicy = prepared.policy
         StartupTrace.mark("probe done")
-        readCache.readAheadBytes = min(Int(source.bytesPerSecond * networkPolicy.readAheadSeconds), readCacheBudget(1) / 2)
+        readCache?.readAheadBytes = min(Int(source.bytesPerSecond * networkPolicy.readAheadSeconds), readCacheBudget(1) / 2)
         // Segments given while no file was open are for this one; those of the file open now go with it.
         let pendingSegments = index == nil && !segmentsSource.isEmpty
             ? (seconds: segmentsSource, locked: segmentsLocked, advance: segmentAdvance) : nil
@@ -309,6 +373,14 @@ public final class PlayerCore {
         sourceIdentity = prepared.identity
         lastViewedAt = nil
         self.readCache = readCache
+        hlsSession = prepared.hlsSession
+        isResolvedPage = prepared.isResolvedPage
+        isWebStream = prepared.isWebStream
+        webResumeKey = prepared.webResumeKey
+        resolvedWebTitle = prepared.resolvedWebTitle
+        selectedWebFormat = prepared.selectedWebFormat
+        externalAudioCache = prepared.externalAudioCache
+        externalAudioFormat = prepared.externalAudio?.source.format.audio
         info = source
         index = initialIndex
         if let pendingSegments {
@@ -321,19 +393,35 @@ public final class PlayerCore {
         lastSeekAt = -.infinity
         endBump = EndBump()
 
-        let filler = CacheFiller(url: url, index: initialIndex, cache: cache,
+        let filler = CacheFiller(url: source.url, index: initialIndex, cache: cache,
                                  estimatedFrameBytes: source.estimatedFrameBytes,
                                  playbackLookahead: max(8, Int(source.frameRate * 2)),
                                  preferHardware: config.hwdec.prefersHardware, readCache: readCache,
-                                 policy: networkPolicy, frameRate: source.frameRate, prefersPackedOutput: cacheCompression)
+                                 policy: networkPolicy, frameRate: source.frameRate, prefersPackedOutput: cacheCompression,
+                                 hlsSession: prepared.hlsSession)
         filler.onInsert = { [weak self] n in
             DispatchQueue.main.async { self?.frameInserted(n, session: current) }
+        }
+        filler.onPrerollPreview = { [weak self] frame, target in
+            DispatchQueue.main.async {
+                guard let self, self.session == current, self.isPaused, self.position == target,
+                      self.virtualFrameBounds == nil, !self.segmentsLocked,
+                      !self.cache.isResolved(target), let shown = self.displayedFrame,
+                      shown < frame.number, frame.number < target else { return }
+                self.display(frame, withScrubAudio: false)
+                self.delegate?.playerStateDidChange(self)
+            }
         }
         filler.onFocusUnavailable = { [weak self] n in
             DispatchQueue.main.async { self?.focusUnavailable(n, session: current) }
         }
         filler.onError = { [weak self] error in
             DispatchQueue.main.async { self?.decodeFailed(error, session: current) }
+        }
+        if virtualBounds == nil, isWebStream {
+            filler.onPlaybackFailure = { [weak self] in
+                DispatchQueue.main.async { self?.webPlaybackFailed(session: current) }
+            }
         }
         filler.onLanded = { [weak self] id, n in
             DispatchQueue.main.async { self?.landed(id, n, session: current) }
@@ -342,27 +430,30 @@ public final class PlayerCore {
         syncCacheRegions()
 
         rebuildExporter()
-        if source.audioStreamIndex != nil {
-            setUpAudioInBackground(url, zeroSeconds: Double(source.startPTS) * source.timeBase, readCache: readCache,
-                                   session: current)
+        let hasAudio = source.audioStreamIndex != nil || prepared.externalAudio != nil
+        if hasAudio {
+            setUpAudioInBackground(prepared, session: current)
         }
         // keep-speed: the speed the user chose goes on; the shuttle's and a hold's are only for the file they began in.
         let kept = (config.keepSpeed || virtualBounds != nil) ? (shuttleSpeed ? 1 : heldFrom?.speed ?? speed) : 1
         heldFrom = nil   // the hold's key-up after the open has nothing to put back
-        let willHaveSound = enableAudio && source.audioStreamIndex != nil   // the sound comes in later: its range now
+        let willHaveSound = enableAudio && hasAudio   // the sound comes in later: its range now
         let range = willHaveSound ? AudioOutput.rateRange : 0.01...100
         speed = min(max(kept, range.lowerBound), range.upperBound)
         direction = 1
         shuttleSpeed = false
         clock.rate = speed   // the sound takes it when it comes in (`attachAudio`)
         clock.followsAudio = true
-        if !initialIndex.isExact { buildIndexInBackground(url, readCache: readCache, session: current) }
-        let initialFrame = virtualBounds.flatMap { _ in landingTime }.map { initialIndex.frameNumber(forSeconds: $0) } ?? 0
+        if !initialIndex.isExact, !prepared.isResolvedPage, let readCache {
+            buildIndexInBackground(source.url, readCache: readCache, session: current)
+        }
+        let initialFrame = virtualBounds != nil || isWebStream ? landingTime.map(initialIndex.frameNumber(forSeconds:)) ?? 0 : 0
         seek(toFrame: initialFrame)
         waitsForHandoffPicture = startPaused && landingTime != nil
         if waitsForHandoffPicture, !initialIndex.isExact { pendingHandoffTime = landingTime }
         resumeIfRemembered(url, fallback: fallbackPosition, seeks: landingTime == nil)
-        if config.autoplay, virtualBounds == nil, !startPaused { play() }
+        if config.autoplay, virtualBounds == nil, !startPaused,
+           !isResolvedPage || position < initialIndex.frameCount - 1 { play() }
         // Start in the final playback/pause mode and at the restored position, never in the
         // filler's default paused mode while open/export/audio setup is still being prepared.
         filler.start()
@@ -385,12 +476,23 @@ public final class PlayerCore {
         exportFlag = nil
         indexFlag?.cancel()
         indexFlag = nil
+        hlsSession?.cancel()
+        hlsSession = nil
         filler?.stop(waitForExit: false)   // never block the UI thread on decoders
         filler = nil
         sharpnessCancel.cancel()
         sharpnessCancel = CancellationFlag()
         audio?.stop()
         audio = nil
+        externalAudioCache?.close()
+        externalAudioCache = nil
+        externalAudioFormat = nil
+        isResolvedPage = false
+        isWebStream = false
+        webResumeKey = nil
+        resolvedWebTitle = nil
+        selectedWebFormat = nil
+        webInterruptionReported = false
         scrubAudio?.stop()
         scrubAudio = nil
         clock.audioSeconds = nil
@@ -453,7 +555,7 @@ public final class PlayerCore {
 
     private func rebuildExporter() {
         guard let url, let info else { return }
-        exporter = FrameExporter(videoURL: url, nameURL: sceneInfo?.namingURL(for: url), folder: frameFolder,
+        exporter = FrameExporter(videoURL: info.url, nameURL: sceneInfo?.namingURL(for: url) ?? (info.url == url ? nil : url), folder: frameFolder,
                                  rotationClockwise: info.rotationClockwise,
                                  settings: ExportSettings(config: config, fallbackRoot: fallbackRoot,
                                                           screenPixels: screenPixelSize, color: colorCorrection,
@@ -507,14 +609,20 @@ public final class PlayerCore {
 
     /// Opening the audio decoders and starting the engine takes 0.1–0.5 s (two probes of the file, the audio
     /// device), so it is done beside the video; playback that started meanwhile picks the sound up when it is ready.
-    private func setUpAudioInBackground(_ url: URL, zeroSeconds zero: Double, readCache: ReadCache, session current: Int) {
+    private func setUpAudioInBackground(_ prepared: PreparedOpen, session current: Int) {
         let withOutput = enableAudio
-        let withScrub = enableAudio || snippetSinkOverride != nil
+        let source = prepared.source
+        let url = source.url
+        let zero = Double(source.startPTS) * source.timeBase
+        let readCache = prepared.readCache, hlsSession = prepared.hlsSession
+        let withScrub = prepared.externalAudio == nil && hlsSession == nil && (enableAudio || snippetSinkOverride != nil)
         audioSetupQueue.async { [weak self] in
             var output: AudioOutput?
             if withOutput {
                 do {
-                    output = try AudioOutput(decoder: AudioDecoder(url: url, zeroSeconds: zero, readCache: readCache))
+                    let decoder = try prepared.externalAudio ?? AudioDecoder(url: url, zeroSeconds: zero,
+                                                                            readCache: readCache, hlsSession: hlsSession)
+                    output = try AudioOutput(decoder: decoder)
                 } catch {
                     Self.audioLog.error("Audio: no sound for the file: \(error, privacy: .public)")
                 }
@@ -538,11 +646,13 @@ public final class PlayerCore {
         }
         if let scrubDecoder, let sink: SnippetSink = snippetSinkOverride ?? output {
             let scrub = ScrubAudio(decoder: scrubDecoder, sink: sink, tape: snippetSinkOverride == nil ? output : nil,
+                                   batchLocalReads: !networkPolicy.isNetwork,
                                    shouldYield: { [weak filler] in filler?.hasUnresolvedFocus ?? false })
             scrubAudio = scrub
             applyScrubAudioSettings()
             scrub.fileOpened()
             if !isPaused { scrub.playbackStarted() }
+            else { primeScrubAudio() }
         }
         applySpeed(speed)   // the time-pitch unit narrows the range
         applyVolume()
@@ -700,6 +810,7 @@ public final class PlayerCore {
         clockWaitsForPicture = false
         clock.stop()
         audio?.pause()
+        primeScrubAudio()
         scrubAudio?.playbackStopped()
         refocus(direction: 0)
         showCurrent()
@@ -715,7 +826,7 @@ public final class PlayerCore {
     public func dragFilm(toFrame target: Int) {
         let origin = position
         guard target != origin else { return }
-        seek(toFrame: target)
+        seek(toFrame: target, direction: 0, hold: .glued, supersedesRead: false)
         if let tick = scrubTicks.crossed(from: origin, to: position, keyframes: [], marks: tickMarks, at: now()) {
             haptic(tick)
         }
@@ -736,15 +847,16 @@ public final class PlayerCore {
         return true
     }
 
-    private func seek(toFrame n: Int, direction: Int, hold: SegmentHold) {
+    private func seek(toFrame n: Int, direction: Int, hold: SegmentHold, supersedesRead: Bool = true) {
         landingID += 1
         readCache?.cancelReadAhead()   // blocks queued for the old position would delay this one
-        move(toFrame: n, direction: direction, hold: hold)
+        move(toFrame: n, direction: direction, hold: hold, supersedesRead: supersedesRead)
     }
 
     /// Every seek, step and scrub ends here, so each is held inside the locked segments.
-    private func move(toFrame n: Int, direction: Int, hold: SegmentHold = .glued) {
+    private func move(toFrame n: Int, direction: Int, hold: SegmentHold, supersedesRead: Bool = true) {
         guard let index else { return }
+        let previousPicture = displayedFrame
         pendingHandoffTime = nil
         waitsForHandoffPicture = false
         if let bounds = virtualFrameBounds {
@@ -752,9 +864,18 @@ public final class PlayerCore {
         } else {
             position = held(min(max(n, 0), max(index.frameCount - 1, 0)), hold: hold)
         }
-        refocus(direction: direction)
+        refocus(direction: direction, supersedesRead: supersedesRead)
         if !isPaused { restartClock() }
         showCurrent()
+        if supersedesRead, isPaused, !networkPolicy.isNetwork, info?.isHLS != true, index.isExact,
+           virtualFrameBounds == nil, !segmentsLocked, loopRange == nil, !waitsForHandoffPicture,
+           let previousPicture, previousPicture - position > 48, !cache.isResolved(position),
+           let shown = displayedFrame {
+            let distance = abs(shown - position)
+            let secondAhead = index.frameNumber(forSeconds: index.seconds(forFrame: position) + 1)
+            let upper = min(position + 60, secondAhead, previousPicture - 1, position + distance - 1)
+            if upper >= position { delegate?.player(self, previewBackwardSeek: position...upper) }
+        }
         announceSegment()
     }
 
@@ -858,6 +979,12 @@ public final class PlayerCore {
             seek(toFrame: frame)
             return
         case .endOfFile:
+            if isWebStream, displayedFrame != last {
+                // A worker failure may already be pending when the display tick reaches the end.
+                webPlaybackFailed(session: session)
+                if isPaused { return }
+                if holdForWebPicture(last) { return }
+            }
             position = last
             pause()
             osd("End of file")
@@ -875,6 +1002,7 @@ public final class PlayerCore {
         announceSegment()
         checkPendingScreenshot()
         filler?.setFocus(n, mode: direction < 0 ? .reversing : .playing, direction: direction)
+        if (hlsSession != nil || isWebStream), direction > 0, holdForWebPicture(n) { return }
         // Skipping frames (spec §3): the decoded frame nearest the clock between it and the one on screen, within two
         // seconds of the clock — further back is another place (a seek), not a skipped stretch.
         if PlaybackDiagnostics.enabled, cache.frame(n) == nil {
@@ -890,6 +1018,18 @@ public final class PlayerCore {
             noteShown()
         }
         delegate?.playerStateDidChange(self)
+    }
+
+    /// Hold both clocks for a cold web frame so a stalled read cannot look like the media ended.
+    private func holdForWebPicture(_ n: Int) -> Bool {
+        guard !cache.isResolved(n) else { return false }
+        if position != n {
+            position = n
+            refocus(direction: direction)
+        }
+        restartClock()
+        delegate?.playerStateDidChange(self)
+        return true
     }
 
     public func perform(_ command: Command) {
@@ -942,7 +1082,8 @@ public final class PlayerCore {
         case .toggleSegmentLock: toggleSegmentLock()
         case .scrub, .cycleFullscreen, .setFullscreen, .cycleOntop, .stats, .quit, .ignore,
              .zoom, .zoomReset, .playlistPrev, .playlistNext, .togglePlaylist, .cyclePlaylistSort, .playlistFilter, .deleteFile, .closeFile, .showInFolder, .cycleABLoopMode, .toggleArtifactFilters, .toggleArtifactFilterPanel, .toggleUpscaler, .cycleUpscaler, .cycleMouseProfile, .toggleVibrance, .toggleAutoColor, .saveAutoColor, .saveVibrance, .resetColor, .toggleScrubAudio, .toggleScrubAudioPitch, .toggleSubjectFocus, .cycleSubjectFocus, .toggleSubjectFocusPanel, .cycleAspect, .windowScale, .windowFit,
-             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep, .addAutoColorStrength, .addArtifactStrength, .scrubEdge, .pluginAction: break
+             .revealFrames, .goTo, .holdSpeed, .showKeys, .sceneStep, .sceneBackStep,
+             .addAutoColorStrength, .addVibranceStrength, .addArtifactStrength, .scrubEdge, .pluginAction: break
         case .shuttleBack: shuttle(.back)
         case .shuttleStop: shuttle(.stop)
         case .shuttleForward: shuttle(.forward)
@@ -1010,8 +1151,10 @@ public final class PlayerCore {
             abLoop = "\(timecode(a)) – \(timecode(b)), \(b - a) f (\(seconds(ofFrames: b - a)) s), \(config.abLoop.rawValue)"
         }
         let (sharpnessText, changeText) = sharpnessTexts
+        var format = info.format
+        if let externalAudioFormat { format.audio = externalAudioFormat }
         return PlayerStats(
-            format: info.format, width: info.width, height: info.height, bitDepth: info.bitDepth, rotation: info.rotationClockwise,
+            format: format, width: info.width, height: info.height, bitDepth: info.bitDepth, rotation: info.rotationClockwise,
             sampleAspect: info.sampleAspect, frameRate: info.frameRate, duration: info.durationSeconds,
             decoder: filler?.decoderStatus.map { "\($0.codec) (\($0.backend.rawValue))" } ?? "starting",
             frame: position, lastFrame: index.frameCount - 1, exactIndex: index.isExact, time: progressText,
@@ -1019,7 +1162,8 @@ public final class PlayerCore {
             readCache: readCache.map { networkPolicy.isNetwork ? $0.stats.text + ", network mode" : $0.stats.text }, seek: seekTimer.text, index: indexStatus.text,
             speed: speedText, volume: isMuted ? "muted" : "\(Int(volume))%", saved: savedCount, marks: marksText, abLoop: abLoop,
             sharpness: sharpnessText, change: changeText, lastDecodeError: filler?.lastError.map { "\($0)" },
-            clips: clipQueue.flatMap { $0.isBusy ? "saving 1 · \($0.waitingCount) waiting" : nil })
+            clips: clipQueue.flatMap { $0.isBusy ? "saving 1 · \($0.waitingCount) waiting" : nil },
+            resolvedWebTitle: resolvedWebTitle, selectedWebFormat: selectedWebFormat)
     }
 
     /// Sharpness and change of the frame at `position`; starts measuring them and says "…" until the result is in.
@@ -1031,7 +1175,7 @@ public final class PlayerCore {
         if let frame = cache.frame(position), sharpnessPending.map({ $0 != key }) ?? true {
             sharpnessPending = key
             let previous = statsSignature.flatMap { $0.session == session ? $0.signature : nil }
-            let rawURL = frame.usesNativePacked10 ? url : nil
+            let rawURL = frame.usesNativePacked10 ? info?.url : nil
             let index = self.index
             let readCache = self.readCache
             let cancel = sharpnessCancel
@@ -1062,13 +1206,16 @@ public final class PlayerCore {
 
     // MARK: Private
 
-    private func refocus(direction stepDirection: Int) {
+    private func refocus(direction stepDirection: Int, supersedesRead: Bool = false) {
         if isPaused {
-            filler?.setFocus(position, mode: .paused, direction: stepDirection)
+            let previewOrigin = virtualFrameBounds == nil && !segmentsLocked ? displayedFrame : nil
+            filler?.setFocus(position, mode: .paused, direction: stepDirection, supersedesRead: supersedesRead,
+                             previewFrom: previewOrigin)
             return
         }
         if direction < 0 { filler?.setReverseDemand(speed: speed, framesPerSecond: info?.frameRate ?? 30) }
-        filler?.setFocus(position, mode: direction < 0 ? .reversing : .playing, direction: direction)
+        filler?.setFocus(position, mode: direction < 0 ? .reversing : .playing, direction: direction,
+                         supersedesRead: supersedesRead)
     }
 
     /// Backward the clock runs on the host time at a negative rate and the audio waits (spec §3).
@@ -1169,6 +1316,13 @@ public final class PlayerCore {
             return
         }
         checkPendingScreenshot()
+        let frame = cache.frame(position) ?? standInFrame()
+        if let frame, frame.number != displayedFrame { display(frame) }
+        if displayedFrame == position { seekTimer.finish(at: now()) }
+        delegate?.playerStateDidChange(self)
+    }
+
+    private func standInFrame() -> DecodedFrame? {
         let candidate: DecodedFrame?
         if seekTimer.isRunning, let shown = displayedFrame {
             // A cached stand-in can disappear when its frame leaves the ready
@@ -1183,19 +1337,19 @@ public final class PlayerCore {
         } else {
             candidate = cache.nearestAvailable(to: position)
         }
-        let standIn: DecodedFrame? = candidate.flatMap {
+        return candidate.flatMap {
             if let bounds = virtualFrameBounds, !bounds.contains($0.number) { return nil }
             return abs($0.number - position) <= Self.standInDistance ? $0 : nil
         }
-        if let frame = cache.frame(position) ?? standIn, frame.number != displayedFrame {
-            display(frame)
-        }
-        if displayedFrame == position { seekTimer.finish(at: now()) }
-        delegate?.playerStateDidChange(self)
+    }
+
+    private func primeScrubAudio() {
+        guard let scrubAudio, let shown = displayedFrame, let index else { return }
+        scrubAudio.prime(seconds: index.seconds(forFrame: shown))
     }
 
     /// Puts `frame` on screen; in pause it also gets its piece of scrub audio.
-    private func display(_ frame: DecodedFrame) {
+    private func display(_ frame: DecodedFrame, withScrubAudio: Bool = true) {
         guard pendingHandoffTime == nil, !waitsForHandoffPicture || frame.number == position else { return }
         waitsForHandoffPicture = false
         StartupTrace.markOnce("first frame to view")
@@ -1203,7 +1357,9 @@ public final class PlayerCore {
         if viewingVisible { recordActualView() }
         delegate?.player(self, display: frame)
         if clockWaitsForPicture, !isPaused { restartClock() }
-        if isPaused, let seconds = index?.seconds(forFrame: frame.number) { scrubAudio?.frameShown(seconds: seconds) }
+        if withScrubAudio, isPaused, let seconds = index?.seconds(forFrame: frame.number) {
+            scrubAudio?.frameShown(seconds: seconds)
+        }
     }
 
     /// Visibility belongs to the host: hidden/Home/occluded frames still render, but are not visits.
@@ -1215,7 +1371,7 @@ public final class PlayerCore {
     }
 
     private func recordActualView(persistImmediately: Bool = false) {
-        guard virtualPlaybackBounds == nil else { return }
+        guard !isWebStream, virtualPlaybackBounds == nil else { return }
         let firstView = lastViewedAt == nil
         lastViewedAt = Date()
         if firstView || persistImmediately, let url, let size = readCache?.fileSize, let lastViewedAt {
@@ -1270,6 +1426,14 @@ public final class PlayerCore {
         osd("Decode error: \(error)")
     }
 
+    private func webPlaybackFailed(session current: Int) {
+        guard current == session, filler?.takePlaybackFailure() == true, !isPaused, let displayedFrame,
+              direction < 0 || displayedFrame != frameCount - 1, !webInterruptionReported,
+              let onWebPlaybackInterrupted else { return }
+        webInterruptionReported = true
+        onWebPlaybackInterrupted()
+    }
+
     private func step(by frames: Int) {
         guard frames != 0, let index else { return }
         if !isPaused {
@@ -1281,7 +1445,7 @@ public final class PlayerCore {
         defer { noteEnd(moved: position != from, direction: direction) }
         var n = min(max(position + frames, 0), index.frameCount - 1)
         while cache.isUndecodable(n), n + direction >= 0, n + direction < index.frameCount { n += direction }
-        seek(toFrame: n, direction: direction)
+        seek(toFrame: n, direction: direction, hold: .glued, supersedesRead: false)
         frameOSDPending = !cache.hasReadyFrame(position)
         osd(frameText)
     }
@@ -1855,7 +2019,7 @@ public final class PlayerCore {
     /// What `c` would save in each mode, for its sheet (spec §4.1); nil = no closed mark (with the open one closed
     /// at the playhead when it is after its start).
     public func clipSummary() -> ClipSummary? {
-        guard let index else { return nil }
+        guard !isResolvedPage, let index else { return nil }
         let saving = CutMarks(segments: marks.closed(at: position).segments)
         guard !saving.segments.isEmpty else { return nil }
         func span(_ range: ClosedRange<Int>) -> Double {
@@ -1877,6 +2041,7 @@ public final class PlayerCore {
     /// `c`: queues the marks as clips in `mode` and clears them (⌘Z brings them back). The open mark is closed at the
     /// playhead when that is after its start, else it stays for later.
     public func saveMarks(_ mode: ClipMode) {
+        guard !isResolvedPage else { refuse("Saving clips isn’t available for video pages"); return }
         cancelEdgeDrag()   // a mark edit: the clips are of the marks before the drag
         let closed = marks.closed(at: position)
         guard !closed.segments.isEmpty else { osd("Mark a range first"); return }
@@ -2039,27 +2204,29 @@ public final class PlayerCore {
     /// Saves where the file is (and its A–B range, marks, length) now, as leaving it does: Home shows it over the video.
     public func rememberPosition() {
         guard virtualPlaybackBounds == nil else { return }
-        if let lastViewedAt, let url, let size = readCache?.fileSize {
+        if !isWebStream, let lastViewedAt, let url, let size = readCache?.fileSize {
             resumeStore?.recordView(for: url, size: size, at: lastViewedAt)
         }
-        guard config.resumePlayback, let resumeStore, let url, let index else { return }
-        let entry = ResumeEntry(position: index.seconds(forFrame: position),
+        guard config.resumePlayback, let resumeStore, let url, let key = resumeKey(for: url), let index else { return }
+        let existing = resumeStore.entry(forKey: key)
+        let savedFrame = isResolvedPage && webInterruptionReported ? displayedFrame ?? position : position
+        let entry = ResumeEntry(position: index.seconds(forFrame: savedFrame),
                                      loopA: loopA.map(index.seconds(forFrame:)),
                                      loopB: loopB.map(index.seconds(forFrame:)),
                                      marks: marks.isEmpty ? nil
                                          : marks.segments.map { [index.seconds(forFrame: $0.start), index.seconds(forFrame: $0.end)] }
                                          + (marks.open.map { [[index.seconds(forFrame: $0)]] } ?? []),
                                      duration: durationSeconds > 0 ? durationSeconds : nil,
-                                     color: resumeStore.color(for: url, size: readCache?.fileSize), lastViewedAt: lastViewedAt)
+                                     color: existing?.color, lastViewedAt: lastViewedAt)
         // A shutdown following the termination flush must not enqueue the same state again merely
         // because ResumeEntry's default updated date is newer. Actual changes still get a fresh date.
-        if let existing = resumeStore.entry(for: url, size: readCache?.fileSize) {
+        if let existing {
             var comparable = entry
             comparable.updated = existing.updated
             comparable.lastViewedAt = [entry.lastViewedAt, existing.lastViewedAt].compactMap { $0 }.max()
             if comparable == existing { return }
         }
-        resumeStore.save(entry, for: url, size: readCache?.fileSize)
+        resumeStore.save(entry, forKey: key)
     }
 
     /// A termination barrier only: callers pause/remember first. It never changes frames or viewing dates.
@@ -2069,7 +2236,9 @@ public final class PlayerCore {
     /// false leaves the position (a landing time follows).
     private func resumeIfRemembered(_ url: URL, fallback: Double?, seeks: Bool) {
         guard virtualPlaybackBounds == nil, config.resumePlayback, let index else { return }
-        guard let entry = resumeStore?.entry(for: url, size: readCache?.fileSize) ?? fallback.map({ ResumeEntry(position: $0) }) else { return }
+        let remembered = resumeStore.flatMap { store in resumeKey(for: url).flatMap { store.entry(forKey: $0) } }
+        let fallbackEntry = isWebStream ? nil : fallback.map { ResumeEntry(position: $0) }
+        guard let entry = remembered ?? fallbackEntry else { return }
         loopA = entry.loopA.map(index.frameNumber(forSeconds:))
         loopB = entry.loopB.map(index.frameNumber(forSeconds:))
         dropLoopOutsideSegments()   // segments given before the open are locked already
@@ -2079,9 +2248,14 @@ public final class PlayerCore {
                              },
                              open: saved.first { $0.count == 1 }.map { index.frameNumber(forSeconds: $0[0]) })
         }
-        guard seeks, entry.position > 0, durationSeconds - entry.position >= 5 else { return }
+        guard seeks, entry.position > 0, isResolvedPage || durationSeconds - entry.position >= 5 else { return }
         seek(toFrame: index.frameNumber(forSeconds: entry.position), direction: 0, hold: .nearest)
         osd("Resumed at \(FrameNaming.timecode(entry.position))")
+    }
+
+    private func resumeKey(for url: URL) -> String? {
+        if isWebStream { return webResumeKey }
+        return ResumeStore.key(for: url, size: readCache?.fileSize)
     }
 
     private func timecode(_ frame: Int) -> String {
@@ -2142,23 +2316,33 @@ public final class PlayerCore {
 /// Stops a `PlayerCore.preparation` that is no longer wanted: its read cache closes, so the reads it waits for end
 /// with `ECANCELED` and their downloads stop.
 public final class OpenCancellation: @unchecked Sendable {
+    let hlsSession = HLSMediaSession()
     private let lock = NSLock()
-    private var cache: ReadCache?
+    private var caches: [ReadCache] = []
     private var cancelled = false
 
     public init() {}
 
     public func cancel() {
-        lock.withLock { () -> ReadCache? in
+        let pending = lock.withLock {
             cancelled = true
-            return cache
-        }?.close()
+            defer { caches.removeAll() }
+            return caches
+        }
+        hlsSession.cancel()
+        for cache in pending { cache.close() }
     }
 
-    /// The preparation's read cache, closed at once if the cancel came first.
+    public var isCancelled: Bool { lock.withLock { cancelled } }
+
+    func check() throws {
+        if isCancelled { throw POSIXError(.ECANCELED) }
+    }
+
+    /// The preparation's read caches, closed at once if the cancel came first.
     func watch(_ readCache: ReadCache) throws {
         let late = lock.withLock { () -> Bool in
-            cache = readCache
+            if !cancelled { caches.append(readCache) }
             return cancelled
         }
         if late {
@@ -2172,13 +2356,45 @@ public final class OpenCancellation: @unchecked Sendable {
 /// another once; nothing else touches it in between.
 public struct PreparedOpen: @unchecked Sendable {
     public let url: URL
+    let isResolvedPage: Bool
+    let isWebStream: Bool
+    let webResumeKey: String?
+    let resolvedWebTitle: String?
+    let selectedWebFormat: ResolvedVideo.Format?
+    let externalAudio: AudioDecoder?
+    let externalAudioCache: ReadCache?
     let policy: NetworkPolicy
-    let readCache: ReadCache
+    let readCache: ReadCache?
     let source: MediaSource
     let identity: MediaFileIdentity?
+    let hlsSession: HLSMediaSession?
+
+    init(url: URL, policy: NetworkPolicy, readCache: ReadCache?, source: MediaSource,
+         identity: MediaFileIdentity?, hlsSession: HLSMediaSession? = nil, isResolvedPage: Bool = false,
+         isWebStream: Bool = false,
+         webResumeKey: String? = nil, resolvedWebTitle: String? = nil, selectedWebFormat: ResolvedVideo.Format? = nil,
+         externalAudio: AudioDecoder? = nil, externalAudioCache: ReadCache? = nil) {
+        self.url = url
+        self.policy = policy
+        self.readCache = readCache
+        self.source = source
+        self.identity = identity
+        self.hlsSession = hlsSession
+        self.isResolvedPage = isResolvedPage
+        self.isWebStream = isWebStream
+        self.webResumeKey = webResumeKey
+        self.resolvedWebTitle = resolvedWebTitle
+        self.selectedWebFormat = selectedWebFormat
+        self.externalAudio = externalAudio
+        self.externalAudioCache = externalAudioCache
+    }
 
     /// Releases what was read, for an open that was abandoned.
-    public func discard() { readCache.close() }
+    public func discard() {
+        hlsSession?.cancel()
+        externalAudioCache?.close()
+        readCache?.close()
+    }
 
     /// One representative frame from a prepared cut source, using its already verified byte cache.
     public func makeCutPreview(widthPixels: Int, landingIndex: FrameIndex? = nil) -> PreviewProvider {

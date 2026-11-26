@@ -12,8 +12,9 @@ final class TransportControls: NSView, NSPopoverDelegate {
     var onSpeed: ((Double) -> Void)?
     var onFullscreen: (() -> Void)?
     var onHold: (() -> Void)?
-    private let left = TransportControls.plate()
-    private let right = TransportControls.plate()
+    static let width: CGFloat = 246
+    private let plate = TransportControls.plate()
+    private let separator = NSView()
     private let play = TransportControls.button("play.fill", "Play / pause (Space)")
     private let back = TransportControls.button("gobackward.10", "Back 10 seconds")
     private let forward = TransportControls.button("goforward.10", "Forward 10 seconds")
@@ -28,19 +29,23 @@ final class TransportControls: NSView, NSPopoverDelegate {
     private var level: Int?
     private var muted: Bool?
     private var rate: Double?
+    private var feedbackButton: NSButton?
+    private var feedbackExpiry: DispatchWorkItem?
     var holding: Bool { menuOpen || popover.isShown }
-    /// Actual capsule bounds in the timeline's coordinates, excluding the transparent space between them.
+    /// Actual capsule bounds in the timeline's coordinates.
     var occupiedRects: [NSRect] {
         guard let host = superview else { return [] }
-        return [left, right].map { $0.convert($0.bounds, to: host) }
+        return [plate.convert(plate.bounds, to: host)]
     }
 
     init() {
         super.init(frame: .zero)
         Chrome.Palette.overMedia.apply(to: self)
-        for view in [left, right] { addSubview(view) }
-        for button in [back, play, forward] { left.addSubview(button) }
-        for button in [mute, volume, speed, full] { right.addSubview(button) }
+        addSubview(plate)
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = Chrome.Palette.overMedia.separator.cgColor
+        plate.addSubview(separator)
+        for button in [back, play, forward, mute, volume, speed, full] { plate.addSubview(button) }
         let actions: [(NSButton, Selector)] = [(back, #selector(backClicked)), (play, #selector(playClicked)),
             (forward, #selector(forwardClicked)), (mute, #selector(muteClicked)), (volume, #selector(volumeClicked)),
             (speed, #selector(speedClicked)), (full, #selector(fullClicked))]
@@ -54,6 +59,9 @@ final class TransportControls: NSView, NSPopoverDelegate {
         speed.contentTintColor = Chrome.Palette.overMedia.text
         speed.toolTip = "Playback speed"
         speed.setAccessibilityLabel("Playback speed")
+        volume.font = .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+        volume.setAccessibilityHelp("Scroll to adjust volume. Click to open the slider.")
+        mute.setAccessibilityHelp("Scroll to adjust volume. Click to toggle mute.")
         slider.target = self; slider.action = #selector(sliderMoved)
         slider.isContinuous = true; slider.refusesFirstResponder = true
         slider.setAccessibilityLabel("Volume")
@@ -66,16 +74,41 @@ final class TransportControls: NSView, NSPopoverDelegate {
         popover.delegate = self
     }
     required init?(coder: NSCoder) { fatalError("not used") }
+    isolated deinit { feedbackExpiry?.cancel() }
 
     override func layout() {
         super.layout()
-        left.frame = NSRect(x: 0, y: 0, width: 100, height: 34)
-        right.frame = NSRect(x: max(104, bounds.width - 130), y: 0, width: 130, height: 34)
-        for (i, button) in [back, play, forward].enumerated() { button.frame = NSRect(x: 5 + i * 30, y: 3, width: 28, height: 28) }
-        mute.frame = NSRect(x: 4, y: 3, width: 28, height: 28)
-        volume.frame = NSRect(x: 32, y: 3, width: 20, height: 28)
-        speed.frame = NSRect(x: 52, y: 3, width: 40, height: 28)
-        full.frame = NSRect(x: 96, y: 3, width: 28, height: 28)
+        plate.frame = bounds
+        // Keep every control reachable if a pinned slot leaves less than the preferred width.
+        let scale = bounds.width / Self.width
+        func position(_ x: CGFloat, _ width: CGFloat) -> NSRect {
+            NSRect(x: (x * scale).rounded(), y: 3, width: (width * scale).rounded(.down), height: 28)
+        }
+        for (i, button) in [back, play, forward].enumerated() { button.frame = position(5 + CGFloat(i * 30), 28) }
+        separator.frame = NSRect(x: (98 * scale).rounded(), y: 8, width: 1, height: 18)
+        mute.frame = position(105, 28)
+        volume.frame = position(133, 36)
+        speed.frame = position(172, 40)
+        full.frame = position(213, 28)
+    }
+
+    /// A seek can flash its own button while the capsule is visible.
+    func acknowledgeSeek(seconds: Double) {
+        let button = seconds < 0 ? back : forward
+        clearFeedback()
+        button.wantsLayer = true
+        button.layer?.cornerRadius = Chrome.Radius.photo
+        button.layer?.backgroundColor = Chrome.Palette.overMedia.pressed.cgColor
+        feedbackButton = button
+        let work = DispatchWorkItem { [weak self] in self?.clearFeedback() }
+        feedbackExpiry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55, execute: work)
+    }
+
+    private func clearFeedback() {
+        feedbackExpiry?.cancel(); feedbackExpiry = nil
+        feedbackButton?.layer?.backgroundColor = nil
+        feedbackButton = nil
     }
     func update(volume value: Double, muted: Bool, paused: Bool, speed: Double) {
         if self.paused != paused {
@@ -86,11 +119,11 @@ final class TransportControls: NSView, NSPopoverDelegate {
             self.paused = paused
         }
         let level = Int(value.rounded())
+        if slider.doubleValue != value { slider.doubleValue = value }
         if self.level != level || self.muted != muted {
             mute.image = Self.image(muted ? "speaker.slash.fill" : Feedback.volume(level).symbolName, muted ? "Unmute" : "Mute")
             mute.setAccessibilityLabel(muted ? "Unmute" : "Mute")
             mute.toolTip = muted ? "Unmute" : "Mute"
-            if !popover.isShown { slider.doubleValue = value }
             self.level = level; self.muted = muted
         }
         if rate != speed {
@@ -160,5 +193,29 @@ final class TransportControls: NSView, NSPopoverDelegate {
     }
     override func mouseDown(with event: NSEvent) {}
     override func mouseDragged(with event: NSEvent) {}
-    override func scrollWheel(with event: NSEvent) {}
+    private func isOverVolume(_ point: NSPoint) -> Bool {
+        let point = plate.convert(point, from: self)
+        return mute.frame.contains(point) || volume.frame.contains(point)
+    }
+
+    @discardableResult func adjustVolume(by delta: Double, at point: NSPoint, precise: Bool) -> Bool {
+        guard isOverVolume(point) else { return false }
+        if delta.isFinite, delta != 0 {
+            let change = precise ? delta * 0.2 : delta * 2
+            onVolume?(min(slider.maxValue, max(slider.minValue, slider.doubleValue + change)))
+        }
+        return true
+    }
+
+    func handleVolumeScroll(_ event: NSEvent) -> Bool {
+        let point = convert(event.locationInWindow, from: nil)
+        guard alphaValue > 0.01, isOverVolume(point) else { return false }
+        let delta = event.scrollingDeltaY
+        if event.momentumPhase.isEmpty, abs(delta) >= abs(event.scrollingDeltaX) {
+            adjustVolume(by: delta, at: point, precise: event.hasPreciseScrollingDeltas)
+        }
+        return true
+    }
+
+    override func scrollWheel(with event: NSEvent) { handleVolumeScroll(event) }
 }

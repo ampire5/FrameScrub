@@ -7,7 +7,6 @@ final class TimelineModeControl: NSVisualEffectView {
     var onSelect: ((TimelineFilmMode) -> Void)?
     var onSettings: (() -> Void)?
     var onPin: (() -> Void)?
-    static let wideLayoutMinimum: CGFloat = 500
     private let segments = NSSegmentedControl()
     private let settings = NSButton()
     private let pin = NSButton()
@@ -53,7 +52,7 @@ final class TimelineModeControl: NSVisualEffectView {
         pin.state = pinned ? .on : .off
         pin.image = Icons.symbol(symbol, pointSize: 12, description: label)
             ?? NSImage(systemSymbolName: symbol, accessibilityDescription: label)
-        pin.toolTip = "\(label) (⌥⌘L)"
+        pin.toolTip = "\(label) (⇧⌘L)"
         pin.setAccessibilityLabel(label)
     }
     @objc private func selected() {

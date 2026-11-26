@@ -140,6 +140,30 @@ import Testing
         #expect(snapshot.sample(atSeconds: 2 - 1 / rate).0 < 0.05)
     }
 
+    @Test func overlappingRunsKeepEarlierSamplesAndJoinFadesAcrossChunks() throws {
+        var buffer = ScrubAudioBuffer(sampleRate: rate)
+        func add(_ start: Double, _ end: Double, value: Float) {
+            let plane = [Float](repeating: value, count: Int(((end - start) * rate).rounded()))
+            buffer.append(StereoSamples(left: plane, right: plane), startSeconds: start)
+        }
+        buffer.beginRun(atSeconds: 1)
+        add(1, 1.5, value: 1)
+        add(1.5, 2, value: 2)
+        buffer.beginRun(atSeconds: 0.5)
+        add(0.5, 1.25, value: 3)
+        add(1.75, 2.25, value: 4)
+        let slice = try #require(samples(buffer.slice(fromSeconds: 0.9, length: 1.3)))
+        #expect(slice.left[0] == 3)
+        #expect(slice.left[4800] == 1)
+        #expect(slice.left[28800] == 2)
+        #expect(slice.left[52800] == 4)
+        let tape = buffer.snapshot(aroundSeconds: 1.5, radius: 1)
+        #expect(tape.sample(atSeconds: 1).0 == 1)
+        #expect(tape.sample(atSeconds: 1.5).0 == 2)
+        #expect(tape.sample(atSeconds: 2).0 == 4)
+        #expect(tape.sample(atSeconds: 2.25 - 1 / rate).0 < 0.05)
+    }
+
     @Test func interpolatesBetweenSamples() {
         let values: [Float] = (0..<100).map(Float.init)
         let snapshot = TapeSnapshot(startSeconds: 0, sampleRate: rate, samples: StereoSamples(left: values, right: values))

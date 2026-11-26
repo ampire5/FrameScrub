@@ -129,12 +129,15 @@ final class VideoView: NSView {
         }
     }
     private var filmSeekPreview: (began: CFTimeInterval, target: Int, pictures: FilmSeekPictures, duration: Double, slot: Int)?
+    private var cachedSeekPreview: (target: Int, image: CGImage)?
     private var filmSeekRefreshInterval = 1.0 / 60
     private var filmSeekRenderCost = 0.0
     private var lastFilmSeekSample = -Double.infinity
     private var filmSeekRenderSample: (buffer: MTLCommandBuffer, encodeCost: Double)?
     private var headroom = 1.0
     private var headroomCheck = 0
+    private var immediateRenderQueued = false
+    private var submittedSinceDisplayTick = false
     private var needsRender = false
     private var frameLink: CADisplayLink?
     private var rightUsedAsModifier = false
@@ -268,6 +271,7 @@ final class VideoView: NSView {
         skipCounter.reset()
         presentationLedger.reset(); presentationTicket = nil; lastPresentationAt = nil
         lastArrivalNumber = nil; diagnosticEpoch = UUID()
+        submittedSinceDisplayTick = false
         needsRender = blank
     }
 
@@ -295,6 +299,26 @@ final class VideoView: NSView {
         needsRender = true
         framePlaying = playing
         if subjectFocus != nil { requestMask(for: frame, accurate: false) }
+        schedulePausedRender()
+    }
+
+    private var canRenderPausedFrame: Bool {
+        frameLink != nil && !framePlaying && image != nil && filmSeekPreview == nil &&
+            subjectFocus == nil && focusDrawn == nil && llImage == nil &&
+            previousColor == nil && !zoomPan.isMoving &&
+            window?.occlusionState.contains(.visible) == true
+    }
+
+    private func schedulePausedRender() {
+        guard canRenderPausedFrame, !immediateRenderQueued, !submittedSinceDisplayTick else { return }
+        immediateRenderQueued = true
+        // Let this input finish. A newer picture or a filmstrip animation can replace it in the same turn.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.immediateRenderQueued = false
+            guard self.canRenderPausedFrame, !self.submittedSinceDisplayTick else { return }
+            self.render()
+        }
     }
 
     func previewFilmSeek(from origin: Int, to target: Int, cache: FrameCache, settings: FilmSeekPreviewSettings) -> Bool {
@@ -316,19 +340,30 @@ final class VideoView: NSView {
         needsRender = true
     }
 
+    @discardableResult
+    func previewCachedSeek(_ thumbnail: CGImage, target: Int) -> Bool {
+        guard image != nil, canPreviewFilmSeek, filmSeekPreview == nil else { return false }
+        cachedSeekPreview = (target, thumbnail)
+        needsRender = true
+        schedulePausedRender()
+        return true
+    }
+
     private func filmSeekBudget(available: Int, thumbnails: Bool, settings: FilmSeekPreviewSettings) -> FilmSeekRenderBudget {
         FilmSeekRenderBudget(available: available, thumbnails: thumbnails,
                              refreshInterval: filmSeekRefreshInterval, renderCost: filmSeekRenderCost, settings: settings)
     }
 
     func cancelFilmSeekPreview() {
-        guard filmSeekPreview != nil else { return }
+        guard filmSeekPreview != nil || cachedSeekPreview != nil else { return }
         filmSeekPreview = nil
+        cachedSeekPreview = nil
         needsRender = true
     }
 
-    func updateFilmSeekPreview(position: Int, paused: Bool) {
+    func updateFilmSeekPreview(position: Int, paused: Bool, unavailable: @autoclosure () -> Bool = false) {
         if let preview = filmSeekPreview, !paused || preview.target != position { cancelFilmSeekPreview() }
+        if let preview = cachedSeekPreview, !paused || preview.target != position || unavailable() { cancelFilmSeekPreview() }
     }
 
     private var canPreviewFilmSeek: Bool {
@@ -575,6 +610,7 @@ final class VideoView: NSView {
         _ = try? context.startTask(toRender: CIImage(color: .black).cropped(to: CGRect(origin: .zero, size: size)), to: destination)
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        submittedSinceDisplayTick = true
     }
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
@@ -585,6 +621,9 @@ final class VideoView: NSView {
         zoomPan.tick(timestamp: link.timestamp, targetTimestamp: link.targetTimestamp)
         headroomCheck += 1
         if headroomCheck % 30 == 0 { refreshHeadroom() }   // about twice a second at 60 Hz
+        // A newer picture can always use this tick. Only an idle tick
+        // opens an early submission slot for the next interval.
+        submittedSinceDisplayTick = false
         render()
     }
 
@@ -602,6 +641,10 @@ final class VideoView: NSView {
                 }
             }
             if previewFrame == nil, previewThumbnail == nil { cancelFilmSeekPreview() }
+        }
+        if let preview = cachedSeekPreview {
+            if canPreviewFilmSeek { previewThumbnail = preview.image }
+            else { cancelFilmSeekPreview() }
         }
         let isPreview = previewFrame != nil || previewThumbnail != nil
         // An intermediate picture can miss a refresh. The destination still uses the normal render path.
@@ -634,9 +677,12 @@ final class VideoView: NSView {
             waited = true
         }
         let cpuStart = Self.focusLog ? Self.threadCPUTime() : 0   // the main thread's own CPU time, not the wall clock
-        guard
-              let drawable = metalLayer.nextDrawable(),
-              let commandBuffer = commandQueue.makeCommandBuffer() else { return }
+        guard let drawable = metalLayer.nextDrawable() else { return }
+        if PlaybackDiagnostics.enabled, !isPreview {
+            PlaybackDiagnostics.shared.record("drawable_acquire_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000,
+                                              group: diagnosticGroup)
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else { return }
         needsRender = false
         let fit = fittedSize.height / geometry.cropRect(in: sourceImage.extent.size).height
         if !isPreview, abs(fit - displayRatio) > 0.001 {
@@ -729,7 +775,8 @@ final class VideoView: NSView {
         if !isPreview, PlaybackDiagnostics.enabled, let ticket = presentationTicket {
             let group = diagnosticGroup, epoch = diagnosticEpoch
             let report = PlaybackDiagnostics.shared
-            report.record("render_encode_wall_ms", (PlaybackDiagnostics.now() - diagnosticStart) * 1000, group: group)
+            let encodedAt = PlaybackDiagnostics.now()
+            report.record("render_encode_wall_ms", (encodedAt - diagnosticStart) * 1000, group: group)
             // CIImage is lazy: this is graph construction, NOT time executing effects on the GPU.
             report.record("effect_graph_build_ms", effectGraphMilliseconds, group: group)
             if let frame = currentFrame, let mask = focusMask {
@@ -749,6 +796,8 @@ final class VideoView: NSView {
                     guard let self, epoch == self.diagnosticEpoch, presentedAt > 0,
                           let latency = self.presentationLedger.present(ticket, at: presentedAt) else { return }
                     report.record("arrival_to_present_ms", latency, group: group)
+                    report.record("arrival_to_render_ms", (diagnosticStart - ticket.arrivedAt) * 1000, group: group)
+                    report.record("encoded_to_present_ms", (presentedAt - encodedAt) * 1000, group: group)
                     report.record("unique_presented", 1, group: group)
                     if ticket.playing && self.diagnosticPlaying && self.presentationLedger.isCurrentPlaybackPeriod(ticket) {
                         if let previous = self.lastPresentationAt, presentedAt >= previous {
@@ -803,6 +852,7 @@ final class VideoView: NSView {
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        submittedSinceDisplayTick = true
         // Sample the existing command buffer. Keep at most one and collect it on the existing display tick.
         if filmSeekRenderSample == nil, isPreview || renderStarted - lastFilmSeekSample >= 0.25 {
             filmSeekRenderSample = (commandBuffer, CACurrentMediaTime() - renderStarted)

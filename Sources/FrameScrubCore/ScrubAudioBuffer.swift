@@ -55,7 +55,7 @@ public struct ScrubAudioBuffer {
     }
 
     public mutating func append(_ samples: StereoSamples, startSeconds: Double) {
-        guard !runs.isEmpty, samples.count > 0 else { return }
+        guard !runs.isEmpty, samples.count > 0, samples.right.count == samples.count else { return }
         let chunk = Chunk(start: index(startSeconds), samples: samples)
         runs[runs.count - 1].chunks.append(chunk)
         runs[runs.count - 1].end = max(runs[runs.count - 1].end, chunk.end)
@@ -67,6 +67,8 @@ public struct ScrubAudioBuffer {
         runs[runs.count - 1].end = Int.max
     }
 
+    func canContinue(at sample: Int) -> Bool { runs.last?.end == sample }
+
     public mutating func reset() {
         runs.removeAll()
     }
@@ -75,6 +77,8 @@ public struct ScrubAudioBuffer {
     public mutating func trim(around seconds: Double) {
         let low = index(seconds - window), high = index(seconds + window)
         runs = runs.compactMap { run in
+            guard run.start < run.end else { return nil }
+            if low <= run.start, run.end <= high { return run }
             var run = run
             run.start = max(run.start, low)
             run.end = min(run.end, high)
@@ -107,13 +111,24 @@ public struct ScrubAudioBuffer {
         }
     }
 
+    private func indices(fromSeconds start: Double, length: Double) -> Range<Int> {
+        let first = index(start)
+        return first..<(first + max(1, index(length)))
+    }
+
+    func isReady(fromSeconds start: Double, length: Double) -> Bool {
+        covers(indices(fromSeconds: start, length: length))
+    }
+
+    private func covers(_ wanted: Range<Int>) -> Bool {
+        mergedIndices.contains { $0.lowerBound <= wanted.lowerBound && wanted.upperBound <= $0.upperBound }
+    }
+
     public func slice(fromSeconds start: Double, length: Double) -> AudioSlice {
-        let first = index(start), count = max(1, index(length))
-        let wanted = first..<(first + count)
-        guard mergedIndices.contains(where: { $0.lowerBound <= wanted.lowerBound && wanted.upperBound <= $0.upperBound }) else {
-            return .notReady
-        }
-        let (out, any, _) = samples(in: wanted)
+        let wanted = indices(fromSeconds: start, length: length)
+        guard covers(wanted) else { return .notReady }
+        var out = zeros(count: wanted.count)
+        let any = copySamples(in: wanted, into: &out) { _ in }
         return any ? .samples(out) : .silent
     }
 
@@ -121,47 +136,58 @@ public struct ScrubAudioBuffer {
     /// sound ramps over 3 ms where it meets them (and at the copy's ends), so the tape never clicks on an edge.
     public func snapshot(aroundSeconds t: Double, radius: Double) -> TapeSnapshot {
         let first = index(t - radius), last = index(t + radius)
-        var (out, _, filled) = samples(in: first..<max(first, last))
+        let wanted = first..<max(first, last)
+        var out = zeros(count: wanted.count)
+        var filled = IndexSet()
+        _ = copySamples(in: wanted, into: &out) { filled.insert(integersIn: $0) }
         let ramp = max(1, Int((0.003 * sampleRate).rounded()))
-        var gains = [Float](repeating: 1, count: filled.count)
-        var lastEmpty = -1
-        for i in filled.indices {
-            if !filled[i] { lastEmpty = i; continue }
-            gains[i] = min(1, Float(i - lastEmpty - 1) / Float(ramp))
-        }
-        var nextEmpty = filled.count
-        for i in filled.indices.reversed() {
-            if !filled[i] { nextEmpty = i; continue }
-            gains[i] = min(gains[i], Float(nextEmpty - i - 1) / Float(ramp))
-            if gains[i] < 1 {
-                out.left[i] *= gains[i]
-                out.right[i] *= gains[i]
+        for span in filled.rangeView {
+            let headEnd = min(span.upperBound, span.lowerBound + ramp)
+            for i in span.lowerBound..<headEnd {
+                let distance = min(i - span.lowerBound, span.upperBound - i - 1)
+                let gain = Float(distance) / Float(ramp)
+                out.left[i] *= gain
+                out.right[i] *= gain
+            }
+            for i in max(headEnd, span.upperBound - ramp)..<span.upperBound {
+                let gain = Float(span.upperBound - i - 1) / Float(ramp)
+                out.left[i] *= gain
+                out.right[i] *= gain
             }
         }
         return TapeSnapshot(startSeconds: Double(first) / sampleRate, sampleRate: sampleRate, samples: out)
     }
 
-    /// The samples of `wanted` (zeros where nothing is stored), whether any were stored, and which.
-    private func samples(in wanted: Range<Int>) -> (samples: StereoSamples, any: Bool, filled: [Bool]) {
-        let count = wanted.count, first = wanted.lowerBound
-        var out = StereoSamples(left: Array(repeating: 0, count: count), right: Array(repeating: 0, count: count))
-        var filled = Array(repeating: false, count: count)
+    private func zeros(count: Int) -> StereoSamples {
+        StereoSamples(left: Array(repeating: 0, count: count), right: Array(repeating: 0, count: count))
+    }
+
+    /// Copy whole spans. Visit the earliest data last so it wins when runs overlap.
+    private func copySamples(in wanted: Range<Int>, into out: inout StereoSamples, span: (Range<Int>) -> Void) -> Bool {
         var any = false
-        for run in runs {
-            for chunk in run.chunks {
-                // Only what the run covers; the first data stored for a sample wins.
-                let lower = max(chunk.start, run.start, wanted.lowerBound)
-                let upper = min(chunk.end, run.end, wanted.upperBound)
-                guard lower < upper else { continue }
-                for i in lower..<upper where !filled[i - first] {
-                    out.left[i - first] = chunk.samples.left[i - chunk.start]
-                    out.right[i - first] = chunk.samples.right[i - chunk.start]
-                    filled[i - first] = true
-                    any = true
+        out.left.withUnsafeMutableBufferPointer { left in
+            out.right.withUnsafeMutableBufferPointer { right in
+                for run in runs.reversed() {
+                    let low = max(run.start, wanted.lowerBound), high = min(run.end, wanted.upperBound)
+                    guard low < high else { continue }
+                    for chunk in run.chunks.reversed() {
+                        let lower = max(chunk.start, low), upper = min(chunk.end, high)
+                        guard lower < upper else { continue }
+                        let destination = lower - wanted.lowerBound, source = lower - chunk.start
+                        let count = upper - lower
+                        chunk.samples.left.withUnsafeBufferPointer {
+                            (left.baseAddress! + destination).update(from: $0.baseAddress! + source, count: count)
+                        }
+                        chunk.samples.right.withUnsafeBufferPointer {
+                            (right.baseAddress! + destination).update(from: $0.baseAddress! + source, count: count)
+                        }
+                        span(destination..<(destination + count))
+                        any = true
+                    }
                 }
             }
         }
-        return (out, any, filled)
+        return any
     }
 }
 

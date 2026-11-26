@@ -6,8 +6,10 @@ import Testing
 
 final class RecordingDelegate: PlayerCoreDelegate {
     var frames: [DecodedFrame] = []
+    var backwardPreviews: [ClosedRange<Int>] = []
     var messages: [String] = []
     func player(_ player: PlayerCore, display frame: DecodedFrame) { frames.append(frame) }
+    func player(_ player: PlayerCore, previewBackwardSeek frames: ClosedRange<Int>) { backwardPreviews.append(frames) }
     var onStateChange: ((PlayerCore) -> Void)?
     func playerStateDidChange(_ player: PlayerCore) { onStateChange?(player) }
     func player(_ player: PlayerCore, showOSD text: String) { messages.append(text) }
@@ -46,6 +48,21 @@ final class HapticLog {
         return (player, delegate, root)
     }
 
+    @Test func onlyAColdBackwardJumpRequestsACachedPreview() async throws {
+        let (player, delegate, _) = try makePlayer(configure: { $0.cacheSizeMiB = 64; $0.autoplay = false })
+        defer { player.close() }
+        #expect(await eventually { player.index?.isExact == true && player.displayedFrame == 0 })
+        player.seek(toFrame: 535)
+        #expect(await eventually { player.displayedFrame == 535 })
+        #expect(delegate.backwardPreviews.isEmpty)
+        player.seek(toFrame: 225)
+        let range = try #require(delegate.backwardPreviews.first)
+        #expect(range.lowerBound == 225 && range.upperBound <= 255)
+        #expect(await eventually { player.displayedFrame == 225 })
+        player.scrub(by: -1)
+        #expect(delegate.backwardPreviews.count == 1)
+    }
+
     @Test func actualViewingPersistsEvenWithResumeDisabled() async throws {
         let store = ResumeStore(url: makeTemporaryDirectory().appendingPathComponent("positions.json"))
         let (player, delegate, _) = try makePlayer(configure: { $0.resumePlayback = false }, resumeStore: store)
@@ -72,6 +89,114 @@ final class HapticLog {
         player.close()
         await Task.detached { store.flushViews() }.value
         #expect(store.entry(for: video)?.lastViewedAt == nil)
+    }
+
+    @Test func webResumeSurvivesNewMediaURLsAndKeepsMarksAtAnExplicitLanding() async throws {
+        let movie = try Data(contentsOf: Fixtures.url(Fixtures.h264))
+        let server = try RangeServer(resources: ["/video?token=first": movie, "/video?token=second": movie],
+                                     path: "/video?token=first")
+        let page = try #require(URL(string: "https://example.test/gallery"))
+        var config = Config()
+        config.autoplay = false
+        config.resumePlayback = true
+        config.cacheSizeMiB = 16
+        let store = temporaryStore()
+        let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false, resumeStore: store)
+        defer { player.close() }
+        let format = ResolvedVideo.Format(id: "high", width: 1920, height: 1080, fps: 30,
+                                          codec: "avc1", videoBitrateKbps: 2500)
+
+        func open(itemID: String, mediaURL: URL, landingTime: Double? = nil) async throws {
+            let resolved = ResolvedVideo(title: "Video", video: .init(url: mediaURL, headers: [:]), audio: nil,
+                                         itemID: itemID, selectedFormat: format)
+            let prepare = player.preparation(for: page, resolved: resolved)
+            let prepared = try await Task.detached { try prepare() }.value
+            player.open(prepared, landingTime: landingTime)
+            if let landingTime { player.applyLanding(LinkTarget(time: landingTime)) }
+        }
+
+        try await open(itemID: "first", mediaURL: server.url)
+        #expect(player.stats?.resolvedWebTitle == "Video")
+        #expect(player.statsText.contains("high · avc1 · 1920 × 1080 · 30 fps · 2.5 Mbit/s"))
+        player.seek(toFrame: 45)
+        player.perform(.markIn)
+        player.seek(toFrame: 90)
+        player.perform(.markOut)
+        player.seek(toFrame: 590)
+        try #require(await eventually { player.displayedFrame == 590 })
+        player.close()
+        await player.flushUserState()
+        let durable = try String(contentsOf: store.url, encoding: .utf8)
+        #expect(!durable.contains("token=first"))
+
+        var second = try #require(URLComponents(url: server.url, resolvingAgainstBaseURL: false))
+        second.query = "token=second"
+        let secondURL = try #require(second.url)
+        try await open(itemID: "different", mediaURL: secondURL)
+        #expect(player.position == 0)
+        #expect(player.marks.isEmpty)
+
+        try await open(itemID: "first", mediaURL: secondURL)
+        #expect(player.position == 590)
+        #expect(player.marks.segments == [CutSegment(start: 45, end: 90)])
+
+        try await open(itemID: "first", mediaURL: secondURL, landingTime: 5)
+        #expect(player.position == 150)
+        #expect(player.marks.segments == [CutSegment(start: 45, end: 90)])
+    }
+
+    @Test func webPlaybackReportsTerminalRangeFailureOnce() async throws {
+        let server = try RangeServer(file: Fixtures.url(Fixtures.h264))
+        var config = Config()
+        config.autoplay = false
+        config.cacheSizeMiB = 16
+        config.readCacheMiB = 0
+        let store = temporaryStore()
+        let previous = ResumeEntry(position: 4, marks: [[1, 2]])
+        store.save(previous, for: server.url, size: server.size)
+        let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false, resumeStore: store)
+        defer { player.close() }
+        var interruptions = 0
+        player.onWebPlaybackInterrupted = {
+            #expect(!player.isPaused)
+            interruptions += 1
+        }
+        let prepare = player.preparation(for: server.url, webStream: true)
+        player.open(try await Task.detached { try prepare() }.value)
+        #expect(player.position == 0)
+        #expect(player.marks.isEmpty)
+        try #require(await eventually { player.displayedFrame == 0 })
+        server.failRequests(to: "/file", count: 100)
+        player.play()
+        player.seek(toFrame: 550)
+        try #require(await eventually { interruptions == 1 })
+        for _ in 0..<5 { player.tick() }
+        #expect(interruptions == 1)
+        player.close()
+        #expect(store.entry(for: server.url, size: server.size) == previous)
+    }
+
+    @Test func webPlaybackFinishesNormallyAtEndOfFile() async throws {
+        let server = try RangeServer(file: Fixtures.url(Fixtures.withAudioGOP25))
+        var config = Config()
+        config.autoplay = false
+        config.cacheSizeMiB = 16
+        var hostTime = 0.0
+        let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false, now: { hostTime })
+        let delegate = RecordingDelegate()
+        player.delegate = delegate
+        player.onWebPlaybackInterrupted = { Issue.record("Normal stream end reported as an interruption") }
+        defer { player.close() }
+        let prepare = player.preparation(for: server.url, webStream: true)
+        player.open(try await Task.detached { try prepare() }.value)
+        player.seek(toFrame: 98)
+        try #require(await eventually { player.displayedFrame == 98 })
+        player.play()
+        try #require(await eventually { player.cache.hasReadyFrame(99) })
+        hostTime = 1
+        player.tick()
+        #expect(delegate.reachedEnd)
+        #expect(player.isPaused)
     }
 
     @Test(arguments: [false, true]) func closingBeforeFirstFrameKeepsPreviousViewingDate(resumePlayback: Bool) async throws {
@@ -510,6 +635,27 @@ final class HapticLog {
         #expect(await eventually(timeout: 30) { player.tick(); return player.clock.isRunning })
         #expect(player.displayedFrame == 240, "stand-ins shown: \(delegate.frames.map { readFrameNumber($0.pixelBuffer) })")
         #expect(self.shownNumber(delegate) == 240)
+    }
+
+    @Test func aColdJumpDoesNotPreviewPicturesInTheGapBetweenLockedSegments() async throws {
+        let (player, delegate, _) = try makePlayer(configure: {
+            $0.autoplay = false
+            $0.cacheSizeMiB = 64
+        })
+        defer { player.close() }
+        try #require(await eventually { player.index?.isExact == true && player.displayedFrame == 0 })
+        let index = try #require(player.index)
+        let first = 100...110
+        let second = 450...460
+        try #require(player.setSegments(seconds: [first, second].map {
+            index.seconds(forFrame: $0.lowerBound)...index.seconds(forFrame: $0.upperBound)
+        }))
+        try #require(await eventually { player.displayedFrame == first.lowerBound })
+
+        delegate.frames.removeAll()
+        try #require(player.goSegment(1))
+        try #require(await eventually { player.displayedFrame == second.lowerBound })
+        #expect(delegate.frames.allSatisfy { first.contains($0.number) || second.contains($0.number) })
     }
 
     /// Locked segments that play on to the next: the sound's first moments must not put the playhead a frame before the

@@ -25,6 +25,16 @@ import os
     var onSmartShift: ((_ pressed: Bool, TimeInterval) -> Void)?
 
     private let client = MouseClient()
+
+    var onD100HInput: ((D100HInput, Double) -> Void)? {
+        get { client.onD100HInput }
+        set { client.onD100HInput = newValue }
+    }
+
+    func requestD100HInput(_ requested: Bool, muteDetents: Bool) {
+        client.setD100HInputRequested(requested)
+        client.setD100HDetentsMuted(requested && muteDetents)
+    }
     private static let log = Logger(subsystem: "local.framescrub", category: "Mouse")
     /// What the layout and `mx-side-buttons` want (`apply`), before the SmartShift button is added.
     private var wantedByConfig: (divert: Set<UInt16>, watch: Set<UInt16>) = ([], [])

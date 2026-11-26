@@ -41,8 +41,17 @@ public struct FrameVelocity {
         }
         // A turn of direction starts the average again, so the tape turns with the picture, not 0.3 s later.
         if history.count >= 2, let last = history.last {
-            let before = last.target - history[history.count - 2].target, now = target - last.target
-            if before * now < 0 { history.removeFirst(history.count - 1) }
+            let before = last.target - history[history.count - 2].target
+            let step = target - last.target
+            if before * step < 0 {
+                history.removeFirst(history.count - 1)
+                if velocity * step < 0 {
+                    // Give the tape the new sign immediately. Use the minimum span
+                    // to keep a pair of closely spaced pictures from spiking the estimate.
+                    let provisional = step / max(Self.minimumSpan, host - last.host)
+                    velocity = max(-TapeMotion.maxSpeed, min(TapeMotion.maxSpeed, provisional))
+                }
+            }
         }
         history.append((target, host))
         while history.count > 2 && host - history[1].host >= Self.window { history.removeFirst() }

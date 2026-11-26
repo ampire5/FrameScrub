@@ -1,6 +1,6 @@
 import Foundation
 
-/// A transport event the UI shows as a frameless icon over the video: seeks on their side, the rest in the centre.
+/// A transport event the player can show over the video, with directional placement for seeks.
 public enum Feedback: Equatable, Sendable {
     case play, pause, revert, endOfFile, playlistPrevious, playlistNext
     case sceneNext, scenePrevious

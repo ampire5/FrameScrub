@@ -199,4 +199,15 @@ import Testing
         #expect(velocity.shown(2.05, at: 0.6402) <= 4)      // bursts never read as more than 4×
         #expect(velocity.shown(5, at: 0.68) == 0)            // a jump is not speed
     }
+
+    @Test func frameVelocityTurnsOnTheFirstReversedStepAt60Hz() {
+        var velocity = FrameVelocity()
+        for frame in 0...12 {
+            _ = velocity.shown(1 + Double(frame) / 60, at: Double(frame) / 60)
+        }
+        let firstBackward = velocity.shown(1 + 11.0 / 60, at: 13.0 / 60)
+        let secondBackward = velocity.shown(1 + 10.0 / 60, at: 14.0 / 60)
+        #expect(firstBackward < 0 && firstBackward >= -1.01)
+        #expect(abs(secondBackward + 1) < 0.001)
+    }
 }

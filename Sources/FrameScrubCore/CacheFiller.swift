@@ -1,3 +1,4 @@
+import CFFmpeg
 import Foundation
 import QuartzCore
 
@@ -16,16 +17,27 @@ public final class CacheFiller: @unchecked Sendable {
     public let cache: FrameCache
     /// Called on a worker thread after a frame has been inserted into the cache.
     public var onInsert: (@Sendable (Int) -> Void)?
+    /// One picture from an active long local preroll, paired with its exact target. It does not enter the cache.
+    var onPrerollPreview: (@Sendable (DecodedFrame, Int) -> Void)?
     /// Worker-thread notification when a previously unresolved focus is now known to have no decodable frame.
     public var onFocusUnavailable: (@Sendable (Int) -> Void)?
     /// Called on a worker thread with the first decoding error (later ones only update `lastError`).
     public var onError: (@Sendable (Error) -> Void)?
+    /// A worker left the active playback window undecodable after an error.
+    var onPlaybackFailure: (@Sendable () -> Void)?
     /// Called on the forward worker's thread with a `requestKeyframe` id and the frame it landed on
     /// (the request's `from` when it failed).
     public var onLanded: (@Sendable (_ id: Int, _ frame: Int) -> Void)?
 
     private let url: URL
     private let readCache: ReadCache?
+    private let hlsSession: HLSMediaSession?
+    // Guarded by condition. Reads for the old focus must end before the worker seeks again.
+    private var hlsForwardRead: HLSReadInterrupt?
+    private var hlsForwardTarget: Int?
+    private var hlsBackwardRead: HLSReadInterrupt?
+    private var forwardSeekTarget: Int?
+    private var forwardSeekGeneration = 0
     private var hardwarePreferred: Bool
     private let estimatedFrameBytes: Int
     private let policy: NetworkPolicy
@@ -49,10 +61,13 @@ public final class CacheFiller: @unchecked Sendable {
     /// window on every step, evicting half of it to decode it again.
     private var lean = 0
     private var turnStart: Int?
+    /// The last relative forward move, kept through the turn hysteresis so history survives the first backward steps.
+    private var pausedForwardStep = 0
     private var running = false
     private var backend: DecoderBackendKind?
     private var codec = ""
     private var error: Error?
+    private var playbackFailureVersion: Int?
     private var creationAttempts = 0
     private var forwardSeekCount = 0
     private var poolReleaseCount = 0
@@ -78,6 +93,7 @@ public final class CacheFiller: @unchecked Sendable {
     /// The last jump: a focus move onto a frame not in the cache, other than a short step backward.
     private var jumpedAt = -Double.infinity
     private var jumpFocus: Int?
+    private var previewFocus: Int?
 
     /// Gaps up to this many frames are decoded through instead of seeking.
     private static let sequentialGap = 48
@@ -85,6 +101,20 @@ public final class CacheFiller: @unchecked Sendable {
     private static let fillRatio = 0.9
     /// Largest backward chunk, as a fraction of the budget.
     private static let chunkRatio = 0.4
+    // Long-GOP 4K60 at 256 MiB: a larger paused backward chunk covered 134–136
+    // of 288 requests, versus about 89. Cap the extension at a sequential gap.
+    private static let pausedBackwardChunkRatio = 0.75
+    // Local 4K60 with long GOPs and a 256 MiB cache: more runway let reverse
+    // preroll finish before the focus moved past it. See docs/bench/live-scrub-cache.md.
+    private static let pausedLocalBackwardShare = 0.88
+    // Keep up to 16 frames behind single-frame forward scrubbing. At 256 MiB
+    // this kept the start of each 4K direction change in cache. Larger windows
+    // already keep this much history with the ordinary forward bias.
+    private static let pausedForwardHistory = 16
+    /// 4K H.264, 250-frame GOP, 256 MiB on M4 Max: retaining three frames still required
+    /// another GOP pass within eight backward steps. Retaining eight covered the sweep.
+    /// See docs/bench/live-scrub-cache.md.
+    private static let localSeekHistory = 8
     /// A hardware decoder whose pool keeps more unused buffers than this share of the budget (at least
     /// `minPoolSurplus` frames) is replaced where that costs nothing: before a seek and while its worker waits.
     /// Otherwise each worker's pool keeps as many frames as it ever held in the cache: playing 4K and then stepping
@@ -106,10 +136,11 @@ public final class CacheFiller: @unchecked Sendable {
     public init(url: URL, index: FrameIndex, cache: FrameCache, estimatedFrameBytes: Int,
                 playbackLookahead: Int, preferHardware: Bool = true, readCache: ReadCache? = nil,
                 policy: NetworkPolicy = .local, frameRate: Double = 30, prefersPackedOutput: Bool = false,
-                now: @escaping @Sendable () -> Double = CACurrentMediaTime) {
+                hlsSession: HLSMediaSession? = nil, now: @escaping @Sendable () -> Double = CACurrentMediaTime) {
         self.url = url
         self.now = now
         self.readCache = readCache
+        self.hlsSession = hlsSession
         self.index = index
         self.cache = cache
         self.estimatedFrameBytes = estimatedFrameBytes
@@ -156,7 +187,8 @@ public final class CacheFiller: @unchecked Sendable {
     public func start() {
         condition.withLock {
             running = true
-            cache.observeTierChanges { [weak self] number, ready in
+            cache.setPackingClipFrameCount(index.isExact ? index.frameCount : nil, fillRatio: Self.fillRatio)
+            cache.observeTierChanges(budgetChanged: { [weak self] in self?.wakeWorkers() }) { [weak self] number, ready in
                 guard let self else { return }
                 let isRunning = condition.withLock {
                     condition.broadcast()
@@ -177,11 +209,15 @@ public final class CacheFiller: @unchecked Sendable {
         }
     }
 
+    private func wakeWorkers() { condition.withLock { condition.broadcast() } }
+
     /// Stops the workers. With `waitForExit: false` it returns at once; bumping `indexVersion`
     /// makes any in-flight result be discarded, so the shared cache can be cleared right away.
     public func stop(waitForExit: Bool = true) {
         condition.withLock {
             running = false
+            hlsForwardRead?.cancel()
+            hlsBackwardRead?.cancel()
             cache.observeTierChanges(nil)
             indexVersion += 1
             condition.broadcast()
@@ -189,8 +225,29 @@ public final class CacheFiller: @unchecked Sendable {
         if waitForExit { finished.wait() }
     }
 
-    public func setFocus(_ n: Int, mode: FillMode, direction: Int = 0) {
+    public func setFocus(_ n: Int, mode: FillMode, direction: Int = 0, supersedesRead: Bool = false,
+                         previewFrom: Int? = nil) {
         condition.withLock {
+            if mode != self.mode || (supersedesRead && n != focus) {
+                playbackFailureVersion = nil
+            }
+            cancelObsoleteHLSReadsLocked(target: n, mode: mode, supersedesRead: supersedesRead)
+            if n != focus || mode != .paused {
+                if mode == .paused, supersedesRead, !policy.isNetwork, hlsSession == nil, let previewFrom,
+                   n - previewFrom > Self.sequentialGap, !cache.isResolved(n) {
+                    previewFocus = n
+                } else {
+                    previewFocus = nil
+                }
+            }
+            if supersedesRead, n != focus, let work = forwardSeekTarget,
+               !cache.isResolved(n), abs(n - work) > Self.sequentialGap {
+                let leavesGOP = !index.isExact || index.keyframe(atOrBefore: n) != index.keyframe(atOrBefore: work)
+                // The current preroll may already have skipped this earlier picture.
+                let earlierLocalTarget = n < work && mode == .paused && direction == 0 && regions.isEmpty
+                    && !policy.isNetwork && hlsSession == nil && index.isExact
+                if leavesGOP || earlierLocalTarget { forwardSeekGeneration += 1 }
+            }
             // Reversing restarts at the new focus after a jump (a seek, the loop, starting to play backward). When the
             // focus only passed below the next chunk, decoding fell behind: the next chunk starts below the focus by the
             // frames playback passes while it decodes, and the frames on the way are skipped.
@@ -215,6 +272,11 @@ public final class CacheFiller: @unchecked Sendable {
                 jumpedAt = now()
                 jumpFocus = n
             }
+            if mode != .paused || direction == 0 {
+                pausedForwardStep = 0
+            } else if direction > 0, n != focus {
+                pausedForwardStep = supersedesRead ? 0 : max(0, n - focus)
+            }
             if mode != .paused || direction == 0 || lean == 0 || direction == lean {
                 lean = direction
                 turnStart = nil
@@ -230,9 +292,28 @@ public final class CacheFiller: @unchecked Sendable {
             focus = n
             self.mode = mode
             self.direction = direction
-            cache.setFocus(n, backShare: backShareLocked())
+            cache.setFocus(n, backShare: backShareLocked(),
+                           keepsForwardFramesReady: !policy.isNetwork && hlsSession == nil && index.isExact
+                               && mode == .paused && direction > 0 && pausedForwardStep > 1)
+            // A server can recover after FFmpeg exhausts its segment retries.
+            // An explicit seek makes the requested neighborhood eligible again.
+            if hlsSession != nil, supersedesRead { cache.retryUndecodable(in: windowLocked()) }
             condition.broadcast()
         }
+    }
+
+    private func cancelObsoleteHLSReadsLocked(target: Int, mode: FillMode, supersedesRead: Bool) {
+        guard hlsSession != nil else { return }
+        let coldSeek = supersedesRead && target != focus && !cache.isResolved(target)
+        let forward = hlsForwardTarget.map { work in
+            work != target && (coldSeek || abs(target - work) > Self.sequentialGap)
+        } ?? false
+        let backward = backwardChunk.map { chunk in
+            mode != .reversing || (coldSeek && !chunk.contains(target))
+        } ?? false
+        if forward { hlsForwardRead?.cancel() }
+        if backward { hlsBackwardRead?.cancel() }
+        if forward || backward { indexVersion += 1 }
     }
 
     /// Confines decoding to `regions` (segment lock spec §3): an A–B loop, or the locked segments; empty: none. Each
@@ -259,6 +340,7 @@ public final class CacheFiller: @unchecked Sendable {
             reverseSpeed = speed
             reverseFrameRate = framesPerSecond
             level = ReverseLevel.best(coverage: coverageLocked, needed: speed * framesPerSecond, speedMagnitude: speed)
+            if mode == .reversing { condition.broadcast() }
         }
     }
 
@@ -271,6 +353,11 @@ public final class CacheFiller: @unchecked Sendable {
     /// `target`, decodes it and reports it through `onLanded`. A newer request replaces a pending one.
     public func requestKeyframe(id: Int, toward target: Int, from current: Int, direction: Int) {
         condition.withLock {
+            if hlsSession != nil, hlsForwardTarget != nil {
+                hlsForwardRead?.cancel()
+                indexVersion += 1
+            }
+            if forwardSeekTarget != nil { forwardSeekGeneration += 1 }
             keyframeRequest = (id, target, current, direction)
             condition.broadcast()
         }
@@ -286,16 +373,28 @@ public final class CacheFiller: @unchecked Sendable {
                 reverseJumps += 1
             }
             if clearCache { cache.removeAll() }
+            cache.setPackingClipFrameCount(newIndex.isExact ? newIndex.frameCount : nil, fillRatio: Self.fillRatio)
             condition.broadcast()
         }
     }
 
     // MARK: Planning (callers hold `condition`)
 
-    private func backShareLocked() -> Double {
+    private func backShareLocked(room: Int? = nil) -> Double {
         if mode == .playing { return 0.5 }
         if mode == .reversing { return 0.95 }
-        return lean < 0 ? 0.75 : lean > 0 ? 0.25 : 0.6
+        if lean < 0 {
+            if mode == .paused, !policy.isNetwork, hlsSession == nil, index.isExact, regions.isEmpty {
+                return Self.pausedLocalBackwardShare
+            }
+            return 0.75
+        }
+        if lean == 0 { return 0.6 }
+        if !policy.isNetwork, hlsSession == nil, index.isExact, pausedForwardStep == 1 {
+            let available = Double(max(1, room ?? roomLocked()))
+            return max(0.25, min(0.6, Double(Self.pausedForwardHistory) / available))
+        }
+        return 0.25
     }
 
     private func clampedFocusLocked() -> Int { min(max(focus, 0), max(index.frameCount - 1, 0)) }
@@ -327,11 +426,12 @@ public final class CacheFiller: @unchecked Sendable {
 
     private func windowLocked() -> ClosedRange<Int> {
         let room = roomLocked()
-        let share = backShareLocked()
+        let share = backShareLocked(room: room)
         var ahead = min(room, max(2, Int(Double(room) * (1 - share))))
         if mode == .playing { ahead = min(ahead, playbackLookahead) }
         if mode == .reversing { ahead = min(room, Self.reverseAhead) }
         var behind = mode == .playing ? 0 : mode == .reversing ? room - ahead : min(room - ahead, Int(Double(room) * share))
+        if hlsSession != nil, mode == .paused { behind = 0 }
         if let cap = windowCap, mode != .reversing {
             ahead = min(ahead, max(cap.ahead, playbackLookahead))
             behind = min(behind, cap.behind)
@@ -385,7 +485,7 @@ public final class CacheFiller: @unchecked Sendable {
     /// together with the frames the steps passed over up to the run: the forward worker would seek to the same GOP
     /// and pre-roll it a second time. Returns those frames, or nil.
     private func backwardOwnedGapLocked() -> ClosedRange<Int>? {
-        guard mode == .paused, direction < 0, backwardSettledLocked() else { return nil }
+        guard hlsSession == nil, mode == .paused, direction < 0, backwardSettledLocked() else { return nil }
         let f = clampedFocusLocked()
         guard !cache.isResolved(f) else { return nil }
         let limit = min(windowLocked().upperBound, f + Self.sequentialGap)
@@ -423,13 +523,17 @@ public final class CacheFiller: @unchecked Sendable {
 
     private func nextBackwardChunkLocked() -> (range: ClosedRange<Int>, level: ReverseLevel?)? {
         if mode == .reversing { return nextReverseChunkLocked() }
-        guard mode == .paused else { return nil }
+        guard hlsSession == nil, mode == .paused else { return nil }
         let f = clampedFocusLocked()
         guard backwardSettledLocked() else { return nil }
         let window = windowLocked()
         let end = backwardOwnedGapLocked()?.upperBound ?? (cache.resolvedRun(around: f)?.lowerBound ?? f) - 1
         guard end >= window.lowerBound else { return nil }
-        let maxChunk = max(1, Int(Double(framesInBudgetLocked()) * Self.chunkRatio))
+        let capacity = Double(framesInBudgetLocked())
+        var maxChunk = max(1, Int(capacity * Self.chunkRatio))
+        if direction < 0, lean < 0, !policy.isNetwork, index.isExact {
+            maxChunk = max(maxChunk, min(Self.sequentialGap, Int(capacity * Self.pausedBackwardChunkRatio)))
+        }
         let gopStart = index.isExact ? index.keyframe(atOrBefore: end) : end - maxChunk + 1
         return (max(gopStart, end - maxChunk + 1, window.lowerBound)...end, nil)
     }
@@ -464,7 +568,9 @@ public final class CacheFiller: @unchecked Sendable {
     }
 
     private func reverseLevelLocked() -> ReverseLevel {
-        fixedReverseLevel ?? level ?? ReverseLevel.initial(speedMagnitude: reverseSpeed)
+        // A cold reverse position must get its exact frame before the clock can start.
+        if hlsSession != nil { return .all }
+        return fixedReverseLevel ?? level ?? ReverseLevel.initial(speedMagnitude: reverseSpeed)
     }
 
     /// After a reversing chunk, also one given up before its end: `covered` frames of video in `seconds`. The
@@ -502,7 +608,10 @@ public final class CacheFiller: @unchecked Sendable {
     private func store(_ frame: DecodedFrame, version: Int) {
         let stored = condition.withLock { () -> Bool in
             guard version == indexVersion else { return false }
-            if !cache.contains(frame.number) { cache.insert(frame) }
+            if !cache.contains(frame.number) {
+                cache.insert(frame)
+                if frame.number == clampedFocusLocked() { condition.broadcast() }
+            }
             return true
         }
         if stored { onInsert?(frame.number) }
@@ -514,7 +623,9 @@ public final class CacheFiller: @unchecked Sendable {
             let target = clampedFocusLocked()
             let wasUnresolved = !cache.isResolved(target)
             for n in numbers { cache.markUndecodable(n) }
-            return wasUnresolved && cache.isUndecodable(target) ? target : nil
+            guard wasUnresolved && cache.isUndecodable(target) else { return nil }
+            condition.broadcast()
+            return target
         }
         if let unavailable { onFocusUnavailable?(unavailable) }
     }
@@ -532,6 +643,28 @@ public final class CacheFiller: @unchecked Sendable {
             return error == nil
         }
         if first { onError?(failure) }
+    }
+
+    private func reportPlaybackFailure(_ failure: Error, frames: ClosedRange<Int>, mode expectedMode: FillMode,
+                                       version: Int) {
+        guard let onPlaybackFailure, !(failure is CancellationError),
+              (failure as? POSIXError)?.code != .ECANCELED,
+              (failure as? FFmpegError)?.code != cff_error_eof() else { return }
+        let notify = condition.withLock {
+            guard running, version == indexVersion, mode == expectedMode,
+                  playbackFailureVersion == nil, frames.overlaps(windowLocked()) else { return false }
+            playbackFailureVersion = version
+            return true
+        }
+        if notify { onPlaybackFailure() }
+    }
+
+    /// The main actor can receive the notification after a pause, seek or new index.
+    func takePlaybackFailure() -> Bool {
+        condition.withLock {
+            defer { playbackFailureVersion = nil }
+            return running && playbackFailureVersion == indexVersion && mode != .paused
+        }
     }
 
     /// A worker's decoder and how it was made.
@@ -562,6 +695,10 @@ public final class CacheFiller: @unchecked Sendable {
                 condition.withLock { poolReleaseCount += 1 }
             }
         }
+        if condition.withLock({ (slot.forward ? hlsForwardRead : hlsBackwardRead)?.isCancelled == true }) {
+            slot.decoder = nil
+            slot.failures = 0
+        }
         if let existing = slot.decoder, slot.version == currentVersion { return (existing, false) }
         if let existing = slot.decoder {
             existing.index = currentIndex
@@ -569,11 +706,25 @@ public final class CacheFiller: @unchecked Sendable {
             guard slot.failures < Self.maxCreationFailures else { return nil }
             condition.withLock { creationAttempts += 1 }
             do {
+                let hlsRead: HLSReadInterrupt?
+                if hlsSession != nil {
+                    hlsRead = try condition.withLock {
+                        guard running, currentVersion == indexVersion else { throw POSIXError(.ECANCELED) }
+                        let flag = HLSReadInterrupt()
+                        if slot.forward { hlsForwardRead = flag }
+                        else { hlsBackwardRead = flag }
+                        return flag
+                    }
+                } else {
+                    hlsRead = nil
+                }
                 slot.decoder = try VideoDecoder(source: MediaSource(url: url, readCache: readCache,
-                                                        readAhead: slot.forward || policy.sideReadAhead),
+                                                        readAhead: slot.forward || policy.sideReadAhead,
+                                                        hlsSession: hlsSession, hlsRead: hlsRead),
                                                 index: currentIndex,
                                                 preferHardware: hardware, prefersPackedOutput: prefersPackedOutput)
                 slot.decoder?.diagnosticRole = slot.forward ? "forward" : "reverse"
+                slot.decoder?.reportsHTTPReadFailures = onPlaybackFailure != nil
                 slot.hardware = hardware
                 slot.failures = 0
             } catch {
@@ -589,12 +740,18 @@ public final class CacheFiller: @unchecked Sendable {
         max(Self.minPoolSurplus, Int(Double(framesInBudgetLocked()) * Self.poolSurplusRatio))
     }
 
-    /// A waiting worker gives its pool back (its frames went to the other worker); its next frame starts with a seek.
-    private func dropIfPoolKeepsTooMuch(_ slot: inout DecoderSlot, limit: Int) {
-        if let decoder = slot.decoder, decoder.poolSurplus > limit {
+    /// The caller holds the condition. This method returns with it unlocked.
+    private func rest(_ slot: inout DecoderSlot, until deadline: Date? = nil) {
+        if slot.decoder?.watchPoolSurplus(over: poolSurplusLimitLocked(), notify: { [weak self] in self?.wakeWorkers() }) == true {
+            poolReleaseCount += 1
+            condition.unlock()
             slot.decoder = nil
-            condition.withLock { poolReleaseCount += 1 }
+            return
         }
+        if let deadline { condition.wait(until: deadline) }
+        else { condition.wait() }
+        slot.decoder?.stopWatchingPoolSurplus()
+        condition.unlock()
     }
 
     // MARK: Workers
@@ -602,35 +759,77 @@ public final class CacheFiller: @unchecked Sendable {
     private func forwardLoop() {
         var slot = DecoderSlot()
         var lastDecoded: Int?
+        var filledSinceWait = false
         while true {
             condition.lock()
             guard running else { condition.unlock(); return }
             if let request = keyframeRequest {
                 keyframeRequest = nil
+                filledSinceWait = true
                 let currentIndex = index
                 let version = indexVersion
+                if hlsSession != nil { hlsForwardTarget = request.target }
                 condition.unlock()
                 lastDecoded = autoreleasepool { land(request, slot: &slot, index: currentIndex, version: version) }
+                if hlsSession != nil { condition.withLock { hlsForwardTarget = nil } }
                 continue
             }
             guard let target = nextForwardFrameLocked() else {
-                let limit = poolSurplusLimitLocked()
-                condition.wait(until: Date().addingTimeInterval(0.1))
-                condition.unlock()
-                dropIfPoolKeepsTooMuch(&slot, limit: limit)
+                if filledSinceWait { condition.broadcast() }
+                filledSinceWait = false
+                rest(&slot)
                 continue
             }
+            filledSinceWait = true
             let currentIndex = index
             let version = indexVersion
             let hardware = hardwarePreferred
+            let local = !policy.isNetwork && hlsSession == nil
+            let resetsLocalCursor = local && (slot.decoder == nil || slot.version != version)
+            let gapRequiresSeek = lastDecoded.map { target <= $0 || target - $0 > Self.sequentialGap } ?? true
+            let continuesGOP = gapRequiresSeek && local && !resetsLocalCursor && slot.hardware == hardware
+                && mode == .paused && direction == 0 && regions.isEmpty && target == focus && currentIndex.isExact
+                && lastDecoded.map {
+                    $0 < target && currentIndex.keyframe(atOrBefore: $0) == currentIndex.keyframe(atOrBefore: target)
+                } == true
+            let wouldSeek = gapRequiresSeek && !continuesGOP
+            // Keep a few already traversed frames on a cold paused landing, then publish
+            // the target first. Never seek farther back to populate the neighborhood.
+            var history = 0
+            if mode == .paused, target == focus {
+                if hlsSession != nil {
+                    history = min(3, roomLocked() / 2)
+                } else if local, index.isExact, gapRequiresSeek || resetsLocalCursor {
+                    history = min(Self.localSeekHistory, roomLocked() / 2, target - windowLocked().lowerBound)
+                }
+            }
+            let previewPreroll: ClosedRange<Int>?
+            let previewStart = target - Self.sequentialGap
+            if local, index.isExact, previewFocus == target, onPrerollPreview != nil,
+               previewStart - index.keyframe(atOrBefore: target) >= Self.sequentialGap {
+                // Four consecutive output pictures let normal decoder reordering release
+                // one near the target while the remaining reference packets are decoded.
+                previewPreroll = previewStart...previewStart + 3
+                previewFocus = nil
+            } else {
+                previewPreroll = nil
+            }
+            if hlsSession != nil { hlsForwardTarget = target }
+            let watchSeek = hlsSession == nil && (gapRequiresSeek || resetsLocalCursor)
+            if watchSeek { forwardSeekTarget = target }
+            let seekGeneration = forwardSeekGeneration
             condition.unlock()
+            defer {
+                if hlsSession != nil || watchSeek {
+                    condition.withLock { hlsForwardTarget = nil; forwardSeekTarget = nil }
+                }
+            }
 
             // One autorelease pool per frame: objects the decoder leaves autoreleased hold its frames (IOSurfaces
             // of VTDecoderXPCService) until the pool drains, and this loop runs as long as the file is open.
             autoreleasepool {
                 do {
                     // Switching decoders mid-GOP would decode it again from its keyframe: wait for a seek or a keyframe.
-                    let wouldSeek = lastDecoded.map { target <= $0 || target - $0 > Self.sequentialGap } ?? true
                     let mayReplace = wouldSeek || (currentIndex.isExact && currentIndex.isKeyframe(target))
                     guard let (d, reset) = try prepare(&slot, index: currentIndex, currentVersion: version,
                                                        hardware: hardware, mayReplace: mayReplace) else {
@@ -638,15 +837,38 @@ public final class CacheFiller: @unchecked Sendable {
                         return
                     }
                     if reset { lastDecoded = nil }
-                    let needsSeek = lastDecoded.map { target <= $0 || target - $0 > Self.sequentialGap } ?? true
+                    let needsSeek = reset || wouldSeek
                     if needsSeek {
                         condition.withLock { forwardSeekCount += 1 }
                         try d.seek(toFrame: target)
+                    } else if continuesGOP, PlaybackDiagnostics.enabled {
+                        PlaybackDiagnostics.shared.record("continued_gop", 1, group: "decoder.forward.local")
                     }
+                    let exactLanding = needsSeek || continuesGOP
                     // Catching up with a focus that moved ahead (fast scrubbing): frames it passed are not needed.
-                    d.skipNonReference(before: needsSeek ? nil : target)
+                    d.skipNonReference(before: exactLanding || hlsSession != nil ? nil : target)
                     record(d)
-                    guard let frame = try d.nextFrame() else {
+                    var preroll: [DecodedFrame] = []
+                    let keepFrom = exactLanding && history > 0 ? max(0, target - history) : nil
+                    // Let a shared range finish, then leave obsolete pre-roll at the next packet boundary.
+                    let isObsolete: (() -> Bool)? = watchSeek ? {
+                        self.condition.withLock {
+                            !self.running || self.forwardSeekGeneration != seekGeneration || (local && self.indexVersion != version)
+                        }
+                    } : nil
+                    var publishedPreview = false
+                    guard let frame = try d.nextFrame(keepingPrerollFrom: keepFrom, previewPreroll: exactLanding ? previewPreroll : nil,
+                                                      continuingTo: continuesGOP && !needsSeek ? target : nil,
+                                                      isObsolete: isObsolete, onPreroll: { candidate in
+                        if let keepFrom, candidate.number >= keepFrom {
+                            if !preroll.contains(where: { $0.number == candidate.number }) { preroll.append(candidate) }
+                        } else if !publishedPreview, self.condition.withLock({
+                            self.running && self.indexVersion == version && self.mode == .paused && self.focus == target
+                        }) {
+                            publishedPreview = true
+                            self.onPrerollPreview?(candidate, target)
+                        }
+                    }) else {
                         markUndecodable([target], version: version)   // past the real end of the stream
                         lastDecoded = nil
                         return
@@ -654,11 +876,25 @@ public final class CacheFiller: @unchecked Sendable {
                     let expected = needsSeek ? target : max(lastDecoded! + 1, target)   // skipped frames are not missing
                     if frame.number > expected { markUndecodable(expected..<frame.number, version: version) }
                     store(frame, version: version)
+                    if frame.number == target {
+                        for candidate in preroll.reversed() { store(candidate, version: version) }
+                    }
                     StartupTrace.markOnce("first frame decoded")
                     lastDecoded = frame.number
+                } catch is CancellationError where watchSeek {
+                    // The demuxer still owns a valid context. The next target starts with a seek and flush.
+                    if PlaybackDiagnostics.enabled {
+                        PlaybackDiagnostics.shared.record("superseded_preroll", 1, group: policy.isNetwork ? "decoder.forward.network" : "decoder.forward.local")
+                    }
+                    lastDecoded = nil
                 } catch {
-                    record(error)
-                    markUndecodable([target], version: version)
+                    if condition.withLock({ running && version == indexVersion }) {
+                        record(error)
+                        if condition.withLock({ !watchSeek || forwardSeekGeneration == seekGeneration }) {
+                            reportPlaybackFailure(error, frames: target...target, mode: .playing, version: version)
+                        }
+                        markUndecodable([target], version: version)
+                    }
                     slot.decoder = nil
                     lastDecoded = nil
                 }
@@ -675,16 +911,20 @@ public final class CacheFiller: @unchecked Sendable {
             if let (d, _) = try prepare(&slot, index: currentIndex, currentVersion: version, hardware: hardware) {
                 try d.seekToKeyframe(toward: request.target, from: request.from, direction: request.direction)
                 record(d)
-                if let frame = try d.nextFrame() {
+                var frame = try d.nextFrame()
+                if hlsSession != nil, request.direction < 0, let number = frame?.number, number >= request.from {
+                    frame = try d.previousHLSKeyframe(before: request.from)
+                }
+                if let frame {
                     store(frame, version: version)
                     landed = frame.number
                 }
             }
         } catch {
-            record(error)
+            if condition.withLock({ running && version == indexVersion }) { record(error) }
             slot.decoder = nil
         }
-        if let landed { moveFocusToLanding(landed, from: request.target) }
+        if let landed { moveFocusToLanding(landed, from: request.target, version: version) }
         onLanded?(request.id, landed ?? request.from)
         return landed
     }
@@ -692,12 +932,13 @@ public final class CacheFiller: @unchecked Sendable {
     /// The player moves the focus to the landing too, but only once the main thread gets to it; until then the
     /// forward worker would decode from the stale target, seeking a whole GOP away (spec §2.3). A newer request
     /// or focus wins.
-    private func moveFocusToLanding(_ landed: Int, from target: Int) {
+    private func moveFocusToLanding(_ landed: Int, from target: Int, version: Int) {
         condition.withLock {
-            guard keyframeRequest == nil, focus == target else { return }
+            guard running, version == indexVersion, keyframeRequest == nil, focus == target else { return }
             focus = landed
             jumpFocus = landed
             cache.setFocus(landed, backShare: backShareLocked())
+            condition.broadcast()
         }
     }
 
@@ -707,19 +948,28 @@ public final class CacheFiller: @unchecked Sendable {
             condition.lock()
             guard running else { condition.unlock(); return }
             guard let (chunk, level) = nextBackwardChunkLocked() else {
-                let limit = poolSurplusLimitLocked()
-                condition.wait(until: Date().addingTimeInterval(0.1))
-                condition.unlock()
-                dropIfPoolKeepsTooMuch(&slot, limit: limit)
+                let remaining = Self.jumpSettle - (now() - jumpedAt)
+                let deadline = hlsSession == nil && mode == .paused && remaining > 0
+                    ? Date().addingTimeInterval(remaining) : nil
+                rest(&slot, until: deadline)
                 continue
             }
             let currentIndex = index
             let version = indexVersion
             let hardware = hardwarePreferred   // every chunk starts with a seek
             let jumps = reverseJumps
+            let watchPreroll = !policy.isNetwork && hlsSession == nil
             backwardChunk = chunk
             condition.unlock()
-            defer { condition.withLock { backwardChunk = nil } }
+            let isObsolete: (() -> Bool)? = watchPreroll ? {
+                !self.chunkStillWanted(chunk, version: version)
+            } : nil
+            defer {
+                condition.withLock {
+                    backwardChunk = nil
+                    condition.broadcast()
+                }
+            }
 
             autoreleasepool {   // per chunk and per frame, as in `forwardLoop`
                 let started = now()
@@ -734,7 +984,9 @@ public final class CacheFiller: @unchecked Sendable {
                         d.skipNonReference(before: nil)
                         try d.seek(toFrame: chunk.lowerBound)
                         record(d)
-                        if let frame = try autoreleasepool(invoking: { try d.nextFrame() }), frame.number == chunk.lowerBound {
+                        if let frame = try autoreleasepool(invoking: {
+                            try d.nextFrame(keepingPrerollFrom: nil, isObsolete: isObsolete) { _ in }
+                        }), frame.number == chunk.lowerBound {
                             store(frame, version: version)
                             covered = chunk.count
                         } else {
@@ -749,7 +1001,9 @@ public final class CacheFiller: @unchecked Sendable {
                         var expected = chunk.lowerBound
                         var completed = true
                         while expected <= chunk.upperBound {
-                            guard let frame = try autoreleasepool(invoking: { try d.nextFrame() }),
+                            guard let frame = try autoreleasepool(invoking: {
+                                try d.nextFrame(keepingPrerollFrom: nil, isObsolete: isObsolete) { _ in }
+                            }),
                                   frame.number <= chunk.upperBound else { break }
                             if frame.number > expected && !skipping { markUndecodable(expected..<frame.number, version: version) }
                             store(frame, version: version)
@@ -769,9 +1023,22 @@ public final class CacheFiller: @unchecked Sendable {
                         measured(chunk, level: level, covered: covered, seconds: now() - started,
                                  afterJump: reverseJumpsNow != jumps)
                     }
+                } catch is CancellationError where watchPreroll {
+                    if let level, condition.withLock({
+                        running && mode == .reversing && indexVersion == version && reverseJumps == jumps
+                    }) {
+                        // A chunk outrun at the same speed is a coverage sample, even when its first frame was late.
+                        measured(chunk, level: level, covered: covered, seconds: now() - started)
+                    }
+                    if PlaybackDiagnostics.enabled {
+                        PlaybackDiagnostics.shared.record("superseded_preroll", 1, group: "decoder.reverse.local")
+                    }
                 } catch {
-                    record(error)
-                    markUndecodable([chunk.upperBound], version: version)
+                    if condition.withLock({ running && version == indexVersion }) {
+                        record(error)
+                        reportPlaybackFailure(error, frames: chunk, mode: .reversing, version: version)
+                        markUndecodable([chunk.upperBound], version: version)
+                    }
                     slot.decoder = nil
                 }
             }

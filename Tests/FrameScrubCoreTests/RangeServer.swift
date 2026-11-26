@@ -14,7 +14,7 @@ final class RangeServer: @unchecked Sendable {
     }
 
     private(set) var url = URL(string: "http://127.0.0.1/file")!
-    private let data: Data
+    private let resources: [String: Data]
     private let listener: NWListener
     private let queue = DispatchQueue(label: "rangeserver")
     private let lock = NSLock()
@@ -24,11 +24,18 @@ final class RangeServer: @unchecked Sendable {
     var requiredHeader: (field: String, value: String)?
     /// Sends each answer in pieces of `bytes`, `delay` seconds apart, like a slow link.
     var trickle: (bytes: Int, delay: Double)?
+    /// Delay the initial response for selected paths.
+    var responseDelays: [String: TimeInterval] = [:]
+    private var failuresRemaining: [String: Int] = [:]
     /// False: a 206 without `Content-Range` (some servers leave it out; the body's length is all there is).
     var sendsContentRange = true
 
-    init(file: URL) throws {
-        data = try Data(contentsOf: file)
+    convenience init(file: URL) throws {
+        try self.init(resources: ["/file": Data(contentsOf: file)], path: "/file")
+    }
+
+    init(resources: [String: Data], path: String) throws {
+        self.resources = resources
         listener = try NWListener(using: .tcp, on: .any)
         let ready = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var port: UInt16 = 0
@@ -40,7 +47,7 @@ final class RangeServer: @unchecked Sendable {
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         listener.start(queue: queue)
         guard ready.wait(timeout: .now() + 5) == .success, port != 0 else { throw URLError(.cannotConnectToHost) }
-        url = URL(string: "http://127.0.0.1:\(port)/file")!
+        url = URL(string: "http://127.0.0.1:\(port)\(path)")!
     }
 
     deinit { stop() }
@@ -51,7 +58,11 @@ final class RangeServer: @unchecked Sendable {
     }
 
     var requests: [Request] { lock.withLock { recorded } }
-    var size: Int64 { Int64(data.count) }
+    var size: Int64 { Int64(resources[url.path]?.count ?? 0) }
+
+    func failRequests(to path: String, count: Int) {
+        lock.withLock { failuresRemaining[path] = count }
+    }
 
     private func accept(_ connection: NWConnection) {
         lock.withLock { connections.append(connection) }
@@ -70,9 +81,17 @@ final class RangeServer: @unchecked Sendable {
                 return
             }
             let head = String(decoding: buffer[..<end.lowerBound], as: UTF8.self)
-            let rest = buffer[end.upperBound...]
+            let rest = Data(buffer[end.upperBound...])
             let response = respond(to: head)
-            send(response, on: connection) { self.receive(on: connection, buffered: Data(rest)) }
+            let path = head.split(separator: " ", maxSplits: 2).dropFirst().first.map(String.init)
+            let sendResponse: @Sendable () -> Void = {
+                self.send(response, on: connection) { self.receive(on: connection, buffered: rest) }
+            }
+            if let path, let delay = responseDelays[path] {
+                queue.asyncAfter(deadline: .now() + delay, execute: sendResponse)
+            } else {
+                sendResponse()
+            }
         }
     }
 
@@ -101,9 +120,19 @@ final class RangeServer: @unchecked Sendable {
             headers[line[..<colon].lowercased()] = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
         }
         let range = headers["range"].flatMap(Self.range(from:))
-        lock.withLock { recorded.append(Request(method: parts[0], path: parts[1], range: range, headers: headers)) }
+        let fail = lock.withLock {
+            recorded.append(Request(method: parts[0], path: parts[1], range: range, headers: headers))
+            guard let failures = failuresRemaining[parts[1]], failures > 0 else { return false }
+            failuresRemaining[parts[1]] = failures - 1
+            return true
+        }
         let isHead = parts[0] == "HEAD"
-        guard parts[1] == "/file" else { return response(404, body: Data("not here".utf8), headers: [], head: isHead) }
+        if fail {
+            return response(503, body: Data(), headers: [], head: isHead)
+        }
+        guard let data = resources[parts[1]] else {
+            return response(404, body: Data("not here".utf8), headers: [], head: isHead)
+        }
         if let required = requiredHeader, headers[required.field.lowercased()] != required.value {
             return response(401, body: Data(), headers: [], head: isHead)
         }
@@ -131,7 +160,7 @@ final class RangeServer: @unchecked Sendable {
 
     private func response(_ status: Int, body: Data, headers: [String], head: Bool = false) -> Data {
         let reason = [200: "OK", 206: "Partial Content", 400: "Bad Request", 401: "Unauthorized", 404: "Not Found",
-                      416: "Range Not Satisfiable"][status] ?? "Error"
+                      416: "Range Not Satisfiable", 503: "Service Unavailable"][status] ?? "Error"
         var text = "HTTP/1.1 \(status) \(reason)\r\nContent-Length: \(body.count)\r\nContent-Type: application/octet-stream\r\n"
         for header in headers { text += header + "\r\n" }
         text += "\r\n"

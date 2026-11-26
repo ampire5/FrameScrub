@@ -68,6 +68,22 @@ import Testing
         #expect(store.image(for: url) != nil)
     }
 
+    @Test func theRecentFilesWorkerKeepsAnExistingPlaybackPicture() async throws {
+        let store = ThumbnailStore(directory: makeTemporaryDirectory())
+        let worker = RecentThumbnailer(store: store, callbackQueue: DispatchQueue(label: "test"), fillsMissingOnly: true)
+        let url = Fixtures.url(Fixtures.withAudioGOP25)
+        let picture = CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 42, height: 24))
+        _ = try #require(store.save(picture, for: url, context: CIContext()))
+        await withCheckedContinuation { (completion: CheckedContinuation<Void, Never>) in
+            worker.start([.init(url: url, seconds: 1)], failed: { _, _ in
+                Issue.record("Could not generate the fixture's thumbnail")
+                completion.resume()
+            }) { _, _ in completion.resume() }
+        }
+        let kept = try #require(store.image(for: url))
+        #expect(kept.width == 42 && kept.height == 24)
+    }
+
     /// A kept poster without facts: a probe brings them and makes no picture.
     @Test func aFactsOnlyJobProbesWithoutAPicture() async throws {
         let store = ThumbnailStore(directory: makeTemporaryDirectory())

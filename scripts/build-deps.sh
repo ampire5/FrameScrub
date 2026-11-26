@@ -10,10 +10,11 @@
 # Needs: brew install meson ninja pkgconf (and nasm for x86_64)
 set -euo pipefail
 cd "$(dirname "$0")/.."
-# renovate: datasource=github-tags depName=FFmpeg/FFmpeg extractVersion=^n(?<version>\d+\.\d+(?:\.\d+)?)$
-ffmpeg_version=9.0.2
+# Pin the development branch by commit so the prebuilt archive still identifies an exact build.
+ffmpeg_revision=05c674c9132eb13e65e3fb6e9b4cf1cad1219fd5
+ffmpeg_version=master-${ffmpeg_revision:0:12}
 # renovate: datasource=github-tags depName=videolan/dav1d
-dav1d_version=1.5.4
+dav1d_version=1.5.5
 min=26.0
 arch=${DEPS_ARCH:-$(uname -m)}
 case $arch in
@@ -25,17 +26,18 @@ prefix=${FRAMESCRUB_DEPS:-$PWD/.deps/$arch}
 rm -rf "$prefix"
 src=$prefix/src
 mkdir -p "$src"
-jobs=$(sysctl -n hw.ncpu)
+jobs=${DEPS_JOBS:-$(sysctl -n hw.ncpu)}
 # Only this prefix: Homebrew's libraries must not leak into the static link.
 export PKG_CONFIG_LIBDIR=$prefix/lib/pkgconfig
 unset PKG_CONFIG_PATH
 export MACOSX_DEPLOYMENT_TARGET=$min
 
 git -c advice.detachedHead=false clone -q --depth 1 -b "$dav1d_version" https://github.com/videolan/dav1d "$src/dav1d"
-git -c advice.detachedHead=false clone -q --depth 1 -b "n$ffmpeg_version" https://github.com/FFmpeg/FFmpeg "$src/ffmpeg"
-# FFmpeg names itself from VERSION first, as a release tarball does ("9.0.2"); without it `git describe` gives
-# "n9.0.2", or the hash of an enclosing checkout.
-echo "$ffmpeg_version" >"$src/ffmpeg/VERSION"
+git init -q "$src/ffmpeg"
+git -C "$src/ffmpeg" fetch -q --depth 1 https://github.com/FFmpeg/FFmpeg.git "$ffmpeg_revision"
+git -C "$src/ffmpeg" -c advice.detachedHead=false checkout -q --detach FETCH_HEAD
+# Expose the pinned snapshot through av_version_info().
+echo "$ffmpeg_version" >"$src/ffmpeg/FF_VERSION"
 
 # A cross file even for the Mac's own architecture: Meson otherwise takes the CPU from its Python, which may differ.
 cat >"$src/$arch.meson" <<EOF
@@ -66,7 +68,8 @@ ninja -C "$src/dav1d/build" install >/dev/null
         --extra-cflags="-mmacosx-version-min=$min" --extra-ldflags="-mmacosx-version-min=$min" \
         --pkg-config=pkg-config --pkg-config-flags=--static --enable-static --disable-shared \
         --disable-autodetect --enable-videotoolbox --enable-audiotoolbox --enable-zlib --enable-bzlib --enable-iconv \
-        --enable-libdav1d --disable-programs --disable-doc --disable-avdevice --disable-avfilter --disable-network \
+        --enable-libdav1d --disable-programs --disable-doc --disable-avdevice --disable-avfilter \
+        --enable-network --enable-securetransport \
         --disable-encoders >/dev/null
     make -j"$jobs" >/dev/null
     make install >/dev/null
@@ -88,5 +91,10 @@ for pc in "$pcdir"/*.pc; do mv "$pc.flat" "$pc"; done
 
 [[ $(lipo -archs "$prefix/lib/libavcodec.a") == "$arch" ]] \
     || { echo "error: libavcodec.a is not $arch only: $(lipo -archs "$prefix/lib/libavcodec.a")" >&2; exit 1; }
+symbols=$(nm -gU "$prefix/lib/libavformat.a")
+for protocol in http https; do
+    [[ "$symbols" == *"_ff_${protocol}_protocol"* ]] \
+        || { echo "error: missing FFmpeg $protocol protocol" >&2; exit 1; }
+done
 rm -rf "$src"
 echo "FFmpeg $ffmpeg_version, dav1d $dav1d_version ($arch, macOS $min) installed in $prefix"

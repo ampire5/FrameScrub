@@ -65,6 +65,51 @@ import Testing
         try c.putImage(Data(count: 10), identity: id, variant: "third", limit: 2)
         #expect(try c.imageBytes() <= 20)
     }
+
+    @Test func aNewFallbackAtomicallyReplacesAnOlderPreferredImage() throws {
+        let (db, url) = try setup()
+        let id = try #require(MediaFileIdentity.read(url))
+        let catalog = MediaCatalog(url: db)
+        try catalog.putImage(Data([1, 2]), identity: id, variant: "preferred", limit: 2)
+        try catalog.putImage(Data([3]), identity: id, variant: "fallback", limit: 2, replacingVariant: "preferred")
+        #expect(try catalog.image(id, variant: "preferred") == nil)
+        #expect(try catalog.image(id, variant: "fallback") == Data([3]))
+        #expect(try catalog.imageBytes() == 1)
+    }
+    @Test func folderCoverUsesCatalogPostersWithoutReadingMedia() throws {
+        let (db, video) = try setup()
+        let root = video.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("a_é%")
+        let adjacent = root.appendingPathComponent("a_é%2")
+        let nested = folder.appendingPathComponent("nested")
+        for directory in [folder, adjacent, nested] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        let catalog = MediaCatalog(url: db)
+        let clips: [(URL, [(String, UInt8)])] = [
+            (folder.appendingPathComponent("01.mp4"), [("preferred", 1), ("fallback", 8), ("recent", 9)]),
+            (folder.appendingPathComponent("02.mp4"), [("fallback", 2)]),
+            (folder.appendingPathComponent("03.mp4"), [("preferred", 3)]),
+            (folder.appendingPathComponent("00.mp4"), [("recent", 4)]),
+            (nested.appendingPathComponent("00.mp4"), [("preferred", 5)]),
+            (adjacent.appendingPathComponent("00.mp4"), [("preferred", 6)]),
+        ]
+        for (url, images) in clips {
+            try Data([0]).write(to: url)
+            let identity = try #require(MediaFileIdentity.read(url))
+            for (variant, value) in images {
+                try catalog.putImage(Data([value]), identity: identity, variant: variant, limit: 20)
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+        let reopened = MediaCatalog(url: db)
+        #expect(try reopened.folderCoverImages(in: folder, preferred: "preferred", fallback: "fallback", limit: 4)
+                == [Data([1]), Data([2]), Data([3])])
+        #expect(try reopened.folderCoverImages(in: folder, preferred: "preferred", fallback: "fallback", limit: 2)
+                == [Data([1]), Data([2])])
+    }
+
     @Test func corruptCacheRecoversAndLeavesUserData() throws {
         let (db, url) = try setup()
         try Data("invalid sqlite".utf8).write(to: db)

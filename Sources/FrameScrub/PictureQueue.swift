@@ -25,6 +25,7 @@ import HomeScreenModel
     private var pending: [URL] = []
     private var failed: Set<URL> = []
     private var generation = 0
+    private var pictureReads: [UUID: String] = [:]
     /// Of `pending`, the files whose picture is kept: only their facts are wanted.
     private var factsOnly: Set<URL> = []
 
@@ -46,12 +47,16 @@ import HomeScreenModel
         reading = Task { @MainActor [weak self] in
             var missing: [URL] = [], probes: [URL] = []
             for url in urls {
+                let read = self?.trackPictureRead(url)
                 let cached = await Task.detached(priority: .utility) {
                     (store.image(for: url), FileFactsStore.shared.facts(for: [url])[url.path])
                 }.value
                 let image = cached.0
-                guard let self, !Task.isCancelled else { return }
+                guard let self, let read else { return }
+                let currentPicture = self.pictureReads.removeValue(forKey: read) != nil
+                guard !Task.isCancelled else { return }
                 if let found = cached.1 { self.onFacts?(url, found) }
+                guard currentPicture else { continue }
                 if let image {
                     self.onPicture?(idPrefix + url.path, image)
                     self.onHave?(url)
@@ -116,6 +121,7 @@ import HomeScreenModel
 
     func stop() {
         generation += 1
+        pictureReads.removeAll()
         reading?.cancel()
         reading = nil
         pending = []
@@ -129,15 +135,26 @@ import HomeScreenModel
         return failed
     }
 
+    func playbackPictureSaved(_ image: CGImage, for url: URL) {
+        pictureReads = pictureReads.filter { $0.value != url.path }
+        onPicture?(prefix + url.path, image)
+    }
+
+    private func trackPictureRead(_ url: URL) -> UUID {
+        let read = UUID()
+        pictureReads[read] = url.path
+        return read
+    }
+
     private func made(_ url: URL, facts: FileFacts) {
         pending.removeAll { $0 == url }
         onFacts?(url, facts)
         if factsOnly.remove(url) != nil { return }   // the picture was there already
-        let store = store, id = prefix + url.path, generation = generation
+        let store = store, id = prefix + url.path, generation = generation, read = trackPictureRead(url)
         Task { @MainActor [weak self] in
             let image = await Task.detached(priority: .utility) { store.image(for: url) }.value
             guard let self, self.generation == generation else { return }
-            if let image { self.onPicture?(id, image) }
+            if self.pictureReads.removeValue(forKey: read) != nil, let image { self.onPicture?(id, image) }
             self.onHave?(url)
             self.onMade?(url)
         }

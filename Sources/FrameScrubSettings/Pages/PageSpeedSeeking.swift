@@ -18,6 +18,8 @@ extension SettingsPanel {
                     (word: "keyframe", title: "Nearest keyframe"), (word: "exact", title: "Exact frame"),
                 ], symbol: "arrow.left.and.right",
                 description: "Keyframe seeks are instant; exact ones decode up to the frame. Default Nearest keyframe."),
+                .toggle("navigation-filmstrip", "Show a brief filmstrip while navigating", symbol: "film",
+                        description: "Shows nearby frames and your position at the bottom. Hover to open Filmstrip Settings. Default on."),
             ]),
             SettingsSection("Scenes", rows: [
                 .number("scene-threshold", "Scene cut threshold", step: 1, symbol: "scissors",

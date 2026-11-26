@@ -160,6 +160,7 @@ public final class AudioOutput: @unchecked Sendable {
         noteStart()
         let g = state.withLock { s -> Int? in
             guard !s.stopped, !s.broken else { return nil }
+            decoder.hlsRead?.cancel()
             s.generation += 1
             s.starting = true
             s.startSeconds = seconds
@@ -167,16 +168,18 @@ public final class AudioOutput: @unchecked Sendable {
             return s.generation
         }
         guard let g else { return }
+        let requestedAt = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : nil
         engineQueue.async { [self] in
             _ = restartEngine()   // a device change whose restart failed: try again when asked to play
             stopPlayer()
         }
-        feedQueue.async { [self] in feed(from: seconds, until: end, generation: g) }
+        feedQueue.async { [self] in feed(from: seconds, until: end, generation: g, requestedAt: requestedAt) }
     }
 
     /// Main thread; returns at once.
     public func pause() {
         state.withLock { s in
+            decoder.hlsRead?.cancel()
             s.generation += 1
             s.starting = false
             s.heardSeconds = nil
@@ -240,6 +243,7 @@ public final class AudioOutput: @unchecked Sendable {
             s.heardSeconds = nil
             s.starting = false
             s.generation += 1   // the feed running now ends
+            decoder.hlsRead?.cancel()
             if s.rebuilds.count > 3 { s.broken = true }
             return s.broken
         }
@@ -275,7 +279,7 @@ public final class AudioOutput: @unchecked Sendable {
 
     /// Schedules a decoded piece of generation `g` and starts the player with the first one; false when it was not
     /// scheduled.
-    private func schedule(_ buffer: AVAudioPCMBuffer, startSeconds: Double, generation g: Int,
+    private func schedule(_ buffer: AVAudioPCMBuffer, startSeconds: Double, generation g: Int, requestedAt: Double?,
                           played: @escaping @Sendable () -> Void) -> Bool {
         guard state.withLock({ $0.generation == g }) else { return false }
         let first = playingGeneration != g
@@ -294,31 +298,41 @@ public final class AudioOutput: @unchecked Sendable {
         // Timed from the first piece: audio that begins later than requested (e.g. a late-starting track) must not
         // run early.
         state.withLock { s in if s.generation == g { s.startSeconds = startSeconds } }
-        startSampler(generation: g)
+        if let requestedAt {
+            PlaybackDiagnostics.shared.record("start_to_engine_ms", (PlaybackDiagnostics.now() - requestedAt) * 1000,
+                                              group: "playback.audio")
+        }
+        startSampler(generation: g, requestedAt: requestedAt)
         return true
     }
 
     /// Every 10 ms while the player plays, its time for the main thread (`currentSeconds`).
-    private func startSampler(generation g: Int) {
+    private func startSampler(generation g: Int, requestedAt: Double?) {
         sampler?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: engineQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(10), leeway: .milliseconds(2))
-        timer.setEventHandler { [weak self] in self?.sample(generation: g) }
+        timer.setEventHandler { [weak self] in self?.sample(generation: g, requestedAt: requestedAt) }
         sampler = timer
         timer.resume()
     }
 
-    private func sample(generation g: Int) {
+    private func sample(generation g: Int, requestedAt: Double?) {
         guard playingGeneration == g, let nodeTime = player.lastRenderTime, nodeTime.isHostTimeValid,
               let playerTime = player.playerTime(forNodeTime: nodeTime) else { return }
         let seconds = Double(playerTime.sampleTime) / playerTime.sampleRate
         guard seconds >= 0 else { return }   // not heard yet
         let host = AVAudioTime.seconds(forHostTime: nodeTime.hostTime)
-        state.withLock { s in
-            guard s.generation == g else { return }
+        let first = state.withLock { s in
+            guard s.generation == g else { return false }
+            let first = s.heardSeconds == nil
             s.heardSeconds = seconds
             s.heardAtHost = host
             s.starting = false
+            return first
+        }
+        if first, let requestedAt {
+            PlaybackDiagnostics.shared.record("start_to_clock_sample_ms", (PlaybackDiagnostics.now() - requestedAt) * 1000,
+                                              group: "playback.audio")
         }
     }
 
@@ -326,14 +340,20 @@ public final class AudioOutput: @unchecked Sendable {
 
     private func isCurrent(_ g: Int) -> Bool { state.withLock { $0.generation == g } }
 
-    private func feed(from seconds: Double, until end: Double?, generation g: Int) {
-        guard isCurrent(g) else { return }
+    private func feed(from seconds: Double, until end: Double?, generation g: Int, requestedAt: Double?) {
+        let current = state.withLock { s in
+            guard s.generation == g else { return false }
+            decoder.hlsRead?.begin()
+            return true
+        }
+        guard current else { return }
         var queued = false
         // A feed that ends before anything was queued leaves nothing to start: no longer starting.
         defer { if !queued { state.withLock { if $0.generation == g { $0.starting = false } } } }
         do {
             try decoder.seek(toSeconds: seconds)
         } catch {
+            guard isCurrent(g) else { return }
             Self.logger.error("Audio: seek to \(seconds) s failed: \(error, privacy: .public)")
             return
         }
@@ -343,6 +363,7 @@ public final class AudioOutput: @unchecked Sendable {
             do {
                 chunk = try autoreleasepool(invoking: { try decoder.nextBuffer() })   // a pool per buffer: the feed runs for the whole playback
             } catch {
+                guard isCurrent(g) else { return }
                 Self.logger.error("Audio: decoding after \(seconds) s failed: \(error, privacy: .public)")
                 return
             }
@@ -360,8 +381,13 @@ public final class AudioOutput: @unchecked Sendable {
                 if !isCurrent(g) { return }
             }
             let buffer = ScheduledAudioBuffer(value: chunk.buffer), start = chunk.startSeconds
+            if !queued, let requestedAt {
+                PlaybackDiagnostics.shared.record("start_to_first_buffer_ms", (PlaybackDiagnostics.now() - requestedAt) * 1000,
+                                                  group: "playback.audio")
+            }
             engineQueue.async { [self] in
-                if !schedule(buffer.value, startSeconds: start, generation: g, played: { slots.signal() }) {
+                if !schedule(buffer.value, startSeconds: start, generation: g, requestedAt: requestedAt,
+                             played: { slots.signal() }) {
                     slots.signal()   // not scheduled: its slot is free again
                 }
             }

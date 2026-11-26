@@ -38,7 +38,6 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
 
     private static let fade = 0.005
     private static let core = 0.5        // decoded first around the frame (spec §3.1)
-    private static let idleWait = 0.5
     private static let lostEndMargin = 0.3
     private static let tapeAhead = 1.0       // decoded beyond the core in the direction of travel (spec §6а)
     private static let tapeRadius = 2.0      // the tape's snapshot around the frame
@@ -50,6 +49,7 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
     private var frameVelocity = FrameVelocity()
     private var tapeControl: TapeControl?     // main thread: the last one sent
     private let decoder: AudioDecoder    // filler queue only
+    private let batchLocalReads: Bool
     private let shouldYield: () -> Bool
     private let queue = DispatchQueue(label: "framescrub.scrub-audio", qos: .userInitiated)
     private let wakeUp = DispatchSemaphore(value: 0)
@@ -63,6 +63,7 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
     private var playing = false
     private var active = true
     private var stopped = false
+    private var wakePending = false
     private var generation = 0
     private var runs = 0
     private var ahead = 0.0                   // seconds beyond the core the filler decodes (tape running)
@@ -72,10 +73,12 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
     /// What the buffer holds (tests).
     var coveredSeconds: [Range<Double>] { lock.withLock { buffer.covered } }
 
-    public init(decoder: AudioDecoder, sink: SnippetSink, tape: TapeSink? = nil, shouldYield: @escaping () -> Bool) {
+    public init(decoder: AudioDecoder, sink: SnippetSink, tape: TapeSink? = nil,
+                batchLocalReads: Bool = false, shouldYield: @escaping () -> Bool) {
         self.decoder = decoder
         self.sink = sink
         self.tape = tape
+        self.batchLocalReads = batchLocalReads
         self.shouldYield = shouldYield
         buffer = ScrubAudioBuffer(sampleRate: decoder.sampleRate)
         queue.async { [self] in fill() }
@@ -86,6 +89,12 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
     public func fileOpened() { feed(.fileOpened) }
     public func userActed() { feed(.userActed) }
 
+    /// Warm the paused picture without making it eligible for a snippet or the tape.
+    func prime(seconds: Double) {
+        lock.withLock { focus = seconds }
+        wakeWorker()
+    }
+
     public func playbackStarted() {
         lock.withLock { playing = true }
         stopTape()
@@ -94,7 +103,7 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
 
     public func playbackStopped() {
         lock.withLock { playing = false }
-        wakeUp.signal()
+        wakeWorker()
         feed(.playbackStopped)
     }
 
@@ -111,7 +120,7 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
                 aheadUntil = now + Self.tapeLinger
             }
         }
-        wakeUp.signal()
+        wakeWorker()
         guard enabled && audible else { return }
         if toTape, let tape {
             let control = TapeControl(target: seconds, shownAt: now, frameVelocity: velocity, running: true, pitch: pitch)
@@ -138,27 +147,27 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
             stopped = true
             generation += 1
         }
-        wakeUp.signal()
+        wakeWorker()
     }
 
     private func updateActive() {
         let now = enabled && audible
         lock.withLock { active = now }
-        if now { wakeUp.signal() } else { stopTape() }
+        if now { wakeWorker() } else { stopTape() }
     }
 
     private func feed(_ event: ScrubAudioPicker.Event) {
         guard !lock.withLock({ stopped }) else { return }
         let length = self.length
         let seconds = picker.handle(event) { at in
-            lock.withLock { buffer.slice(fromSeconds: at, length: length) } != .notReady
+            lock.withLock { buffer.isReady(fromSeconds: at, length: length) }
         }
         if let seconds { play(seconds) }
     }
 
     private func play(_ seconds: Double) {
-        let (slice, current) = lock.withLock { (buffer.slice(fromSeconds: seconds, length: length), generation) }
-        guard case var .samples(samples) = slice else {
+        let (audio, current) = lock.withLock { (buffer, generation) }
+        guard case var .samples(samples) = audio.slice(fromSeconds: seconds, length: length) else {
             feed(.snippetEnded)     // silent (or trimmed meanwhile): nothing to hear, the next frame may sound
             return
         }
@@ -178,6 +187,19 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
 
     // MARK: Filler (private queue)
 
+    private func wakeWorker() {
+        lock.withLock {
+            guard !wakePending else { return }
+            wakePending = true
+            wakeUp.signal()
+        }
+    }
+
+    private func waitForWork() {
+        wakeUp.wait()
+        lock.withLock { wakePending = false }
+    }
+
     /// The next stretch to decode around `focus`, or nil when it is covered: ±0.5 s around the frame (a reset when
     /// the frame itself is not covered). Planned in whole samples, as the buffer rounds its bounds. Only this core is
     /// decoded eagerly — stepping extends it as the frame moves, and the window only limits what is kept — so a jump
@@ -185,15 +207,21 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
     /// `ahead` (seconds, signed) extends the core in the direction of travel while the tape runs (spec §6а).
     static func nextRun(in buffer: ScrubAudioBuffer, focus: Double, ahead: Double = 0)
         -> (from: Double, to: Double, reset: Bool)? {
-        let at = buffer.sampleIndex(focus), core = buffer.sampleIndex(Self.core)
-        let extra = buffer.sampleIndex(abs(ahead))
+        nextRun(covered: buffer.coveredIndices, rate: buffer.sampleRate, focus: focus, ahead: ahead)
+    }
+
+    private static func nextRun(covered: [Range<Int>], rate: Double, focus: Double, ahead: Double,
+                                extensionMargin: Double = 0) -> (from: Double, to: Double, reset: Bool)? {
+        let at = Int((focus * rate).rounded()), core = Int((Self.core * rate).rounded())
+        let extra = Int((abs(ahead) * rate).rounded())
         let low = max(0, at - core - (ahead < 0 ? extra : 0)), high = at + core + (ahead > 0 ? extra : 0)
-        func seconds(_ index: Int) -> Double { Double(index) / buffer.sampleRate }
-        guard let around = buffer.coveredIndices.first(where: { $0.contains(at) }) else {
+        func seconds(_ index: Int) -> Double { Double(index) / rate }
+        guard let around = covered.first(where: { $0.contains(at) }) else {
             return (seconds(low), seconds(high), true)
         }
-        if around.upperBound < high { return (seconds(around.upperBound), seconds(high), false) }
-        if around.lowerBound > low { return (seconds(low), seconds(around.lowerBound), false) }
+        let margin = Int((extensionMargin * rate).rounded())
+        if around.upperBound < high { return (seconds(around.upperBound), seconds(high + margin), false) }
+        if around.lowerBound > low { return (seconds(max(0, low - margin)), seconds(around.lowerBound), false) }
         return nil
     }
 
@@ -201,26 +229,33 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
         var failedAt: Double?
         var stalledAt: Double?   // a run that added nothing: idle until the frame moves, never spin
         var publishedAround: Double?
+        var decoderEnd: Int?
+        let rate = decoder.sampleRate
+        let window = buffer.window
         while true {
-            let (isStopped, focus, idle, buffer, aheadNow) = lock.withLock {
-                (stopped, self.focus, playing || !active, self.buffer, CACurrentMediaTime() < aheadUntil ? ahead : 0)
+            let (isStopped, focus, idle, covered, aheadNow) = lock.withLock {
+                (stopped, self.focus, playing || !active, buffer.coveredIndices, CACurrentMediaTime() < aheadUntil ? ahead : 0)
             }
             if isStopped { return }
             guard let focus, !idle else {
-                _ = wakeUp.wait(timeout: .now() + Self.idleWait)
+                waitForWork()
                 continue
             }
-            if let failed = failedAt, abs(focus - failed) <= buffer.window {
-                _ = wakeUp.wait(timeout: .now() + Self.idleWait)
+            if let failed = failedAt, abs(focus - failed) <= window {
+                waitForWork()
                 continue
             }
             failedAt = nil
             if let stalled = stalledAt, stalled == focus {
-                _ = wakeUp.wait(timeout: .now() + Self.idleWait)
+                waitForWork()
                 continue
             }
             stalledAt = nil
-            if shouldYield() {
+            // Batch local tape extensions in half-second spans, using the eager core's length.
+            // Forward/reversing MP4/AAC measurements are in docs/bench/live-scrub-cache.md.
+            let margin = batchLocalReads && aheadNow != 0 ? Self.core : 0
+            let run = Self.nextRun(covered: covered, rate: rate, focus: focus, ahead: aheadNow, extensionMargin: margin)
+            if run != nil && shouldYield() {
                 Thread.sleep(forTimeInterval: 0.02)   // the picture waits for a seek: leave it the network
                 continue
             }
@@ -228,19 +263,26 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
                 publishSnapshot(around: focus)
                 publishedAround = focus
             }
-            guard let run = Self.nextRun(in: buffer, focus: focus, ahead: aheadNow) else {
-                _ = wakeUp.wait(timeout: .now() + (aheadNow != 0 ? 0.02 : Self.idleWait))
+            guard let run else {
+                waitForWork()
                 continue
             }
             do {
-                try decode(from: run.from, to: run.to, reset: run.reset, focus: focus)
+                switch try decode(from: run.from, to: run.to, reset: run.reset, focus: focus, decoderEnd: decoderEnd) {
+                case let .finished(end):
+                    decoderEnd = end
+                case .cancelled:
+                    decoderEnd = nil
+                    continue
+                }
             } catch {
+                decoderEnd = nil
                 print("Scrub audio: \(error)")
                 failedAt = focus
             }
             let current = lock.withLock {
                 self.buffer.trim(around: self.focus ?? focus)
-                if self.buffer.coveredIndices == buffer.coveredIndices { stalledAt = focus }
+                if buffer.coveredIndices == covered { stalledAt = focus }
                 return generation
             }
             if aheadNow != 0 {
@@ -256,33 +298,70 @@ public final class ScrubAudio: @unchecked Sendable {   // shared state under `lo
 
     private func publishSnapshot(around seconds: Double) {
         guard let tape else { return }
-        let snapshot = lock.withLock { buffer.snapshot(aroundSeconds: seconds, radius: Self.tapeRadius) }
+        let started = PlaybackDiagnostics.enabled ? PlaybackDiagnostics.now() : nil
+        let audio = lock.withLock { buffer }
+        let snapshot = audio.snapshot(aroundSeconds: seconds, radius: Self.tapeRadius)
         tape.setTapeSnapshot(snapshot)
+        if let started {
+            PlaybackDiagnostics.shared.record("snapshot_ms", (PlaybackDiagnostics.now() - started) * 1000, group: "scrub.audio")
+        }
     }
 
-    private func decode(from: Double, to: Double, reset: Bool, focus: Double) throws {
-        lock.withLock { runs += 1 }
-        try decoder.seek(toSeconds: from)
-        lock.withLock {
-            if reset { buffer.reset() }
-            buffer.beginRun(atSeconds: from)
+    private enum DecodeResult {
+        case finished(nextSample: Int?)
+        case cancelled
+    }
+
+    private func obsoleteLocked(_ previousFocus: Double) -> Bool {
+        stopped || playing || !active || abs((focus ?? previousFocus) - previousFocus) > buffer.window
+    }
+
+    private func decode(from: Double, to: Double, reset: Bool, focus: Double, decoderEnd: Int?) throws -> DecodeResult {
+        let rate = decoder.sampleRate
+        let plan = lock.withLock { () -> Bool? in
+            runs += 1
+            guard !obsoleteLocked(focus) else { return nil }
+            let first = buffer.sampleIndex(from)
+            return !reset && decoderEnd == first && buffer.canContinue(at: first)
         }
+        guard let continues = plan else { return .cancelled }
+        if !continues {
+            do {
+                try decoder.seek(toSeconds: from)
+            } catch {
+                if lock.withLock({ obsoleteLocked(focus) }) { return .cancelled }
+                throw error
+            }
+            if PlaybackDiagnostics.enabled {
+                PlaybackDiagnostics.shared.record("seek", 1, group: "scrub.audio")
+            }
+            let started = lock.withLock {
+                guard !obsoleteLocked(focus) else { return false }
+                if reset { buffer.reset() }
+                buffer.beginRun(atSeconds: from)
+                return true
+            }
+            guard started else { return .cancelled }
+        } else if PlaybackDiagnostics.enabled {
+            PlaybackDiagnostics.shared.record("continue", 1, group: "scrub.audio")
+        }
+        let target = Int((to * rate).rounded())
         while true {
+            if lock.withLock({ obsoleteLocked(focus) }) { return .cancelled }
             let next = try autoreleasepool { try decoder.nextBuffer() }
             guard let chunk = next else {
                 lock.withLock { buffer.endOfAudio() }
-                return
+                return .finished(nextSample: nil)
             }
             let pcm = chunk.buffer
             let count = Int(pcm.frameLength)
             let samples = StereoSamples(left: Array(UnsafeBufferPointer(start: pcm.floatChannelData![0], count: count)),
                                         right: Array(UnsafeBufferPointer(start: pcm.floatChannelData![1], count: count)))
-            let (moved, isStopped) = lock.withLock { () -> (Bool, Bool) in
+            let end = lock.withLock {
                 buffer.append(samples, startSeconds: chunk.startSeconds)
-                // A jump out of the window while decoding: stop here and plan around the new frame.
-                return (abs((self.focus ?? focus) - focus) > buffer.window, stopped)
+                return buffer.sampleIndex(chunk.startSeconds) + count
             }
-            if isStopped || moved || chunk.startSeconds + Double(count) / decoder.sampleRate >= to { return }
+            if end >= target { return .finished(nextSample: end) }
         }
     }
 }

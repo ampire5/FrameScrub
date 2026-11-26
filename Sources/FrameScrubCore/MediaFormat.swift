@@ -43,12 +43,17 @@ public struct MediaFormat: Equatable, Sendable {
     public var fileBitRate: Int64
 
     init(formatContext fc: UnsafeMutablePointer<AVFormatContext>, video: Int32, audio: Int32?, fileBitRate: Int64) {
-        let v = fc.pointee.streams[Int(video)]!.pointee.codecpar.pointee
-        videoCodec = String(cString: avcodec_get_name(v.codec_id))
-        videoProfile = avcodec_profile_name(v.codec_id, v.profile).map { String(cString: $0) }
-        videoLevel = Self.level(v.level, codec: v.codec_id)
-        pixelFormat = av_get_pix_fmt_name(AVPixelFormat(rawValue: v.format)).map { String(cString: $0) }
-        videoBitRate = v.bit_rate
+        if video >= 0 {
+            let v = fc.pointee.streams[Int(video)]!.pointee.codecpar.pointee
+            videoCodec = String(cString: avcodec_get_name(v.codec_id))
+            videoProfile = avcodec_profile_name(v.codec_id, v.profile).map { String(cString: $0) }
+            videoLevel = Self.level(v.level, codec: v.codec_id)
+            pixelFormat = av_get_pix_fmt_name(AVPixelFormat(rawValue: v.format)).map { String(cString: $0) }
+            videoBitRate = v.bit_rate
+        } else {
+            videoCodec = ""
+            videoBitRate = 0
+        }
         self.audio = audio.map { index in
             let a = fc.pointee.streams[Int(index)]!.pointee.codecpar.pointee
             return Audio(codec: String(cString: avcodec_get_name(a.codec_id)),

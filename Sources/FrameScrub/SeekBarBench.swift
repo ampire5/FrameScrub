@@ -8,8 +8,10 @@ import QuartzCore
     static func run() -> Never {
         if CommandLine.arguments.contains("--bench-keyframe-cost") { runKeyframeCost() }
         if CommandLine.arguments.contains("--bench-film-prewarm") { runPrewarm() }
+        if CommandLine.arguments.contains("--bench-navigation-ribbon") { PlayerWindowController.runNavigationRibbonBench() }
         if CommandLine.arguments.contains("--bench-playing-film") { PlayingFilmBench.run() }
         if CommandLine.arguments.contains("--bench-film-loader") { runLoader() }
+        if CommandLine.arguments.contains("--bench-film-click-cache") { runClickCache() }
         let app = NSApplication.shared
         app.setActivationPolicy(.regular); app.finishLaunching()
         let thumbnailBox = NSRect(x: 10, y: 20, width: 160, height: 90)
@@ -17,6 +19,7 @@ import QuartzCore
         precondition(abs(portrait.width / portrait.height - 9.0 / 16) < 0.00001 && portrait.height == 90)
         let wide = FilmstripThumbnail.fittedRect(aspect: 2.35, in: thumbnailBox)
         precondition(abs(wide.width / wide.height - 2.35) < 0.00001 && wide.width == 160)
+        checkThumbnailCrop()
         let savedHeight = UserDefaults.standard.object(forKey: "timeline-film-height")
         let savedControls = UserDefaults.standard.object(forKey: "timeline-controls-always")
         let savedPinned = UserDefaults.standard.object(forKey: "timeline-film-pinned")
@@ -34,12 +37,37 @@ import QuartzCore
                               styleMask: [.titled, .resizable], backing: .buffered, defer: false)
         window.autorecalculatesKeyViewLoop = true
         let host = window.contentView!
+        func descendants(of view: NSView) -> [NSView] {
+            view.subviews.flatMap { [$0] + descendants(of: $0) }
+        }
         host.wantsLayer = true; host.layer?.backgroundColor = NSColor.darkGray.cgColor
         window.makeKeyAndOrderFront(nil)
         app.activate()
         let geometryBar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 130))
         host.addSubview(geometryBar)
         let filmPoint = NSPoint(x: 450, y: 8), filmMargin = NSPoint(x: 450, y: 60)
+        if CommandLine.arguments.contains("--verify-film-fold-hover") {
+            geometryBar.updateFilmPointer(filmPoint)
+            precondition(geometryBar.showsFilmstrip)
+            geometryBar.toggleFilmVisibility()
+            geometryBar.updateFilmPointer(filmPoint)
+            precondition(!geometryBar.showsFilmstrip, "Folding should suppress the current hover")
+            geometryBar.updateFilmPointer(nil)
+            geometryBar.updateFilmPointer(filmPoint)
+            precondition(geometryBar.showsFilmstrip, "A fresh hover should reveal the folded strip again")
+            geometryBar.updateFilmPointer(nil)
+            geometryBar.toggleFilmVisibility()
+            geometryBar.toggleFilmVisibility()
+            geometryBar.updateFilmPointer(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            precondition(geometryBar.showsFilmstrip, "A keyboard reveal must wait for the pointer to reach the strip")
+            geometryBar.updateFilmPointer(filmPoint)
+            geometryBar.updateFilmPointer(nil)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            precondition(!geometryBar.showsFilmstrip, "Leaving after entering should fold the keyboard-revealed strip")
+            print("film-fold-hover: suppression, keyboard reveal and pointer exit passed")
+            exit(EXIT_SUCCESS)
+        }
         geometryBar.setPlaybackControlsVisible(false)
         geometryBar.updateFilmPointer(NSPoint(x: 450, y: 120))
         precondition(!geometryBar.showsFilmstrip, "Movement over the video must not reveal film")
@@ -75,6 +103,7 @@ import QuartzCore
         }
         let aboveFilm = NSPoint(x: filmPoint.x, y: 76)
         for point in [filmPoint, filmMargin, aboveFilm] { sendPointer(.mouseMoved, at: point) }
+        precondition(geometryBar.filmCursorX == aboveFilm.x, "The film must show its target before a preview arrives")
         let targets = hoveredFractions.compactMap { $0 }
         precondition(targets.count == 3 && targets.allSatisfy { $0 == targets.first },
                      "The film and the margin above it must share one continuous hover target")
@@ -86,8 +115,58 @@ import QuartzCore
         sendPointer(.leftMouseUp, at: aboveFilm)
         precondition(trackSeeks.isEmpty && filmSeeks.count == 1 && filmSeeks[0] == targets[0] * 20,
                      "Clicking in the film margin must seek to the time shown by the preview")
+        let progressPoint = NSPoint(x: 231, y: 3)
+        sendPointer(.mouseMoved, at: progressPoint)
+        precondition(geometryBar.overviewHoverFraction == 0.25 && geometryBar.filmCursorX == nil &&
+                     hoveredFractions.last == .some(0.25), "Overview hover must use the same linear scale as a click")
+        sendPointer(.leftMouseDown, at: progressPoint)
+        sendPointer(.leftMouseUp, at: progressPoint)
+        precondition(trackSeeks == [0.25] && filmSeeks.count == 1,
+                     "The progress rail must seek linearly below the film projection")
+        trackSeeks.removeAll()
+        trackSeekWasContinuous.removeAll()
         sendPointer(.mouseMoved, at: NSPoint(x: 450, y: 125))
         precondition(hoveredFractions.last == .some(nil), "Leaving the film must dismiss its preview")
+        precondition(geometryBar.filmCursorX == nil, "Leaving the film must also dismiss its seek cursor")
+        precondition(geometryBar.overviewHoverFraction == nil, "Leaving the film must dismiss its overview target")
+        let clickIndex = FrameIndex(pts: (0..<4800).map(Int64.init), keyframePTS: [0], timeBase: 1.0 / 240)
+        func updateClickPosition(_ frame: Int) {
+            geometryBar.update(frameCount: clickIndex.frameCount, position: frame, cached: [], loopA: nil, loopB: nil,
+                               text: "film click")
+        }
+        geometryBar.updateTimeline(index: clickIndex, duration: 20, paused: true)
+        updateClickPosition(1200)
+        let click = NSPoint(x: 360, y: 24)
+        sendPointer(.mouseMoved, at: click)
+        updateClickPosition(1920)
+        let projection = TimelineFilmLayout(width: 876, height: 48, aspect: 16.0 / 9, duration: 20, center: 8,
+                                            secondsPerThumbnail: 1, focusFraction: 0.3, cropStrength: 0.7).lens
+        let expected = clickIndex.frameNumber(forSeconds: projection.time(at: click.x - 450))
+        var landed: Int?
+        geometryBar.onFilmSeek = { seconds in
+            let frame = clickIndex.frameNumber(forSeconds: seconds)
+            landed = frame
+            updateClickPosition(frame)
+        }
+        geometryBar.onFilmClickPreview = geometryBar.onFilmSeek
+        geometryBar.displayIfNeeded()
+        sendPointer(.leftMouseDown, at: click)
+        sendPointer(.leftMouseUp, at: click)
+        precondition(landed == expected, "The click must use the current projection after it moves under a stationary pointer")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.35))
+        precondition(abs(geometryBar.filmPlayheadX - click.x) <= 1,
+                     "The settled playhead must stay over the clicked position in the lens")
+        geometryBar.updateTimeline(index: clickIndex, duration: 20, paused: false)
+        updateClickPosition(expected + 1)
+        let followingProjection = TimelineFilmLayout(width: 876, height: 48, aspect: 16.0 / 9, duration: 20,
+            center: clickIndex.seconds(forFrame: expected + 1), secondsPerThumbnail: 1, focusFraction: 0.3,
+            cropStrength: 0.7).lens
+        precondition(geometryBar.filmPlayheadX == (450 + followingProjection.focusOffset).rounded(),
+                     "The lens must follow the playhead when playback resumes")
+        geometryBar.updateTimeline(index: nil, duration: 20, paused: true)
+        updateClickPosition(0)
+        geometryBar.onFilmSeek = nil
+        geometryBar.onFilmClickPreview = nil
         geometryBar.setPlaybackControlsVisible(false)
         precondition(geometryBar.hitTest(filmPoint) === geometryBar && geometryBar.hitTest(filmMargin) == nil,
                      "Hiding playback controls must leave the film in place")
@@ -132,8 +211,319 @@ import QuartzCore
             sendPointer(.leftMouseUp, at: end)
         }
         precondition(nativeCommits == 1 && cutCommits == 1, "Coincident handles must route independently")
+        let ribbon = NavigationRibbonView(frame: NSRect(x: 0, y: 0, width: 400, height: 44))
+        ribbon.record(from: 12, to: 90, duration: 120, at: 10)
+        ribbon.record(from: 90, to: 104, duration: 120, at: 10.5)
+        precondition(ribbon.journey?.origin == 12 && ribbon.journey?.target == 104,
+                     "A series retains its first origin and updates the actual landing")
+        precondition(ribbon.journey?.displacement == "+1:32", "The readout shows cumulative displacement")
+        ribbon.record(from: 104, to: 104, duration: 120, at: 10.6)
+        precondition(ribbon.journey?.target == 104, "An end bump must not invent a journey")
+        ribbon.record(from: 104, to: 34, duration: 120, at: 13)
+        precondition(ribbon.journey?.origin == 104 && ribbon.journey?.target == 34,
+                     "An idle gap begins a fresh journey, including backward jumps")
+        precondition(ribbon.journey?.displacement == "−1:10" &&
+                     NavigationJourney(origin: 10, target: 8.76, duration: 20).displacement == "−1.2 s",
+                     "Reverse movement keeps its sign in the time and seconds formats")
+        precondition(TimelinePositionText.position(763.2, duration: 2538) == "12:43.2 / 42:18" &&
+                     TimelinePositionText.position(0.2, duration: 0.8) == "0:00.2 / 0:00.8")
+        ribbon.showWithFullFilm(true)
+        precondition(!ribbon.isPresenting && ribbon.journey?.target == 34,
+                     "Opening the full film transfers the same journey instead of duplicating it")
+        ribbon.showWithFullFilm(false)
+        precondition(ribbon.isPresenting, "Folding during a journey restores the compact view")
+        ribbon.clear()
+        precondition(ribbon.journey == nil, "Closing the source discards the journey")
+        let navigationIndex = FrameIndex(pts: (0..<240).map(Int64.init), keyframePTS: [0, 48, 96, 144, 192], timeBase: 1.0 / 24)
+        geometryBar.updateTimeline(index: navigationIndex, duration: 10, paused: true)
+        let context = CGContext(data: nil, width: 16, height: 9, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        let cached = context.makeImage()!
+        for time in [0.0, 2, 4, 6, 8] { geometryBar.setFilmstripImage(cached, seconds: time) }
+        let before = geometryBar.navigationProjection(near: 4.5)
+        let after = geometryBar.navigationProjection(near: 5.5)
+        precondition(before.pictures == after.pictures && before.fraction == 0.25 && after.fraction == 0.75,
+                     "The film must move with time between keyframes, using the same pictures")
+        let boundary = geometryBar.navigationProjection(near: 6)
+        precondition(boundary.fraction == 0 && before.pictures[4] === boundary.pictures[3],
+                     "A thumbnail reaches the playhead without jumping when the sample window advances")
+        let start = geometryBar.navigationProjection(near: 0)
+        precondition(start.pictures.prefix(3).allSatisfy { $0 == nil } && start.fraction == 0,
+                     "The beginning keeps the first frame under the playhead")
+        precondition(start.placeholderIndices.allSatisfy { $0 >= 3 }, "Do not draw placeholders before the file starts")
+        geometryBar.navigationScale = .wide
+        let wideProjection = geometryBar.navigationProjection(near: 3)
+        precondition(wideProjection.fraction == 0.5 && wideProjection.pictures[4] === boundary.pictures[3],
+                     "The wider scale covers more time across the same view")
+        geometryBar.navigationScale = .near
+        geometryBar.samplesFilmstripByTime = true
+        geometryBar.setFilmstripImage(cached, seconds: 4.8)
+        let storyboard = geometryBar.navigationProjection(near: 4.1)
+        precondition(storyboard.pictures[4] != nil &&
+                     storyboard.pictures == geometryBar.navigationProjection(near: 4.9).pictures,
+                     "A ready fallback stays in the same slot while the storyboard moves")
+        geometryBar.samplesFilmstripByTime = false
+        let ruler = TimelineFilmLayout(width: 800, height: 48, aspect: 16.0 / 9, duration: 100,
+                                       center: 50, secondsPerThumbnail: 1, focusFraction: 0.3, cropStrength: 0.7).lens
+        let rulerMarks = FilmstripRuler.marks(in: ruler, around: 50)
+        precondition(rulerMarks.count == 2 && rulerMarks[0].delta == -rulerMarks[1].delta,
+                     "A centered Lens should show the same interval on both sides")
+        precondition(rulerMarks.allSatisfy { abs(ruler.time(at: $0.offset) - (50 + $0.delta)) < 0.000_001 },
+                     "Each ruler mark must point at the real seek time under the Lens")
+        let atStart = FilmstripRuler.marks(in: ruler, around: 0)
+        precondition(atStart.count == 1 && atStart[0].delta > 0, "The ruler must end at the file boundary")
+        let irregular = NavigationRibbonView.Projection(pictures: Array(repeating: nil, count: 7),
+            fraction: 0.5, sampleTimes: [nil, 0, 1, 4, 10, 12, nil])
+        precondition(irregular.visibleDuration(pitch: 50, width: 150, duration: 20) == 11,
+                     "Mini coverage must follow the visible keyframe times, including unequal intervals")
+        precondition(irregular.visibleDuration(pitch: 50, width: 100, duration: 20) == 8.5,
+                     "Narrowing the clip must interpolate its partial edge cells")
+        precondition(irregular.visibleDuration(pitch: 50, width: 350, duration: 20) == 20,
+                     "Coverage must stop at the start and end of the file")
+        geometryBar.samplesFilmstripByTime = true
+        let clipped = geometryBar.navigationProjection(near: 4.9)
+        precondition(clipped.visibleDuration(pitch: 50, width: 250, duration: 10).map { abs($0 - 5) < 0.000_001 } == true,
+                     "Storyboard coverage must follow its real one-second sample intervals")
+        geometryBar.samplesFilmstripByTime = false
+        let edgeIndex = FrameIndex(pts: (0..<600).map(Int64.init),
+                                   keyframePTS: [0, 48, 96, 144, 192, 240, 336, 360, 432, 480, 528],
+                                   timeBase: 1.0 / 24)
+        geometryBar.updateTimeline(index: edgeIndex, duration: 25, paused: true)
+        let beyondTileCenter = geometryBar.navigationProjection(near: 9.8)
+        precondition(beyondTileCenter.visibleDuration(pitch: 50, width: 250, duration: 25)
+                        .map { abs($0 - 11.4) < 0.000_001 } == true,
+                     "A partial edge beyond the last drawn tile center must use the next keyframe, not the end of the file")
+        geometryBar.updateTimeline(index: navigationIndex, duration: 10, paused: true)
+        let wideCaption = FilmstripReadout(time: 1148.2, duration: 7398, anchor: 100,
+                                          in: NSRect(x: 0, y: 9, width: 260, height: 17))!
+        let narrowCaption = FilmstripReadout(time: 1148.2, duration: 7398, anchor: 100,
+                                            in: NSRect(x: 40, y: 9, width: 95, height: 17))!
+        precondition(wideCaption.currentRect.midX == 100 && narrowCaption.currentRect == wideCaption.currentRect &&
+                     narrowCaption.timeRect == narrowCaption.currentRect && wideCaption.timeRect.width > wideCaption.currentRect.width,
+                     "The current time stays centered as the total duration drops out")
+        print("filmstrip-scale-check\tpassed: projected ruler, uneven mini coverage, anchored current time")
+        precondition(geometryBar.transport.occupiedRects.count == 1, "The transport must occupy one compact region")
+        let transport = geometryBar.transport
+        transport.layoutSubtreeIfNeeded()
+        transport.update(volume: 40, muted: false, paused: true, speed: 1)
+        var wheelVolumes: [Double] = []
+        transport.onVolume = { wheelVolumes.append($0) }
+        precondition(transport.adjustVolume(by: 1, at: NSPoint(x: 119, y: 17), precise: false))
+        precondition(!transport.adjustVolume(by: 1, at: NSPoint(x: 49, y: 17), precise: false))
+        precondition(wheelVolumes == [42], "The speaker owns the wheel; playback buttons leave volume unchanged")
+        geometryBar.setFilmRevealed(false, force: true)
+        geometryBar.scrollFilm(by: 24, reveal: false)
+        precondition(geometryBar.isScrollingFoldedFilm && !geometryBar.showsFilmstrip,
+                     "Controller scrubbing can keep the film folded for compact feedback")
+        geometryBar.cancelFilmScroll()
         geometryBar.removeFromSuperview()
         print("timeline-hover-routing-check\tpassed: compact controls, continuous film preview, matching click, larger folded-track target")
+        if let arg = CommandLine.arguments.firstIndex(of: "--shots"), CommandLine.arguments.indices.contains(arg + 1) {
+            let directory = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            ribbon.frame = NSRect(x: 12, y: 100, width: 460, height: Config().navigationFilmstripHeight)
+            host.addSubview(ribbon)
+            ribbon.record(from: 134.2, to: 1117.6, duration: 1530, frames: {
+                .init(delta: Int(($1 - $0) * 24), position: (Int($1 * 24), 36_719))
+            })
+            let colors: [NSColor] = [.systemTeal, .systemBlue, .systemOrange, .systemIndigo, .systemPurple, .systemGreen, .systemPink]
+            let pictures = colors.map { color in
+                NSImage(size: NSSize(width: 160, height: 90), flipped: false) { rect in
+                    NSGradient(starting: color.withAlphaComponent(0.3), ending: color)?.draw(in: rect, angle: 65)
+                    return true
+                }
+            }.map(Optional.some)
+            ribbon.layoutSubtreeIfNeeded()
+            func capture(_ view: NSView, _ name: String) {
+                window.displayIfNeeded()
+                CATransaction.flush()
+                guard let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent(name))
+            }
+            func waitForLensClose() {
+                let deadline = Date().addingTimeInterval(1)
+                while geometryBar.isInteracting, Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+                precondition(!geometryBar.isInteracting, "Closing settings must release the timeline")
+            }
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.25), geometry: .identity)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.28))
+            capture(ribbon, "navigation.png")
+            let row = ribbon.subviews.flatMap { $0.layer?.sublayers ?? [] }.first { $0.sublayers?.count == pictures.count }
+            precondition(row != nil, "Expected a row of persistent tile layers")
+            let tile = row!.sublayers!.sorted { $0.position.x < $1.position.x }[3]
+            func position() -> CGFloat { row!.affineTransform().tx + tile.position.x }
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.49), geometry: .identity)
+            let beforeMiddle = position()
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.51), geometry: .identity)
+            precondition(beforeMiddle - position() > 0 && beforeMiddle - position() < 3,
+                         "Crossing a thumbnail midpoint should only move the strip by the input distance")
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.99), geometry: .identity)
+            let edge = position()
+            let shifted = Array(pictures.dropFirst()) + [nil]
+            ribbon.setProjection(.init(pictures: shifted, fraction: 0.01), geometry: .identity)
+            precondition(edge - position() > 0 && edge - position() < 3,
+                         "Advancing the sample window should keep the same visible tile in place")
+            ribbon.record(from: 1117.6, to: 1118.6, duration: 1530, frames: {
+                .init(delta: Int(($1 - $0) * 24), position: (Int($1 * 24), 36_719))
+            })
+            let sampleTimes: [Double?] = [1098, 1103, 1109, 1113, 1115, 1119.8, 1123, 1129, 1133]
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.75, sampleTimes: sampleTimes), geometry: .identity)
+            capture(ribbon, "navigation-offset.png")
+            let inStrip = ribbon.convert(NSPoint(x: ribbon.bounds.midX, y: 12), to: nil)
+            precondition(ribbon.updatePointer(inStrip), "Hover should expose the compact controls")
+            let anchor = ribbon.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Filmstrip settings" }!
+            precondition(geometryBar.showMiniLensControls(relativeTo: anchor))
+            ribbon.setSettingsOpen(true)
+            let popupViews = NSApp.windows.compactMap(\.contentView).flatMap { descendants(of: $0) }
+            let miniSize = popupViews.compactMap { $0 as? NSSlider }.first { $0.accessibilityLabel() == "Mini Strip width" }!
+            precondition(!miniSize.isHiddenOrHasHiddenAncestor && !geometryBar.showsFilmstrip,
+                         "The shared settings should open directly on mini dimensions without unfolding the full filmstrip")
+            var miniSizeChanged = false
+            geometryBar.onMiniFilmSizeChange = { width, height in miniSizeChanged = width == 75 && height == 106 }
+            miniSize.doubleValue = 75
+            NSApp.sendAction(miniSize.action!, to: miniSize.target, from: miniSize)
+            precondition(miniSizeChanged, "The Mini Strip width slider must apply the configured size")
+            if let popup = miniSize.window?.contentView { capture(popup, "timeline-settings-mini.png") }
+            let tabs = popupViews.compactMap { $0 as? NSSegmentedControl }.first {
+                $0.segmentCount == 2 && $0.label(forSegment: 1) == "Mini Strip"
+            }!
+            tabs.selectedSegment = 0
+            NSApp.sendAction(tabs.action!, to: tabs.target, from: tabs)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            let stretch = descendants(of: tabs.window!.contentView!).compactMap { $0 as? NSSlider }.first {
+                $0.accessibilityLabel() == "Thumbnail stretch"
+            }!
+            precondition(!stretch.isHiddenOrHasHiddenAncestor && miniSize.window == nil &&
+                         (tabs.window?.frame.height ?? 0) > 500,
+                         "Both strips must get fitting controls from the same Filmstrip tab")
+            if let popup = stretch.window?.contentView { capture(popup, "timeline-settings-film.png") }
+            tabs.selectedSegment = 1
+            NSApp.sendAction(tabs.action!, to: tabs.target, from: tabs)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            precondition((tabs.window?.frame.height ?? .infinity) < 260, "The mini settings should return to their compact height")
+            geometryBar.closeMiniLensControls()
+            ribbon.setSettingsOpen(false)
+            waitForLensClose()
+            host.addSubview(geometryBar)
+            geometryBar.setFilmRevealed(true, force: true)
+            let lens = geometryBar.modeControl.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Lens settings" }!
+            NSApp.sendAction(lens.action!, to: lens.target, from: lens)
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            precondition((tabs.window?.frame.height ?? 0) > 500 &&
+                         !stretch.isHiddenOrHasHiddenAncestor && stretch.window === tabs.window,
+                         "Opening full film settings after closing the mini panel must restore the taller size")
+            NSApp.sendAction(lens.action!, to: lens.target, from: lens)
+            waitForLensClose()
+            geometryBar.setFilmRevealed(false, force: true)
+            geometryBar.removeFromSuperview()
+            let scaleKey = "navigation-filmstrip-scale"
+            let savedScale = UserDefaults.standard.object(forKey: scaleKey)
+            defer { UserDefaults.standard.set(savedScale, forKey: scaleKey) }
+            let toggle = ribbon.subviews.compactMap { $0 as? NSButton }.first {
+                $0.accessibilityLabel() == "Navigation filmstrip scale"
+            }!
+            precondition(toggle.title.hasPrefix(ribbon.scale.title + " · ") && toggle.title.hasSuffix(" s"),
+                         "The mini scale button should show the span for an irregular keyframe row")
+            let initial = ribbon.scale
+            var changedScale = false
+            ribbon.onScaleChanged = { changedScale = true }
+            toggle.performClick(nil)
+            precondition(changedScale && ribbon.scale != initial)
+            toggle.performClick(nil)
+            capture(ribbon, "navigation-controls.png")
+            ribbon.configureThumbnailFit(crop: 0, stretch: 0)
+            capture(ribbon, "navigation-fit.png")
+            ribbon.configureThumbnailFit(crop: 0, stretch: 1)
+            capture(ribbon, "navigation-stretch.png")
+            ribbon.configureThumbnailFit(crop: 1, stretch: 0)
+            ribbon.frame.size.width = 260
+            ribbon.layoutSubtreeIfNeeded()
+            capture(ribbon, "navigation-narrow.png")
+            ribbon.setPictureAspect(9.0 / 16)
+            let radius = ribbon.sampleRadius
+            precondition(radius > NavigationRibbonView.Projection.defaultRadius,
+                         "Portrait thumbnails should use more cells in the same viewport")
+            let portrait = NSImage(size: NSSize(width: 90, height: 160), flipped: false) { rect in
+                NSGradient(starting: .systemTeal, ending: .systemBlue)?.draw(in: rect, angle: 65)
+                return true
+            }
+            ribbon.setProjection(.init(pictures: Array(repeating: portrait, count: 2 * radius + 1), fraction: 0.25),
+                                 geometry: .identity)
+            let laidOut = row?.sublayers?.sorted { $0.position.x < $1.position.x } ?? []
+            precondition(laidOut.count == 2 * radius + 1 && laidOut[0].bounds.width <= laidOut[0].bounds.height * 9 / 16 &&
+                         abs(laidOut[1].position.x - laidOut[0].position.x - laidOut[0].bounds.width - 2) < 0.01,
+                         "Portrait thumbnails must pack with the normal two-point gap")
+            capture(ribbon, "navigation-portrait.png")
+            ribbon.setPictureAspect(16.0 / 9)
+            ribbon.clear()
+            precondition(toggle.isHidden && !ribbon.isPresenting, "Closing the ribbon removes its controls")
+            ribbon.removeFromSuperview()
+
+            host.addSubview(geometryBar)
+            geometryBar.setCutEdges(nil)
+            geometryBar.setFilmMode(.lens, save: false)
+            geometryBar.setPlaybackControlsVisible(true)
+            geometryBar.setFilmRevealed(true, force: true)
+            geometryBar.update(frameCount: 240, position: 120, cached: [], loopA: nil, loopB: nil, text: "Position")
+            geometryBar.navigationJourney = NavigationJourney(origin: 1, target: 5, duration: 10, frames: .init(delta: 96))
+            for (slot, picture) in pictures.prefix(5).enumerated() {
+                if let source = picture?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                    geometryBar.setFilmstripImage(source, seconds: Double(slot * 2))
+                }
+            }
+            sendPointer(.mouseMoved, at: NSPoint(x: 713, y: 24))
+            precondition(geometryBar.filmCursorX == 713, "Capture the preview cursor separately from the playhead")
+            capture(geometryBar, "film-position.png")
+            sendPointer(.mouseMoved, at: NSPoint(x: geometryBar.filmPlayheadX, y: 24))
+            precondition(geometryBar.filmCursorX == geometryBar.filmPlayheadX, "Capture the cursor over the playhead")
+            capture(geometryBar, "film-position-overlap.png")
+            sendPointer(.mouseMoved, at: NSPoint(x: 713, y: 3))
+            precondition(geometryBar.overviewHoverFraction != nil && geometryBar.filmCursorX == nil)
+            capture(geometryBar, "film-overview-hover.png")
+            geometryBar.frame.size.width = 420
+            geometryBar.layoutSubtreeIfNeeded()
+            sendPointer(.mouseMoved, at: NSPoint(x: 348, y: 24))
+            capture(geometryBar, "film-position-narrow.png")
+
+            let source = VirtualCutSource(kind: .scene, locator: "1", version: "original")
+            let cut = VirtualCutTimeline(ranges: [
+                VirtualCutRange(id: "a", source: source, start: 10, end: 13),
+                VirtualCutRange(id: "b", source: source, start: 70, end: 77)
+            ])!
+            geometryBar.setCutTimeline(cut)
+            geometryBar.updateVirtualCut(time: 5, span: 1, paused: true, previewSettle: 0)
+            precondition(geometryBar.accessibilityValue() as? String == "0:05.0 / 0:10 · Fragment 2 / 2")
+            for (span, picture) in pictures.prefix(2).enumerated() {
+                if let source = picture?.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                    geometryBar.setCutPoster(source, span: span)
+                }
+            }
+            sendPointer(.mouseMoved, at: NSPoint(x: 365, y: 24))
+            capture(geometryBar, "film-position-cut.png")
+            geometryBar.navigationJourney = nil
+            let background = NSImageView(frame: host.bounds)
+            background.image = NSImage(size: host.bounds.size, flipped: false) { rect in
+                NSGradient(starting: .systemIndigo, ending: .systemYellow)?.draw(in: rect, angle: 0)
+                return true
+            }
+            background.imageScaling = .scaleAxesIndependently
+            host.addSubview(background, positioned: .below, relativeTo: geometryBar)
+            host.addSubview(ribbon)
+            ribbon.frame.origin.y = 193
+            ribbon.record(from: 4, to: 30, duration: 68)
+            ribbon.setProjection(.init(pictures: pictures, fraction: 0.25), geometry: .identity)
+            ribbon.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.28))
+            capture(host, "timeline-glass-over-color.png")
+            ribbon.clear()
+            ribbon.removeFromSuperview()
+            background.removeFromSuperview()
+            geometryBar.removeFromSuperview()
+        }
         if CommandLine.arguments.contains("--timeline-input-only") { exit(EXIT_SUCCESS) }
         let index = FrameIndex(pts: (0..<72000).map(Int64.init), keyframePTS: Set(stride(from: 0, to: 72000, by: 48).map(Int64.init)),
                                timeBase: 1.0 / 24)
@@ -339,14 +729,15 @@ import QuartzCore
                 NSEvent.mouseEvent(with: type, location: NSPoint(x: x, y: 24), modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
             }
-            bar.mouseDown(with: mouse(.leftMouseDown, 560))
-            bar.mouseDragged(with: mouse(.leftMouseDragged, 562))
-            bar.mouseUp(with: mouse(.leftMouseUp, 562))
+            let marginX = bar.transport.frame.maxX + 16
+            bar.mouseDown(with: mouse(.leftMouseDown, marginX))
+            bar.mouseDragged(with: mouse(.leftMouseDragged, marginX + 2))
+            bar.mouseUp(with: mouse(.leftMouseUp, marginX + 2))
             precondition(seeks.count == 1 && seeks[0] > 10, "Click jitter must seek to the clicked position without starting a centre drag")
-            bar.mouseMoved(with: mouse(.mouseMoved, 560))
+            bar.mouseMoved(with: mouse(.mouseMoved, marginX))
             var trackSeeks: [Double] = []
             bar.onSeek = { trackSeeks.append($0) }
-            let marginPoint = NSPoint(x: 560, y: 60)
+            let marginPoint = NSPoint(x: marginX, y: 60)
             for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
                 let marginEvent = NSEvent.mouseEvent(with: type, location: marginPoint, modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
@@ -465,15 +856,15 @@ import QuartzCore
             let controls = TimelineLensControls()
             let opened = measure { controls.setValues(seconds: 1, focus: 0.3, crop: 0.7); host.addSubview(controls.view) }
             report("lens-controls-first", 1, [opened])
-            let densitySlider = controls.view.subviews.compactMap { $0 as? NSSlider }.first {
+            let densitySlider = descendants(of: controls.view).compactMap { $0 as? NSSlider }.first {
                 $0.accessibilityLabel() == "Outside density"
             }!
             controls.setValues(seconds: 1, focus: 0.3, crop: 0.7, density: 8)
             precondition(densitySlider.doubleValue == 8, "The density slider must accept and restore 8×")
-            precondition(controls.view.subviews.compactMap { $0 as? NSSlider }.contains {
+            precondition(descendants(of: controls.view).compactMap { $0 as? NSSlider }.contains {
                 $0.accessibilityLabel() == "Filmstrip height"
             }, "Film settings must expose the strip height beside the lens controls")
-            let heightSlider = controls.view.subviews.compactMap { $0 as? NSSlider }.first {
+            let heightSlider = descendants(of: controls.view).compactMap { $0 as? NSSlider }.first {
                 $0.accessibilityLabel() == "Filmstrip height"
             }!
             controls.onHeightChange = { bar.configureFilmHeight($0) }
@@ -491,7 +882,7 @@ import QuartzCore
             let resized = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 140))
             resized.setFilmRevealed(true)
             precondition(resized.preferredHeight == 102, "A new timeline must restore the chosen 57 pt height")
-            let reset = controls.view.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Reset" }!
+            let reset = descendants(of: controls.view).compactMap { $0 as? NSButton }.first { $0.title == "Reset" }!
             // This standalone content controller has no popover visibility hold. Animated performClick pumps
             // unrelated auto-hide timers; send the real reset action directly to test its resize/persistence.
             NSApp.sendAction(reset.action!, to: reset.target, from: reset)
@@ -560,7 +951,10 @@ import QuartzCore
                     let local = bar.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), from: button)
                     precondition(bar.hitTest(local) === button, "A thumbnail must never take a transport button's hit")
                 }
-                let button = transportButtons(bar.transport).first { $0.toolTip == (edge < 450 ? "Back 10 seconds" : "Full screen") }!
+                let expectedTooltip = edge < 450 ? "Back 10 seconds" : "Enter Full Screen"
+                guard let button = transportButtons(bar.transport).first(where: { $0.toolTip == expectedTooltip }) else {
+                    preconditionFailure("Missing transport control: \(expectedTooltip)")
+                }
                 let local = bar.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), from: button)
                 let enter = NSEvent.mouseEvent(with: .mouseMoved, location: bar.convert(local, to: nil), modifierFlags: [],
                     timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)!
@@ -570,7 +964,7 @@ import QuartzCore
             print("edge-controls-checks\tpassed: no overlap, all buttons hit, direct transition clears hover")
             if bar.filmPinned { bar.toggleFilmPin() }
             bar.setFilmRevealed(true); bar.setPlaybackControlsVisible(true); bar.layoutSubtreeIfNeeded()
-            let pin = bar.modeControl.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Pin Filmstrip (⌥⌘L)" }!
+            let pin = bar.modeControl.subviews.compactMap { $0 as? NSButton }.first { $0.toolTip == "Pin Filmstrip (⇧⌘L)" }!
             let pinPoint = bar.convert(NSPoint(x: pin.bounds.midX, y: pin.bounds.midY), from: pin)
             precondition(bar.hitTest(pinPoint) === pin, "The strip's pin button must take its own hit")
             pin.performClick(nil)
@@ -615,16 +1009,17 @@ import QuartzCore
             bar.onMarkDragBegin = { grabbed = $0; return true }
             bar.onMarkDragMove = { movedTo = $0 }
             bar.onMarkDragEnd = { committed = $0 }
-            func handleEvent(_ type: NSEvent.EventType, _ x: CGFloat) -> NSEvent {
-                let location = bar.convert(NSPoint(x: x, y: 5), to: nil)
-                return NSEvent.mouseEvent(with: type, location: location, modifierFlags: [], timestamp: 0,
+            let edge = MarkEdgeHandle.segment(frame: 36000, edge: .start)
+            let handle = bar.markHandlePoint(for: edge)!
+            func handleEvent(_ type: NSEvent.EventType, displacement: CGFloat = 0) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: NSPoint(x: handle.x + displacement, y: handle.y),
+                    modifierFlags: [], timestamp: 0,
                     windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
             }
-            let handleX = bar.bounds.midX - 3
-            bar.mouseDown(with: handleEvent(.leftMouseDown, handleX))
-            bar.mouseDragged(with: handleEvent(.leftMouseDragged, handleX + 40))
-            bar.mouseUp(with: handleEvent(.leftMouseUp, handleX + 40))
-            precondition(grabbed == .segment(frame: 36000, edge: .start) &&
+            bar.mouseDown(with: handleEvent(.leftMouseDown))
+            bar.mouseDragged(with: handleEvent(.leftMouseDragged, displacement: 40))
+            bar.mouseUp(with: handleEvent(.leftMouseUp, displacement: 40))
+            precondition(grabbed == edge &&
                          movedTo.map { $0 > 1500 } == true && committed == true && !bar.isDraggingMark,
                          "Dragging the green handle must edit that boundary and commit on release")
             print("mark-handle-check\tpassed: exact boundary selected, pointer move, release commits")
@@ -635,6 +1030,144 @@ import QuartzCore
         }
         window.orderOut(nil)
         exit(0)
+    }
+
+    private static func checkThumbnailCrop() {
+        func drawThumbnail(source size: NSSize, output bounds: NSRect, vertical: Bool) -> NSBitmapImageRep {
+            let image = NSImage(size: size, flipped: false) { rect in
+                NSColor.green.setFill()
+                rect.fill()
+                NSColor.red.setFill()
+                if vertical {
+                    NSRect(x: 0, y: 0, width: rect.width, height: 4).fill()
+                    NSRect(x: 0, y: rect.maxY - 4, width: rect.width, height: 4).fill()
+                } else {
+                    NSRect(x: 0, y: 0, width: 4, height: rect.height).fill()
+                    NSRect(x: rect.maxX - 4, y: 0, width: 4, height: rect.height).fill()
+                }
+                return true
+            }
+            let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(bounds.width),
+                                          pixelsHigh: Int(bounds.height), bitsPerSample: 8, samplesPerPixel: 4,
+                                          hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+                                          bytesPerRow: 0, bitsPerPixel: 0)!
+            NSGraphicsContext.saveGraphicsState()
+            NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: bitmap)
+            FilmstripThumbnail.draw(image, geometry: .identity, in: bounds, opacity: 1, cropSides: true)
+            NSGraphicsContext.restoreGraphicsState()
+            return bitmap
+        }
+        let portrait = drawThumbnail(source: NSSize(width: 16, height: 32),
+                                     output: NSRect(x: 0, y: 0, width: 32, height: 16), vertical: true)
+        precondition([0, 15].allSatisfy {
+            guard let color = portrait.colorAt(x: 16, y: $0) else { return false }
+            return color.redComponent > 0.75 && color.greenComponent < 0.25
+        }, "Thumbnail crop must preserve the top and bottom of a portrait frame")
+        let wide = drawThumbnail(source: NSSize(width: 32, height: 16),
+                                 output: NSRect(x: 0, y: 0, width: 16, height: 16), vertical: false)
+        precondition([0, 15].allSatisfy {
+            guard let color = wide.colorAt(x: $0, y: 8) else { return false }
+            return color.greenComponent > 0.75 && color.redComponent < 0.25
+        }, "Thumbnail crop must still remove the side edges of a wide frame")
+    }
+
+    private final class ClickCacheWindow: NSWindow {
+        override var occlusionState: NSWindow.OcclusionState {
+            if CommandLine.arguments.contains("--simulate-visible") { return .visible }
+            return super.occlusionState
+        }
+    }
+
+    private static func runClickCache() -> Never {
+        setbuf(stdout, nil)
+        let arg = CommandLine.arguments.firstIndex(of: "--fixture")!
+        let url = URL(fileURLWithPath: CommandLine.arguments[arg + 1])
+        let source = try! MediaSource(url: url)
+        let index = try! source.buildIndex()
+        let decoder = try! VideoDecoder(source: source, index: index)
+        let cache = FrameCache(budgetBytes: 32 << 20)
+        let target = 500
+        try! decoder.seekToKeyframe(near: target)
+        cache.insert(try! decoder.nextFrame()!)
+        let targetTime = index.seconds(forFrame: target)
+        UserDefaults.standard.setVolatileDomain([
+            "timeline-click-inertia": true, "timeline-click-preview-frames": false,
+            "timeline-film-mode": TimelineFilmMode.lens.rawValue, "timeline-film-height": 48
+        ], forName: UserDefaults.argumentDomain)
+        let app = NSApplication.shared
+        app.setActivationPolicy(.regular)
+        app.finishLaunching()
+        let window = ClickCacheWindow(contentRect: NSRect(x: 100, y: 100, width: 900, height: 350),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.autorecalculatesKeyViewLoop = true
+        window.makeKeyAndOrderFront(nil)
+        app.activate()
+        func wait(_ seconds: Double, until ready: () -> Bool) {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !ready(), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.005))
+            }
+        }
+        wait(3) { window.occlusionState.contains(.visible) }
+        guard window.occlusionState.contains(.visible) else {
+            print("film click cache bench requires a visible window")
+            exit(EXIT_FAILURE)
+        }
+
+        for round in 1...5 {
+            let bar = SeekBarView(frame: NSRect(x: 0, y: 0, width: 900, height: 130))
+            window.contentView!.addSubview(bar)
+            bar.setFilmRevealed(true, force: true)
+            let loader = FilmstripPreviewLoader(url: url, index: index, rotation: 0, width: 160,
+                                                cache: nil, policy: .network, frameCache: cache)
+            loader.mayRead = { bar.allowsVisibleFilmstripRequests }
+            loader.mayReuse = { bar.allowsReadyFilmstripRequests }
+            bar.onFilmstripRequest = { loader.request($0) }
+            bar.onReadyFilmstripRequest = { loader.request($0, readyOnly: true) }
+            bar.updateTimeline(index: index, duration: 20, paused: true)
+            func update(_ frame: Int) {
+                bar.update(frameCount: index.frameCount, position: frame, cached: [], loopA: nil, loopB: nil, text: "click cache")
+            }
+            update(0)
+            bar.layoutSubtreeIfNeeded()
+            var clicked = false
+            bar.onFilmSeek = { _ in clicked = true; update(target) }
+            let point = NSPoint(x: 450, y: 10)
+            func event(_ type: NSEvent.EventType) -> NSEvent {
+                NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: 0,
+                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0)!
+            }
+            var landed = false
+            var arrivedDuringMotion = false
+            let start = ProcessInfo.processInfo.systemUptime
+            loader.onImage = { image, seconds in
+                bar.setFilmstripImage(image, seconds: seconds)
+                guard seconds == targetTime else { return }
+                landed = true
+                arrivedDuringMotion = bar.isAnimatingFilm
+                print(String(format: "film-click-cache round=%d ready_ms=%.2f during_motion=%@ decodes=%d",
+                             round, (ProcessInfo.processInfo.systemUptime - start) * 1000,
+                             arrivedDuringMotion.description, loader.decodeCount))
+            }
+            let clickCPUStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            bar.mouseDown(with: event(.leftMouseDown))
+            bar.mouseUp(with: event(.leftMouseUp))
+            let clickCPU = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - clickCPUStart) / 1_000_000
+            precondition(clicked, "The film must handle the click")
+            let animated = bar.isAnimatingFilm
+            print(String(format: "film-click animated=%@ main_cpu_ms=%.2f", animated.description, clickCPU))
+            wait(2) { landed }
+            precondition(landed && loader.decodeCount == 0)
+            if CommandLine.arguments.contains("--expect-before-settle") {
+                precondition(animated ? arrivedDuringMotion : ProcessInfo.processInfo.systemUptime - start < 0.25,
+                             "A ready thumbnail should arrive before the cold batch settles")
+            }
+            loader.stop()
+            bar.onReadyFilmstripRequest = nil
+            bar.onFilmstripRequest = nil
+            bar.removeFromSuperview()
+        }
+        exit(EXIT_SUCCESS)
     }
 
     private static func runLoader() -> Never {

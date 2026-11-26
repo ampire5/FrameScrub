@@ -30,7 +30,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var pendingURL: URL?
     /// A link's position, segment and plugin page for `pendingURL`.
     private var pendingTarget: OpenLink.Target?
-    /// The link `pendingTarget` came from, handed over as it is when it names a Stash scene (no path to pass).
+    /// The original URL event, including its landing options, for secondary-instance handover.
     private var pendingLink: URL?
     /// A link that could not be opened before the window existed.
     private var pendingNotice: String?
@@ -54,7 +54,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         StartupTrace.mark("launched")
-        let (config, configWarnings) = Config.load()
+        let (loadedConfig, configWarnings) = Config.load()
+#if DEBUG
+        let lifecycleBench = WindowLifecycleBench.fromArguments()
+        let config = lifecycleBench?.config ?? loadedConfig
+#else
+        let config = loadedConfig
+#endif
         if config.singleInstance, let primary = Self.primaryInstance() {
             becomeSecondary(primary)
             return
@@ -62,15 +68,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         Icons.set = Icons.Set(rawValue: config.iconSet.rawValue) ?? .sf   // before the first icon is made
         NSApp.mainMenu = makeMainMenu()
         let (inputMap, inputWarnings) = InputMap.load(layout: config.keyLayout, profile: config.mouseProfile)
+#if DEBUG
+        preferences = PreferencesStore(config: config, url: lifecycleBench?.directory.appendingPathComponent("framescrub.conf") ?? Config.fileURL)
+#else
         preferences = PreferencesStore(config: config)
+#endif
         gestureBindings = InputPreferences(layout: config.keyLayout, profile: config.mouseProfile)
         let folderColors = FolderColors()
         self.folderColors = folderColors
         let folderSorts = FolderSorts()
         self.folderSorts = folderSorts
+        let resumeStore: ResumeStore
+#if DEBUG
+        let environment = ProcessInfo.processInfo.environment
+        let webBenchOrigin = CommandLine.arguments.contains("--bench-web-open")
+            ? environment["FRAMESCRUB_WEB_OPEN_BENCH_ORIGIN"].flatMap(URL.init(string:)) : nil
+        let webBenchState = webBenchOrigin.flatMap { _ in environment["FRAMESCRUB_WEB_OPEN_BENCH_STATE"] }
+        resumeStore = lifecycleBench.map { ResumeStore(url: $0.directory.appendingPathComponent("resume.json")) }
+            ?? webBenchState.map { ResumeStore(url: URL(fileURLWithPath: $0)) } ?? ResumeStore()
+#else
+        resumeStore = ResumeStore()
+#endif
         let controller = PlayerWindowController(config: preferences.config, inputMap: inputMap, preferences: preferences,
                                                 folderColors: folderColors, folderSorts: folderSorts,
-                                                unreadable: UnreadableFiles())
+                                                unreadable: UnreadableFiles(), resumeStore: resumeStore)
+#if DEBUG
+        if let lifecycleBench {
+            controller.lifecycleBench = lifecycleBench
+            self.controller = controller
+            controller.showWindow(nil)
+            controller.window?.level = .floating
+            controller.window?.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            controller.window?.center()
+            controller.window?.makeKeyAndOrderFront(nil)
+            controller.window?.orderFrontRegardless()
+            NSApp.activate()
+            controller.runWindowLifecycleBench(lifecycleBench)
+            return
+        }
+#endif
         preferences.addObserver { [weak controller] in controller?.applyConfig($0) }
         preferences.addObserver { [weak self] in
             self?.gestureBindings.layout = $0.keyLayout
@@ -133,6 +169,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             controller.attach(bridge)
         }
 
+#if DEBUG
+        if let webBenchOrigin, webBenchState != nil {
+            controller.runWebOpenBench(origin: webBenchOrigin)
+            return
+        }
+#endif
+
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
         if let link = paths.first.flatMap(URL.init(string:)), link.scheme == "framescrub",
            let target = OpenLink.target(from: link) {
@@ -149,6 +192,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         if CommandLine.arguments.contains("--bench-virtual-cut"),
            let card = ProcessInfo.processInfo.environment["FRAMESCRUB_VIRTUAL_CUT_BENCH_CARD"] {
             controller.runVirtualCutBench(card: card)
+        }
+        if CommandLine.arguments.contains("--bench-key-help") {
+            RunLoop.main.perform { MainActor.assumeIsolated { controller.runShortcutHelpBench() } }
         }
         let warnings = configWarnings + inputWarnings + (pendingNotice.map { [$0] } ?? [])
         if !warnings.isEmpty { controller.showMessage(warnings.joined(separator: "\n"), duration: 6) }
@@ -208,7 +254,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard let opened = urls.first else { return }
         // Before anything else, so that the hand-over to the primary instance gets the real path too.
         guard let target = OpenLink.target(from: opened) else {
-            let notice = "Cannot open the link: \(opened.absoluteString)"
+            let notice = "Cannot open this FrameScrub link."
             if let controller { controller.showMessage(notice, duration: 4) } else if !isSecondary { pendingNotice = notice }
             return
         }
@@ -328,12 +374,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // We are the active app; the primary's own activate() may be refused unless we yield.
         NSApp.yieldActivation(to: primary)
         let paths = CommandLine.arguments.dropFirst().filter { !$0.hasPrefix("-") }
-        if let path = paths.first {
+        if let link = paths.first.flatMap(URL.init(string:)), link.scheme == "framescrub", OpenLink.target(from: link) != nil {
+            Self.postHandOver(path: nil, link: link)
+        } else if let path = paths.first {
             Self.postHandOver(path: URL(fileURLWithPath: path).path)
+        } else if let link = pendingLink, pendingTarget?.file == nil {
+            Self.postHandOver(path: nil, link: link)
         } else if let url = pendingURL {
             Self.postHandOver(path: url.path)
-        } else if let link = pendingLink, pendingTarget?.sceneID != nil {
-            Self.postHandOver(path: nil, link: link)
         } else {
             Self.postHandOver(path: nil)   // nothing to open: just bring the running window forward
         }
@@ -341,7 +389,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { NSApp.terminate(nil) }
     }
 
-    /// `path` for a file; `link` (a `framescrub://open?scene=` link) for a Stash scene, which has no path to pass.
+    /// Pass a file path or a validated FrameScrub link.
     private static func postHandOver(path: String?, link: URL? = nil) {
         DistributedNotificationCenter.default().postNotificationName(
             openFileNotification, object: nil,
@@ -365,8 +413,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
                         controller.open(url)
                     }
                 } else if let link = linkText.flatMap(URL.init(string:)),
-                          let target = OpenLink.target(from: link), target.sceneID != nil {
-                    controller.open(target)   // a Stash scene by id: nothing on this Mac is named
+                          let target = OpenLink.target(from: link) {
+                    // The distributed event still uses the regular-file check for local paths.
+                    if let file = target.file {
+                        if (try? file.resolvingSymlinksInPath().resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
+                            controller.open(target)
+                        }
+                    } else {
+                        controller.open(target)
+                    }
                 }
                 controller.bringToFront()
                 NSApp.activate()
@@ -374,7 +429,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+#if DEBUG
+        if controller?.lifecycleBench?.mode == .close { return false }
+#endif
+        return true
+    }
 
     @objc func openDocument(_ sender: Any?) {
         let panel = NSOpenPanel()
@@ -385,7 +445,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         controller?.open(url)
     }
 
+    @objc func openVideoURL(_ sender: Any?) {
+        guard let controller, let window = controller.window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Open Video URL"
+        alert.informativeText = "Enter a video page, gallery, or direct HTTP or HTTPS media URL."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+        field.placeholderString = "https://example.com/video.m3u8"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak controller] result in
+            guard result == .alertFirstButtonReturn else { return }
+            let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: value), ByteSources.isRemote(url), url.host != nil,
+                  url.user == nil, url.password == nil else {
+                controller?.showMessage("Enter a valid HTTP or HTTPS URL.", duration: 4)
+                return
+            }
+            controller?.openWebURL(url)
+        }
+    }
+
+    @objc func webOpenAction(_ sender: Any?) {
+        controller?.performWebAction()
+    }
+
     @objc func closeWindow(_ sender: Any?) {
+#if DEBUG
+        if let controller, controller.lifecycleBench != nil, controller.hasOpenFile {
+            controller.closeFile()
+            return
+        }
+#endif
         if let controller, NSApp.keyWindow === controller.window, controller.hasOpenFile {
             controller.closeFile()
         } else {
@@ -401,7 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             inputPreferences: gestureBindings,
             iconChoices: { AppIconSwitcher.choices(current: preferences.config.appIcon) },
             translateKey: { KeyboardLayout.latin(keyCode: $0, shift: $1) },
-            menuRows: { [weak self] in self?.menuShortcutRows() ?? [] })
+            menuRows: { Self.menuShortcutRows() })
         SettingsPanel.show(store: store, context: context)
     }
 
@@ -427,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     /// The menus' items with a shortcut, for the Key Bindings page: "⇧⌘O", "Open URL…".
-    private func menuShortcutRows() -> [(input: String, title: String)] {
+    static func menuShortcutRows() -> [(input: String, title: String)] {
         var rows: [(input: String, title: String)] = []
         func walk(_ menu: NSMenu) {
             for item in menu.items {
@@ -441,6 +534,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
     @objc private func toggleFilmstrip(_ sender: Any?) { controller?.toggleFilmstrip() }
     @objc private func pinFilmstrip(_ sender: Any?) { controller?.pinFilmstrip() }
+    @objc private func toggleMiniFilmstripAutoShow(_ sender: Any?) { controller?.toggleMiniFilmstripAutoShow() }
+    @objc private func pinMiniFilmstrip(_ sender: Any?) { controller?.pinMiniFilmstrip() }
+
+    private func addFilmstripCommands(to menu: NSMenu) {
+        let film = menu.addItem(withTitle: "Show Filmstrip", action: #selector(toggleFilmstrip(_:)), keyEquivalent: "l")
+        film.target = self
+        let pinFilm = menu.addItem(withTitle: "Pin Filmstrip", action: #selector(pinFilmstrip(_:)), keyEquivalent: "L")
+        pinFilm.keyEquivalentModifierMask = [.command, .shift]; pinFilm.target = self
+        let miniFilm = menu.addItem(withTitle: "Auto-Show Mini Filmstrip", action: #selector(toggleMiniFilmstripAutoShow(_:)), keyEquivalent: "l")
+        miniFilm.keyEquivalentModifierMask = [.command, .option]; miniFilm.target = self
+        let pinMiniFilm = menu.addItem(withTitle: "Pin Mini Filmstrip", action: #selector(pinMiniFilmstrip(_:)), keyEquivalent: "L")
+        pinMiniFilm.keyEquivalentModifierMask = [.command, .option, .shift]; pinMiniFilm.target = self
+    }
+
+    static func withFilmstripBenchMenu(for controller: PlayerWindowController, _ run: (NSMenu) -> Void) {
+        let delegate = AppDelegate()
+        delegate.controller = controller
+        let menu = NSMenu()
+        delegate.addFilmstripCommands(to: menu)
+        withExtendedLifetime(delegate) { run(menu) }
+    }
 
     /// A menu item's shortcut as menus show it: modifier glyphs (⌃⌥⇧⌘), then the key.
     private static func shortcutText(_ item: NSMenuItem) -> String {
@@ -464,13 +578,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         guard menu.title == "Open Recent" else { return }
         menu.removeAllItems()
         let recent = RecentFiles.existing(NSDocumentController.shared.recentDocumentURLs, hidden: HiddenRecent().paths)
+        let pages = RecentVideoPages.items
+        for page in pages {
+            let item = NSMenuItem(title: page.title, action: #selector(openRecent(_:)), keyEquivalent: "")
+            item.representedObject = page
+            item.target = self
+            menu.addItem(item)
+        }
+        if !pages.isEmpty, !recent.isEmpty { menu.addItem(.separator()) }
         for url in recent {
             let item = NSMenuItem(title: url.lastPathComponent, action: #selector(openRecent(_:)), keyEquivalent: "")
             item.representedObject = url
             item.target = self
             menu.addItem(item)
         }
-        if recent.isEmpty {
+        if recent.isEmpty, pages.isEmpty {
             let none = NSMenuItem(title: "No Recent Files", action: nil, keyEquivalent: "")
             none.isEnabled = false
             menu.addItem(none)
@@ -483,12 +605,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc func openRecent(_ sender: NSMenuItem) {
+        if let item = sender.representedObject as? RecentVideoPages.Item {
+            controller?.openRecentVideo(item)
+            return
+        }
         guard let url = sender.representedObject as? URL else { return }
-        controller?.open(url)
+        if ByteSources.isRemote(url) { controller?.openWebURL(url) }
+        else { controller?.open(url) }
     }
 
     @objc func clearRecent(_ sender: Any?) {
         NSDocumentController.shared.clearRecentDocuments(nil)
+        RecentVideoPages.clear()
         var hidden = HiddenRecent()
         hidden.clear()
         controller?.recentChanged()
@@ -669,6 +797,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc func toggleHomeSidebar(_ sender: Any?) { controller?.toggleHomeSidebar() }
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if item.action == #selector(webOpenAction(_:)) {
+            let title = controller?.webActionTitle
+            item.title = title ?? "Reconnect Stream"
+            return title != nil
+        }
         if item.action == #selector(toggleNoisePlayback(_:)) {
             item.state = preferences.config.lowLatency.noiseMode == .always ? .on : .off
             return true
@@ -697,10 +830,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             item.state = controller?.filmstripPinned == true ? .on : .off
             return controller?.currentURL != nil && controller?.showsHome != true
         }
+        if item.action == #selector(toggleMiniFilmstripAutoShow(_:)) {
+            item.state = controller?.miniFilmstripAutoShow == true ? .on : .off
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
+        if item.action == #selector(pinMiniFilmstrip(_:)) {
+            item.state = controller?.miniFilmstripSaved == true ? .on : .off
+            return controller?.currentURL != nil && controller?.showsHome != true
+        }
         if item.action == #selector(copyPath(_:)) { return controller?.currentURL != nil }
         if [#selector(largerCards(_:)), #selector(smallerCards(_:)), #selector(defaultCardSize(_:)),
             #selector(toggleHomeSidebar(_:))].contains(item.action) {
             return controller?.showsHome == true
+        }
+        if let box = item.representedObject as? CommandBox, box.command == .deleteFile, controller?.showsHome == true {
+            return NSApp.keyWindow === controller?.window && controller?.canTrashFileViewSelection == true
         }
         // Over Home the video is paused behind it: its commands wait until it is back.
         if let box = item.representedObject as? CommandBox, !box.command.worksWithoutPlayer,
@@ -817,6 +961,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
         fileMenu.addItem(withTitle: "Open…", action: #selector(openDocument(_:)), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Open URL…", action: #selector(openVideoURL(_:)), keyEquivalent: "").target = self
+        fileMenu.addItem(withTitle: "Reconnect Stream", action: #selector(webOpenAction(_:)), keyEquivalent: "").target = self
         let recentItem = NSMenuItem(title: "Open Recent", action: nil, keyEquivalent: "")
         let recentMenu = NSMenu(title: "Open Recent")
         recentMenu.delegate = self
@@ -854,9 +1000,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         redo.keyEquivalentModifierMask = [.command, .shift]
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        // In the player this copies the frame (PlayerWindowController.copy); in a text field, the text.
+        // The first responder routes Copy to a text field, the File View selection or the current video frame.
         editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Move Items Here", action: #selector(PlayerWindowController.moveFileViewItemsHere(_:)),
+                         keyEquivalent: "v").keyEquivalentModifierMask = [.command, .option]
         editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         menu.addItem(editItem)
@@ -880,10 +1028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         viewMenu.addItem(commandItem("Fit to Screen", .windowFit, key: "4"))
         viewMenu.addItem(commandItem("Float on Top", .cycleOntop, key: "", modifiers: []))   // T stays an input.conf binding
         viewMenu.addItem(commandItem("Show Stats", .stats, key: "", modifiers: []))   // i stays an input.conf binding
-        let film = viewMenu.addItem(withTitle: "Show Filmstrip", action: #selector(toggleFilmstrip(_:)), keyEquivalent: "l")
-        film.target = self
-        let pinFilm = viewMenu.addItem(withTitle: "Pin Filmstrip", action: #selector(pinFilmstrip(_:)), keyEquivalent: "l")
-        pinFilm.keyEquivalentModifierMask = [.command, .option]; pinFilm.target = self
+        addFilmstripCommands(to: viewMenu)
         let icon = viewMenu.addItem(withTitle: "App Icon…", action: #selector(showIconPicker(_:)), keyEquivalent: "i")
         icon.keyEquivalentModifierMask = [.control, .option, .command]
         let plugin = viewMenu.addItem(withTitle: "Show Plugin Panel", action: #selector(togglePluginPanel(_:)), keyEquivalent: "p")
@@ -963,7 +1108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let helpItem = NSMenuItem()
         let helpMenu = NSMenu(title: "Help")
-        helpMenu.addItem(commandItem("Keyboard Shortcuts", .showKeys, key: "", modifiers: []))   // ? stays an input.conf binding
+        helpMenu.addItem(commandItem("Keys and Gestures", .showKeys, key: "", modifiers: []))   // ? stays an input.conf binding
         helpItem.submenu = helpMenu
         menu.addItem(helpItem)
         NSApp.helpMenu = helpMenu

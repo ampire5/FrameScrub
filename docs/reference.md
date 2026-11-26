@@ -8,6 +8,10 @@ Two keyboard layouts: **classic** (default) is the original mpv-style one; **lef
 the mouse or a TourBox (in each pair the left key goes back, the right one forward). Choose in Settings → General → Keyboard layout (`key-layout`); `input.conf` applies on top of either.
 The mouse and trackpad work the same in both.
 
+Open **Help → Keys and Gestures** or press the current `show-keys` binding (by default `?`). The panel shows
+your active bindings, menu shortcuts and built-in gestures. Type to search by key or action, use Page Up or
+Page Down to scroll and press Esc to close.
+
 ### Mouse and trackpad
 
 | Input | Action |
@@ -145,7 +149,7 @@ modes and Play Marks Only work mirrored.
 | `a` | Aspect: auto (the file's pixel aspect, black bars found on keyframes across the file and cut off) → no crop → 16:9 → 4:3 → 2.35:1 → square pixels. The window keeps its height and changes width; saved and copied frames and the seek-bar previews look like the screen, and auto colour analyses the picture without the bars. Every file starts at auto |
 | `T` | Keep the window above other apps (also View > Float on Top; saved as `ontop`) |
 | `o` / `i` | Show progress / toggle the stats panel (also View > Show Stats): File, Stash (for a file from Stash), Video, Audio, Playback, Picture and Diagnostics — codecs with profile and level, bit rates, container, decoder, cache… Drag a section's header to reorder, its triangle collapses it; drag the panel to move it (it keeps the nearest corner), its edges to resize it; a double click on a section title (or Reset Position) puts it back top right at its default size. Values can be selected and copied (⌘C; with nothing selected ⌘C copies the frame, and other keys still go to the player); the right-click menu has Copy All, Reset Section Order and Reset Position. Place, size, order, collapsed sections and whether it is open are remembered; it shows only while a video is open |
-| `?` | Key cheat sheet: the bindings in effect (`input.conf` included), by section; `?` or Esc closes it (also Help > Keyboard Shortcuts) |
+| `?` | Open Keys and Gestures with the active bindings and search. Esc closes the panel |
 | `q` | Quit |
 
 Rebind keys in `~/.config/framescrub/input.conf` using mpv syntax (`KEY command`), e.g.
@@ -226,8 +230,11 @@ MBTN_MID                    cycle fullscreen
 MBTN_MID+WHEEL_UP / _DOWN   add volume 5 / -5
 ```
 
-`add auto-color-strength ±d` steps the open file's auto colour strength (0…1, the Settings slider's scale; remembered
-for the file). `scrub-edge start|end` is the live edge drag: hold Back (or Forward) and turn the wheel, and the start
+`add auto-color-strength ±d` and `add vibrance ±d` adjust the open file's effect strength (0…1) independently of
+whether the effect is enabled. Both keyboard layouts use ⌥− / ⌥= for auto colour and ⌃− / ⌃= for vibrance.
+Each press changes the strength by 0.05. Reassign either key or change its signed step in **Settings → Key Bindings**.
+
+`scrub-edge start|end` is the live edge drag: hold Back (or Forward) and turn the wheel, and the start
 (end) of the cut mark under the position follows the video frame by frame — with the usual scrub sensitivity, Precision
 Scroll and acceleration. The edge stops against the other end of its mark and against the neighbouring mark, and ticks
 on keyframes (the real start of a future clip). Releasing the button commits the move as one ⌘Z step; leaving the app,
@@ -298,9 +305,11 @@ swift run logi-probe list                                # shows what is diverte
 `logi-probe release` does not touch the wheel mode: a press of the SmartShift button or `logi-probe smartshift
 free|ratchet` sets it by hand.
 
-Seeks flash a frameless icon on their side of the video (back on the left, forward on the right); play/pause,
-speed, volume, mute, revert-seek, the previous/next file and the end of the file flash one in the centre. Frame
-steps show only the frame line in the top-left corner. The OSD and the stats panel sit on Liquid Glass.
+Play, pause, speed and volume feedback appears briefly in a badge centered above the timeline. Repeated changes
+update the value in place. Backward and forward jumps flash their buttons when the transport controls are visible.
+With the controls and navigation filmstrip hidden, the jumps use opposite sides of the video. Frame steps show the
+frame line in the top-left corner. The OSD and the stats panel sit on Liquid Glass.
+Scroll vertically over the speaker or its chevron to adjust volume. The chevron still opens the slider on click.
 
 ### Menus and windows
 
@@ -329,8 +338,9 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   recentering/resampling jump.
   The overview follows `seek-mode`; clicking a film cell selects its displayed time precisely. Small pointer jitter
   remains a click; dragging starts after 6 pt. Scrolling the overview steps the hover preview's keyframes.
-  A film click seeks immediately while the strip coasts for 80–160 ms at the default setting, depending on distance.
-  Distant clicks briefly dissolve from the previous view and finish the coast near the destination.
+  A film click seeks immediately while the presentation coasts for 80–160 ms at the default setting.
+  In paused Whole File Lens, the playhead moves to the clicked frame within the existing view.
+  The lens follows the playhead again as playback resumes or the position changes through another control.
   Uncheck Inertial Filmstrip Motion in the Filmstrip sliders panel or context menu to turn it off.
   macOS Reduce Motion also skips the effect.
   Drag the film to scrub directly. A fast release can coast through ready frames for up to 220 ms by default.
@@ -368,13 +378,21 @@ steps show only the frame line in the top-left corner. The OSD and the stats pan
   necessary. Transport and view buttons stay above pictures and receive clicks first. Moving directly into a
   capsule dismisses the hover and keeps the film revealed, without leaving and re-entering the timeline.
   Narrow cells omit timestamps when they would overlap; hover retains the full timestamp.
-- Moving the pointer shows the progress bar and two translucent capsules: Play/Pause and ±10 seconds; mute,
+- Moving the pointer shows the progress bar and a compact playback capsule with Play/Pause, ±10 seconds, mute,
   volume, explicit playback rates and full screen. Playback chrome hides after 1.5 s without movement away from
-  its active controls. An enabled filmstrip opens only on entering its lower reveal zone, folds 0.5 s after leaving
+  its active controls. An enabled filmstrip opens on entering its lower reveal zone, folds 0.15 s after leaving
   (including releasing a drag outside), and stays when pinned. Its empty space collapses with it.
-  View › Show/Fold Filmstrip (⌘L) opens or folds it; View › Pin Filmstrip (⌥⌘L) toggles persistent pinning.
+  View › Show/Fold Filmstrip (⌘L) opens or folds it. When opened with the pointer outside, it stays open until
+  the pointer enters and leaves the reveal zone or you fold it by command. View › Pin Filmstrip (⇧⌘L) remembers the full strip.
+  View › Auto-Show Mini Filmstrip (⌥⌘L) toggles the saved setting for brief navigation reveals.
+  View › Pin Mini Filmstrip (⌥⇧⌘L) keeps the mini strip visible and remembers the pin across launches.
+  The full strip takes precedence while open and folding it restores the mini strip if pinned.
   The same actions are in its context menu. Folding by command suppresses immediate re-opening until the pointer
   leaves the zone. Pinning the film does not force the playback chrome to remain visible.
+- **Settings → Speed & Seeking → Show a brief filmstrip while navigating** is on by default. It shows the first
+  origin and latest landing of a series of jumps or scrubs on a whole-file scale, with nearby cached pictures when
+  available. The center tile marks the landing. Width and height can be set independently in the same settings section.
+  The pin button opens and pins the full filmstrip. An open filmstrip shows the two marks on its own track.
   Mouse-wheel scrolling selects adjacent loaded thumbnails already displayed in the film (vertical mouse direction
   is inverted). Vertical trackpad scrolling also steps displayed samples; horizontal trackpad gestures seek continuously.
   Sample steps animate the film geometry for 180 ms at the default setting, reuse cached pictures and stop
@@ -525,6 +543,10 @@ resets that accumulation. This emulates trackpad interaction; it does not claim 
 Console Max/MSP sends event codes without absolute angle or hardware timestamps. Fractional accumulation preserves
 the configured average sensitivity; it does not create additional physical samples between encoder pulses.
 
+For a TourBox turned 180° in the plane of the desk, set `tourbox-scroll-invert=yes` and reload the configuration.
+This reverses Scroll both on its own and with Tall held. Knob rotation and button actions keep their assignments.
+Set `tourbox-knob-modifiers-swap=yes` to adjust playback speed with Tall + Knob and volume with Short + Knob.
+
 **Keyboard fallback.**
 
 `extras/tourbox/FrameScrub.tb` is a TourBox Console preset for the classic key layout, made for the TourBox Lite in
@@ -562,6 +584,7 @@ Tour, C1 and C2 act on a press** and are never held for a combination.
 cache-size=2048                 # MiB of decoded frames kept around the playhead
 read-cache=256                  # MiB of file data kept in 2 MiB blocks for all decoders; 0 = off (next file)
 network-mode=auto               # auto | yes | no — read files on network volumes gently (see Network files); auto asks the volume
+prefer-stream-bitrate=yes       # rank equal-resolution, equal-FPS streams by video bitrate
 scrub-px-per-frame=8            # trackpad points per frame at slow speed
 scrub-accel-from=20             # 5…120 frames/s: a scrub faster than this takes bigger steps (twice as fast, twice the steps)
 scrub-accel-max=240             # 30…2000 frames/s: acceleration takes the scrub to at most this (fast scrub multiplies on top)
@@ -596,6 +619,9 @@ frame-template=%{video-name}_f%{frame:06}_%{time:hh-mm-ss.mmm} # frame file name
 export-threads=4                # 1…64, frames the A-B export encodes at once
 volume=100                      # 0…100
 seek-mode=keyframe              # keyframe | exact (relative seeks and seek-bar clicks)
+navigation-filmstrip=yes        # yes | no — briefly show nearby frames and position during timeline navigation
+navigation-filmstrip-width=49%  # 10–100% of the available video width
+navigation-filmstrip-height=106 # 60–320 pt — height of the temporary filmstrip
 scene-threshold=45             # 0…255 — how different two keyframes must be to check for a scene cut between them (Shift+↑ / Shift+↓)
 scene-lookahead=30             # keyframes searched ahead for the next scene after a jump (0 = none)
 scene-check-time=1             # seconds a press may check candidates frame by frame; then keyframes alone decide (0 = keyframes only)
@@ -632,6 +658,11 @@ tourbox-frames-per-pulse=1       # 0.05…4: Knob frames per input pulse; indepe
 tourbox-accel=yes               # Knob click toggles and remembers this: yes=progressive acceleration, no=linear
 tourbox-accel-start=12          # 4…120 pulses/s: start of gradual acceleration; slow turns keep base sensitivity
 tourbox-scroll-points=4         # 0.1…64: filmstrip timeline points moved per Scroll input pulse
+tourbox-scroll-invert=no        # yes: reverse Scroll and Tall + Scroll for a controller turned 180°
+tourbox-knob-modifiers-swap=no  # yes: Tall + Knob adjusts speed, Short + Knob adjusts volume
+d100h=no # Enable the Ulanzi D100H viewing profile through MouseService 0.5 or later
+d100h-mute-detents=no # Temporarily silence the physical dial detents while the player is active
+d100h-edge-offset=10 # Percentage from the edge for a long press on either upper side button
 export-mode=all                 # all | every | fps — which frames of A-B the S export saves
 export-every=10                 # 2…10000: export-mode=every saves every N-th frame
 export-fps=1                    # 0.01…240: export-mode=fps saves this many frames per second of video
@@ -698,6 +729,75 @@ segment-advance=repeat          # repeat | next — at the end of a locked segme
 key-layout=classic              # classic (the original mpv-style keys) | left-hand
 app-icon=horse                  # Dock icon while running: horse, or a picture of yours: ~/.config/framescrub/icons/<name>.png (or .icns), or a path
 ```
+
+### Video pages, galleries, and streams
+
+Use **File › Open URL…** for a video page, gallery, or direct HTTP(S) media
+address. The current video stays in the player while FrameScrub looks for a
+stream and connects. Click the progress message, press Esc, or select
+**File › Cancel Opening URL** to cancel. On failure, use **Try Again** or
+**File › Retry Opening URL**. When a stream breaks, **File › Reconnect Stream**
+opens it again at the last displayed frame and restores the prior playback state.
+
+FrameScrub tries installed `yt-dlp` for video formats, then `gallery-dl` for
+video items. It searches PATH and standard Homebrew and MacPorts locations.
+On Homebrew, install the tools with `brew install yt-dlp gallery-dl` or update
+them with `brew upgrade yt-dlp gallery-dl`. Some pages need only one tool.
+This feature targets public, seekable media. Sites that ask for sign-in produce
+a separate error. FrameScrub uses the tools' default configuration without
+importing browser sessions.
+
+If a page offers several videos, choose one. **Open Recent** keeps an entry per
+video with a stable identity. On reopen, FrameScrub resolves a fresh stream for
+the same video and restores its saved position and marks. If the video is
+missing, the app offers to open an available item as a separate video.
+**Clear Menu** removes the recent entries. Positions and marks remain saved.
+FrameScrub keeps temporary media URLs in the current session. Direct HTTP(S)
+and HLS links do not create page history or resume entries.
+
+**Settings › General › Prefer higher video bitrate** is on by default. It ranks
+formats by resolution, frame rate, then video bitrate. Turn it off for
+yt-dlp's default order on the next open (`prefer-stream-bitrate=no`). **Info**
+shows the selected video format and its advertised video bitrate when reported
+by the extractor. This number is separate from the bitrate measured by the
+decoder or reported by the container.
+
+#### Open from another app
+
+Call the registered macOS handler with a percent-encoded URL, for example
+from a launcher, a browser extension, or a script.
+
+```sh
+open 'framescrub://open?url=https%3A%2F%2Fexample.com%2Fvideo%3Fv%3D42&t=12.5'
+```
+
+The `url` value may be a page or a direct HTTP(S) stream. Optional `t` and
+`seg` use the same seconds and segment syntax as file links. In JavaScript,
+construct the value with `encodeURIComponent(sourceURL)`.
+
+From a configured FrameScrub plugin, use the bridge:
+
+```js
+await window.framescrub.request("open", { page: "https://example.com/video?v=42", t: 12.5 });
+await window.framescrub.request("open", { url: "https://example.com/clip.mp4" });
+```
+
+Use `page` for extraction and optional gallery selection. Use `url` for direct
+media, including endpoints without a filename extension. The request resolves
+when the stream is prepared, or rejects with an error if opening fails or is
+cancelled. Existing
+`path` and `scene` calls use their established routing.
+
+### HLS video
+
+Use **File › Open URL…** with a direct HTTP(S) `.m3u8` URL for a finished VOD.
+The player chooses one variant, plays its audio, and uses the decoded-frame
+cache for scrubbing. A jump outside that cache decodes forward from a keyframe
+and can reuse downloaded segments during the same open. The timeline uses the
+stream's nominal frame rate. This release targets constant-rate, unencrypted VOD.
+
+For scenes opened from Stash, the filmstrip can fill distant cells from the
+server's generated VTT and sprite image. Ready playback pictures take priority.
 
 ### Network files
 
@@ -768,7 +868,7 @@ file never loads it) and kept, so going back finds the same page.
   fails instead as before; `always` streams every scene. The plugin bridge's `fileopened` and `info` say which with
   `source: "file" | "stream"`; for a stream `fileopened` gives the URL as `url` and `path: null`, and `info` adds
   `url`.
-- A stream (Stash's or a plugin page's) opens in the background: the previous file stops at once, "Opening the
+- A Stash stream opens in the background: the previous file stops at once, "Opening the
   stream…" shows until it plays, and the window stays responsive. Another open or ⌘W abandons it. Its bytes are used
   as they arrive, so it plays once the start of the file is in, not after a whole 2 MiB block.
 - `framescrub://open?scene=<id>&t=&seg=` opens a scene by its Stash id: the file paths are asked of Stash, then found

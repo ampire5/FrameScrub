@@ -99,6 +99,8 @@ import Testing
         #expect(!r.memory.effective(global: global).config.vibranceOn)
         #expect(r.memory.effective(global: global).config.autoColorStrength == 0.6)
         #expect(out.osd == "Vibrance strength 0.55 · file (off)")
+        _ = r.memory.addStrength(-0.015, for: .vibrance, global: global)
+        #expect(r.files.color(for: a, size: 10) == ["vibrance": "0.535"])
         _ = r.memory.addStrength(2, for: .vibrance, global: global)
         #expect(r.memory.effective(global: global).config.vibrance == 1)
         #expect(r.memory.addStrength(0.05, for: .vibrance, global: global).haptic == .limit)

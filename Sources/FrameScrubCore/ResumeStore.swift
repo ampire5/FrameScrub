@@ -29,8 +29,8 @@ public struct ResumeEntry: Codable, Equatable, Sendable {
     }
 }
 
-/// Remembers where each file was left (and its A–B range) in a small JSON file. Keys are the path
-/// plus the file size, so a different file saved under the same name starts fresh. Entries beyond
+/// Remembers playback position and marks in a small JSON file. File keys include path and size.
+/// Resolved web item keys identify the item on its originating page. Entries beyond
 /// `limit` are dropped, oldest first. A missing or corrupt file behaves as an empty store.
 public final class ResumeStore: @unchecked Sendable {
     /// The registry lock only selects a shared in-process snapshot. Never do I/O under it.
@@ -281,6 +281,10 @@ public final class ResumeStore: @unchecked Sendable {
     /// Resolve unknown sizes before touching shared memory. UI callers should always supply the open-file size.
     public func entry(for video: URL, size: Int64? = nil) -> ResumeEntry? {
         guard let key = Self.key(for: video, size: size) else { return nil }
+        return entry(forKey: key)
+    }
+
+    func entry(forKey key: String) -> ResumeEntry? {
         state.awaitLoaded()
         return state.lock.withLock { state.entries[key] }
     }
@@ -300,6 +304,10 @@ public final class ResumeStore: @unchecked Sendable {
     /// off-main when a caller needs a durability barrier (including tests checking the actual JSON).
     public func save(_ entry: ResumeEntry, for video: URL, size: Int64? = nil) {
         guard let key = Self.key(for: video, size: size) else { return }
+        save(entry, forKey: key)
+    }
+
+    func save(_ entry: ResumeEntry, forKey key: String) {
         state.lock.withLock {
             var entry = entry
             entry.lastViewedAt = [entry.lastViewedAt, state.entries[key]?.lastViewedAt].compactMap { $0 }.max()
@@ -376,5 +384,12 @@ public final class ResumeStore: @unchecked Sendable {
         let size = known ?? ((try? FileManager.default.attributesOfItem(atPath: video.path))?[.size] as? NSNumber)?.int64Value
         guard let size else { return nil }
         return "\(video.standardizedFileURL.path)|\(size)"
+    }
+
+    /// Length-prefix the page to keep the two components unambiguous. The namespace is disjoint
+    /// from absolute file paths, and neither component comes from the selected media URL.
+    static func webKey(page: URL, itemID: String) -> String {
+        let address = page.absoluteString
+        return "web|\(address.utf8.count)|\(address)\(itemID)"
     }
 }

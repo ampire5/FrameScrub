@@ -12,6 +12,9 @@ extension SettingsPanel {
                         description: "0–100, default 100."),
                 .toggle("autoplay", "Start playing when a file opens", symbol: "play",
                         description: "Off: a file opens paused on its first frame (or where it was left). Default off."),
+                .toggle("prefer-stream-bitrate", "Prefer higher video bitrate", symbol: "network",
+                        description: "Breaks ties between video streams with the same resolution and frame rate. "
+                            + "Default on. Turn off to use yt-dlp’s usual order on the next open."),
                 .toggle("resume-playback", "Resume where I left off", symbol: "arrow.uturn.forward",
                         description: "A video opened again starts where it was closed. Default on."),
                 .toggle("playlist-autoadvance", "Play the next video in the folder at the end", symbol: "forward.end",

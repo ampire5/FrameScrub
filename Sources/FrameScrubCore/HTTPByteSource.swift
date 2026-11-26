@@ -23,7 +23,7 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
     /// Throws `FFmpegError` like `avformat_open_input` would ("open stream: Connection refused"): a 404 reads as a
     /// missing file, other statuses and a server without ranges as an I/O error.
     public init(url: URL, headers: [String: String] = [:], session: URLSession? = nil,
-                firstRead: Int = ReadCache.blockSize) throws {
+                firstRead: Int = ReadCache.blockSize, openingCancelled: (@Sendable () -> Bool)? = nil) throws {
         self.url = url
         self.headers = headers
         self.session = session ?? Self.makeSession()
@@ -34,7 +34,16 @@ public final class HTTPByteSource: ByteSource, @unchecked Sendable {
         task.delegate = opening
         opening.task = task
         task.resume()
-        opening.headersArrived.wait()
+        if let openingCancelled {
+            while opening.headersArrived.wait(timeout: .now() + .milliseconds(100)) == .timedOut {
+                if openingCancelled() {
+                    task.cancel()
+                    throw POSIXError(.ECANCELED)
+                }
+            }
+        } else {
+            opening.headersArrived.wait()
+        }
         guard let response = opening.response else {
             throw Self.failure(opening.error ?? URLError(.badServerResponse), name: name)
         }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 — 2026-11-26
+
+- Browse local files with Everything and run actions on multiple files in File View.
+- Play direct HTTP HLS streams and open URLs supplied by a compatible catalog plugin.
+- Navigate with a compact filmstrip and see playback feedback above the timeline.
+- Find shortcuts with the searchable Keys and Gestures panel and customize TourBox controls.
+- Reduce stalls during playback opens and scrubbing by bounding work and preparing thumbnails off the main thread.
+
 ## 0.5.0 — 2026-11-10
 
 - Open virtual cuts from plugin catalogs in File View and play ranges from multiple sources on a single timeline.

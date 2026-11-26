@@ -215,7 +215,7 @@ extension MediaSource {
         return MediaMetadata(readerVersion: MediaMetadata.currentReaderVersion, facts: facts,
                              container: metadataText(fc.iformat.pointee.name) ?? "unknown",
                              containerDescription: metadataText(fc.iformat.pointee.long_name),
-                             sizeBytes: readCache.fileSize,
+                             sizeBytes: readCache?.fileSize ?? 0,
                              durationSeconds: metadataTime(fc.duration, base: 1 / Double(AV_TIME_BASE), nonnegative: true),
                              startSeconds: metadataTime(fc.start_time, base: 1 / Double(AV_TIME_BASE)),
                              bitRate: fc.bit_rate > 0 ? fc.bit_rate : nil, tags: tags, tagsTruncated: tagsTruncated,

@@ -20,14 +20,22 @@ public final class AudioDecoder {
     private var inputEnded = false
     private var trimBefore: Double?
     private var nextStart = 0.0
+    let hlsRead: HLSReadInterrupt?
 
-    public init(url: URL, zeroSeconds: Double, readCache: ReadCache? = nil, readAhead: Bool = true) throws {
-        source = try MediaSource(url: url, readCache: readCache, readAhead: readAhead)
+    public convenience init(url: URL, zeroSeconds: Double, readCache: ReadCache? = nil, readAhead: Bool = true) throws {
+        try self.init(url: url, zeroSeconds: zeroSeconds, readCache: readCache, readAhead: readAhead, hlsSession: nil)
+    }
+
+    init(url: URL, zeroSeconds: Double?, readCache: ReadCache?, readAhead: Bool = true, hlsSession: HLSMediaSession?) throws {
+        let read = HLSDemuxInput.matches(url) ? HLSReadInterrupt() : nil
+        hlsRead = read
+        source = try MediaSource(url: url, readCache: readCache, readAhead: readAhead,
+                                 hlsSession: hlsSession, hlsRead: read, audioOnly: zeroSeconds == nil)
         guard let index = source.audioStreamIndex, let stream = source.audioStream else {
             throw FFmpegError(-1, "no audio stream in \(url.lastPathComponent)")
         }
         streamIndex = index
-        self.zeroSeconds = zeroSeconds
+        self.zeroSeconds = zeroSeconds ?? Double(source.startPTS) * source.timeBase
         timeBase = av_q2d(stream.pointee.time_base)
         packet = av_packet_alloc()!
         frame = av_frame_alloc()!
@@ -77,7 +85,8 @@ public final class AudioDecoder {
         // Seek slightly early: codecs like AAC drop the first output frame after a flush (priming),
         // so the requested time must be reached by decoding forward and trimming.
         let preroll = 0.1
-        let pts = Int64(((seconds + zeroSeconds - preroll) / timeBase).rounded(.down))
+        let target = source.isHLS || source.videoStreamIndex < 0 ? max(0, seconds - preroll) : seconds - preroll
+        let pts = Int64(((target + zeroSeconds) / timeBase).rounded(.down))
         try check(source.seek(stream: streamIndex, toPTS: pts), "seek audio")
         avcodec_flush_buffers(codecContext)
         swr_close(resampler)
@@ -119,7 +128,9 @@ public final class AudioDecoder {
                 errors += 1   // corrupt frame: read more input instead of retrying receive
                 if errors > Self.maxConsecutiveErrors { return false }
             }
-            if source.read(into: packet) < 0 {
+            let read = source.read(into: packet)
+            if read < 0 {
+                if source.isHLS, read != cff_error_eof() { try check(read, "read HLS audio") }
                 avcodec_send_packet(context, nil)
                 inputEnded = true
                 continue

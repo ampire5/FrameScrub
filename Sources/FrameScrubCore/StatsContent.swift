@@ -62,6 +62,8 @@ public struct PlayerStats: Equatable, Sendable {
     public var marks, abLoop: String?
     public var sharpness, change: String
     public var lastDecodeError, clips: String?
+    public var resolvedWebTitle: String? = nil
+    public var selectedWebFormat: ResolvedVideo.Format? = nil
 }
 
 /// The stats as sections and rows (spec §4.1). Rows without a value are not built, so sections without rows come out empty
@@ -97,7 +99,7 @@ public enum StatsContent {
     // MARK: Sections
 
     private static func fileRows(player: PlayerStats?, file: StatsFile?) -> [InfoRow?] {
-        [row("Name", file?.name), row("Folder", file?.folder),
+        [row("Name", player?.resolvedWebTitle ?? file?.name), row("Folder", file?.folder),
          row("Size", file?.size.map(sizeText)), row("Modified", file?.modified.map(dateText)),
          row("Duration", player.map { duration($0.duration) }), row("Container", player?.format.containerText)]
     }
@@ -112,7 +114,18 @@ public enum StatsContent {
         }
         return [row("Codec", p.format.videoText), row("Dimensions", dimensions), row("Bit depth", "\(p.bitDepth)-bit"),
                 row("Frame rate", String(format: "%.3f fps", p.frameRate)), row("Rotation", p.rotation != 0 ? "\(p.rotation)°" : nil),
-                row("Decoder", p.decoder)]
+                row("Decoder", p.decoder), row("Selected web format", selectedFormatText(p.selectedWebFormat))]
+    }
+
+    private static func selectedFormatText(_ format: ResolvedVideo.Format?) -> String? {
+        guard let format else { return nil }
+        var details = [format.id, format.codec].compactMap { $0 }
+        if let width = format.width, let height = format.height { details.append("\(width) × \(height)") }
+        if let fps = format.fps { details.append(String(format: "%.3g fps", fps)) }
+        if let bitrate = format.videoBitrateKbps, let bits = Int64(exactly: (bitrate * 1000).rounded()) {
+            details.append(MediaFormat.rate(bits))
+        }
+        return details.joined(separator: " · ")
     }
 
     private static func audioRows(_ audio: MediaFormat.Audio?) -> [InfoRow?] {

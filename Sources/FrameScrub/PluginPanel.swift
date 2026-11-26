@@ -41,7 +41,8 @@ import WebKit
 ///                                     segments?, lock?, advance?} a Stash scene found on the shares or streamed from
 ///                                     Stash (stash-stream); without `paths` they are asked of Stash; or {url, t?, …} an
 ///                                     http(s) stream, no consent asked, no headers or cookies passed (a URL on the
-///                                     Stash server is refused: open it by scene). One of path, scene, url
+///                                     Stash server is refused: open it by scene); or {page, t?, …} an HTTP(S)
+///                                     video page to resolve. Give one of path, scene, url, page
 ///     framescrub.focusPlayer()        keys go to the player again (the page's Esc, usually)
 ///     framescrub.hide()               hide the page's slot; the keys go back to the player
 ///     framescrub.playlist(items, {index?, name?})

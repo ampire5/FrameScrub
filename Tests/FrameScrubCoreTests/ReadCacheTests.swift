@@ -43,17 +43,18 @@ final class SlowCountingSource: ByteSource, @unchecked Sendable {
     }
 }
 
-/// A source whose bytes arrive gradually: a read delivers its first half at once, then waits for `release` before the
-/// rest (or fails there while `failures` lasts).
+/// A source whose bytes arrive gradually: the first portion is immediate, then `release` permits each next portion.
 final class GatedSource: ByteSource, @unchecked Sendable {
     private let base: FileByteSource
+    private let portions: Int
     private let gate = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var calls = 0
     private var failures = 0
-    init(url: URL, failures: Int = 0) throws {
+    init(url: URL, failures: Int = 0, portions: Int = 2) throws {
         base = try FileByteSource(url: url)
         self.failures = failures
+        self.portions = portions
     }
     var size: Int64 { base.size }
     var arrivesGradually: Bool { true }
@@ -65,13 +66,17 @@ final class GatedSource: ByteSource, @unchecked Sendable {
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer,
               progress: @escaping @Sendable (Int) -> Bool) throws -> Int {
         lock.withLock { calls += 1 }
-        let half = try base.read(at: offset, count: count / 2, into: buffer)
-        _ = progress(half)
-        gate.wait()
-        if lock.withLock({ failures > 0 ? { failures -= 1; return true }() : false }) { throw POSIXError(.EIO) }
-        let rest = try base.read(at: offset + Int64(half), count: count - half, into: buffer + half)
-        _ = progress(half + rest)
-        return half + rest
+        var filled = 0
+        for portion in 1...portions {
+            if portion > 1 {
+                gate.wait()
+                if lock.withLock({ failures > 0 ? { failures -= 1; return true }() : false }) { throw POSIXError(.EIO) }
+            }
+            let end = count * portion / portions
+            filled += try base.read(at: offset + Int64(filled), count: end - filled, into: buffer + filled)
+            guard progress(filled) else { break }
+        }
+        return filled
     }
 }
 
@@ -113,6 +118,27 @@ private func readOffMain(_ cache: ReadCache, at offset: Int64, count: Int) async
             _ = try cache.read(at: Int64(b * ReadCache.blockSize), count: 1, into: &byte, cached: true, cursor: &cursor)
         }
         #expect(await eventually(timeout: 5) { cache.isCached(block: 9) })
+    }
+
+    @Test func aReadFromBeforeTheJumpCannotQueueMoreReadAhead() async throws {
+        let url = Fixtures.url(Fixtures.hevc10)
+        let source = try GatedSource(url: url)
+        let cache = try ReadCache(url: url, budgetBytes: 64 << 20, source: source)
+        defer {
+            cache.close()
+            for _ in 0..<3 { source.release() }
+        }
+        let pending = Task.detached {
+            var cursor = ReadCursor(lastBlock: 0)
+            var byte: UInt8 = 0
+            return try cache.read(at: Int64(ReadCache.blockSize * 3 / 2), count: 1,
+                                  into: &byte, cached: true, cursor: &cursor)
+        }
+        #expect(await eventually(timeout: 2) { source.readCalls == 1 })
+        cache.cancelReadAhead()
+        source.release()
+        #expect(try await pending.value == 1)
+        #expect(await !eventually(timeout: 0.25) { source.readCalls > 1 })
     }
 
     @Test func demuxesAndDecodesThroughTheReader() throws {
@@ -225,12 +251,49 @@ private func readOffMain(_ cache: ReadCache, at offset: Int64, count: Int) async
         let half = file.count / 2
         #expect(try await readOffMain(cache, at: 0, count: 1000) == file[0..<1000])   // the gate is still shut
         let late = Task { try await readOffMain(cache, at: Int64(half + 100), count: 1000) }
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { cache.stats.waits == 2 })
         source.release()
         #expect(try await late.value == file[(half + 100)..<(half + 1100)])
         #expect(await eventually { cache.isCached(block: 0) })
         #expect(source.readCalls == 1)
         #expect(cache.stats.hits == 1)   // the late reader found the load running
+        #expect(cache.stats.waits == 2)  // both requests still waited for its bytes
+    }
+
+    @Test func concurrentReadersGetPublishedPrefixesAcrossManyPortions() async throws {
+        let url = Fixtures.url(Fixtures.withAudio)
+        let file = try Data(contentsOf: url)
+        let portions = 16
+        let source = try GatedSource(url: url, portions: portions)
+        let cache = try ReadCache(url: url, budgetBytes: ReadCache.blockSize, source: source)
+        defer {
+            cache.close()
+            for _ in 0..<portions { source.release() }
+        }
+
+        let firstBoundary = file.count / portions
+        #expect(try await readOffMain(cache, at: Int64(firstBoundary - 8), count: 32) == file[(firstBoundary - 8)..<firstBoundary])
+        try await withThrowingTaskGroup(of: Void.self) { readers in
+            let readersPerPortion = 4
+            for portion in 1..<portions {
+                let boundary = file.count * portion / portions
+                let priorWaits = cache.stats.waits
+                for reader in 0..<readersPerPortion {
+                    readers.addTask {
+                        let start = boundary + reader * 8
+                        let bytes = try await readOffMain(cache, at: Int64(start), count: 32)
+                        #expect(!bytes.isEmpty)
+                        #expect(bytes == file[start..<(start + bytes.count)])
+                    }
+                }
+                #expect(await eventually { cache.stats.waits == priorWaits + readersPerPortion })
+                source.release()
+            }
+            // Keep earlier reads independent of the next publication for the sanitizer.
+            try await readers.waitForAll()
+        }
+        #expect(await eventually { cache.isCached(block: 0) })
+        #expect(source.readCalls == 1)
     }
 
     /// A load that fails half way fails the reader still waiting for its bytes; the next read loads again.
@@ -241,7 +304,7 @@ private func readOffMain(_ cache: ReadCache, at offset: Int64, count: Int) async
         let cache = try ReadCache(url: url, budgetBytes: 64 << 20, source: source)
         let half = file.count / 2
         let late = Task { try await readOffMain(cache, at: Int64(half + 100), count: 1000) }
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { cache.stats.waits == 1 })
         source.release()
         await #expect(throws: POSIXError.self) { try await late.value }
         source.release()
@@ -258,7 +321,7 @@ private func readOffMain(_ cache: ReadCache, at offset: Int64, count: Int) async
         let cache = try ReadCache(url: url, budgetBytes: 64 << 20, source: source)
         let half = file.count / 2
         let late = Task { try await readOffMain(cache, at: Int64(half + 100), count: 1000) }
-        try await Task.sleep(for: .milliseconds(150))
+        #expect(await eventually { cache.stats.waits == 1 })
         cache.budgetBytes = 0
         source.release()
         #expect(try await late.value == file[(half + 100)..<(half + 1100)])

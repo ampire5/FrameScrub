@@ -8,6 +8,10 @@ import HomeScreenModel
 /// afresh on each listing, dimmed once its shares answer; a folder is read off the main thread, its last listing shown
 /// at once on the way back. Clicks and menus go back to the window.
 @MainActor final class FrameScrubHomeSource: HomeSource {
+#if DEBUG
+    var benchRecentPicture: ((String, CGImage) -> Void)?
+    private(set) var benchRecentListings = 0
+#endif
     private static let everythingID = "everything"
     var onEverythingOpen: ((URL) -> Void)?
     private lazy var everythingPage = EverythingSearchPage(loadConnection: SavedEverythingConnection.load) { [weak self] url, isFolder in
@@ -24,6 +28,8 @@ import HomeScreenModel
     var onCut: ((PluginCatalogSource, String, Bool) -> Void)?
     var onCatalogNavigation: (() -> Void)?
     var onSidebarChange: (() -> Void)?
+    var filesInUse: (() -> [URL])?
+    private var changingFiles = false
 
     private func catalog(_ location: BrowserLocation) -> PluginCatalogSource? {
         guard case let .source(id) = location else { return nil }
@@ -112,7 +118,15 @@ import HomeScreenModel
         folderPictures.onMade = { [weak self] url in self?.coverPosterMade(url) }
         folderPictures.onHave = { [weak self] url in self?.posterIn(url) }
         for queue in [recentPictures, folderPictures] {
-            queue.onPicture = { [weak self] id, image in self?.view?.setImage(image, for: id) }
+            queue.onPicture = { [weak self] id, image in
+                guard let self, let view, !view.isHiddenOrHasHiddenAncestor else { return }
+                view.setImage(image, for: id)
+#if DEBUG
+                if let benchRecentPicture, id.hasPrefix("recent:"), view.visibleIDs.contains(id) {
+                    benchRecentPicture(id, image)
+                }
+#endif
+            }
             queue.onFacts = { [weak self] url, facts in self?.factsFound(url, facts) }
             queue.onFailure = { [weak self] url, failure in self?.pictureFailed(url, failure) }
             queue.hasFacts = { [weak self] url in self?.facts[url.path] != nil }
@@ -364,22 +378,30 @@ import HomeScreenModel
 
     // MARK: Pictures
 
+    func playbackPictureSaved(_ image: CGImage, for url: URL) {
+        guard view?.location == .source(HomeRecent.source) else { return }
+        recentPictures.playbackPictureSaved(image, for: url)
+    }
+
     /// The cards' pictures, those in view first: saved ones read off the main thread, the others made in the
     /// background one at a time.
     func wantImages(_ ids: [String], width: CGFloat) {
-        if let location = view?.location, let catalog = catalog(location) {
+        // A layout callback can arrive after parking Home and stopping the current picture queues.
+        guard let view, !view.isHiddenOrHasHiddenAncestor else { return }
+        let location = view.location
+        if let catalog = catalog(location) {
             catalog.want(ids) { [weak self] id, image in
-                guard self?.view?.location == location else { return }
-                self?.view?.setImage(image, for: id)
+                guard let view = self?.view, !view.isHiddenOrHasHiddenAncestor, view.location == location else { return }
+                view.setImage(image, for: id)
             }
             return
         }
-        if view?.location == .source(HomeRecent.source) {
+        if location == .source(HomeRecent.source) {
             recentPictures.want(ids)
-        } else if view?.location == .source(HomeFavorites.sourceID) {
+        } else if location == .source(HomeFavorites.sourceID) {
             wantFolderCards(ids, entries: favoriteCoverEntries)
         } else {
-            guard case .folder(let folder)? = view?.location else { return }
+            guard case .folder(let folder) = location else { return }
             let videos = withFacts(shownEntries(in: folder) ?? []).filter(\.isFile).map(\.url)
             let inView = ids.filter { $0.hasPrefix("/") }.map { URL(filePath: $0, directoryHint: .notDirectory) }
                 .filter { Playlist.videoExtensions.contains($0.pathExtension.lowercased()) }
@@ -468,9 +490,7 @@ import HomeScreenModel
         coverFor = [:]
     }
 
-    /// The folder cards among `ids`, in that order (those in view first): each folder's own listing read off the main
-    /// thread one at a time, its facts on the card, then its cover from posters already made; a folder whose videos
-    /// have none yet shows its symbol, and its first video's poster is queued (the cover follows when it is in).
+    /// Show cached posters first, then list the folders one at a time for summaries and refreshed covers.
     private func wantFolderCards(_ ids: [String], in folder: URL) {
         guard activeListing?.recursive != true, let entries = listings[folder] else { return }
         wantFolderCards(ids, entries: entries)
@@ -478,11 +498,20 @@ import HomeScreenModel
 
     private func wantFolderCards(_ ids: [String], entries: [BrowserEntry]) {
         let byID = Dictionary(entries.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder && !$0.isDimmed }
-        folderCardIDs = folders.map(\.id)
+        let folders = ids.compactMap { byID[$0] }.filter { $0.kind == .folder }
+        folderCardIDs = folders.filter { !$0.isDimmed }.map(\.id)
         factsTask?.cancel()
+        let store = folderPictures.store, generation = coverGeneration
         factsTask = Task { @MainActor [weak self] in
+            // A slow listing must not hold up cached covers for the other cards.
             for entry in folders {
+                guard !Task.isCancelled else { return }
+                let url = entry.url
+                let pictures = await Task.detached(priority: .utility) { store.cachedFolderCover(in: url) }.value
+                guard let self, !Task.isCancelled else { return }
+                if !pictures.isEmpty { await self.showCover(pictures, for: entry.id, generation: generation) }
+            }
+            for entry in folders where !entry.isDimmed {
                 guard let self, !Task.isCancelled else { return }
                 if self.folderFacts[entry.url] == nil {
                     let url = entry.url
@@ -518,6 +547,7 @@ import HomeScreenModel
         let pictures = await Task.detached(priority: .utility) { videos.compactMap { store.image(for: $0) } }.value
         guard !Task.isCancelled, coverGeneration == generation else { return }
         guard !pictures.isEmpty else {
+            if videos.isEmpty { view.setImage(nil, for: id) }
             view.stopWaiting(for: [id])
             if !thumbnailsPaused, let first = videos.first, coverFor[first.path] == nil {
                 coverFor[first.path] = (id, folder)
@@ -525,6 +555,11 @@ import HomeScreenModel
             }
             return
         }
+        await showCover(pictures, for: id, generation: generation)
+    }
+
+    private func showCover(_ pictures: [CGImage], for id: String, generation: Int) async {
+        guard let view, !Task.isCancelled, coverGeneration == generation else { return }
         let width = view.coverWidth, scale = view.window?.backingScaleFactor ?? 2
         let height = view.location == .source(HomeFavorites.sourceID) ? (width / view.files.aspect).rounded() : width
         let mosaic = await Task.detached(priority: .utility) {
@@ -602,12 +637,15 @@ import HomeScreenModel
 
     func menu(for entry: BrowserEntry, in location: BrowserLocation) -> [HomeMenuItem] {
         if catalog(location) != nil { return [HomeMenuItem(id: "edit-virtual-cut", title: "Edit Cut…")] }
+        let selection = menuSelection(for: entry)
+        let fileItems = FileViewClipboard.folder(in: location) == nil ? [] : fileMenu(for: selection)
+        if fileItems.count > 0, selection.count > 1 { return fileItems }
         var items = [HomeMenuItem(id: "information", title: "File Information…"),
                      HomeMenuItem(id: "finder", title: "Show in Finder"), HomeMenuItem(id: "copy", title: "Copy Path")]
         if !entry.isFile { items.removeAll { $0.id == "information" } }
         if entry.kind == .folder || entry.kind == .place { items.append(favoriteMenu(for: entry.url)) }
         if location == .source(HomeRecent.source) { items.append(HomeMenuItem(id: "remove", title: "Remove from Recent")) }
-        return items
+        return items + fileItems
     }
 
     func perform(_ item: String, on entry: BrowserEntry, in location: BrowserLocation) {
@@ -616,10 +654,111 @@ import HomeScreenModel
             return
         }
         if entry.kind == .folder || entry.kind == .place, performFavoriteMenu(item, for: entry.url) { return }
+        if let folder = FileViewClipboard.folder(in: location) {
+            switch item {
+            case "copy-files": FileViewClipboard.copy(menuSelection(for: entry)); return
+            case "paste-files", "move-files": pasteFiles(into: folder, moving: item == "move-files"); return
+            case "trash-files": trashFiles(menuSelection(for: entry)); return
+            default: break
+            }
+        }
         if item == "information", entry.isFile {
             if metadataInspector == nil { metadataInspector = MediaMetadataInspector() }
             metadataInspector?.show(entry)
         } else { onMenu?(entry.url, item) }
+    }
+
+    private func menuSelection(for entry: BrowserEntry) -> [BrowserEntry] {
+        guard let selected = view?.selectedEntries, selected.contains(where: { $0.id == entry.id }) else { return [entry] }
+        return selected
+    }
+
+    private func fileMenu(for selection: [BrowserEntry]) -> [HomeMenuItem] {
+        var items = [HomeMenuItem(id: "copy-files", title: "Copy")]
+        if FileViewClipboard.hasFiles {
+            items += [HomeMenuItem(id: "paste-files", title: "Paste Items"),
+                      HomeMenuItem(id: "move-files", title: "Move Items Here")]
+        }
+        if selection.contains(where: \.canTrash) { items.append(HomeMenuItem(id: "trash-files", title: "Move to Trash")) }
+        return items
+    }
+
+    func pasteFiles(into folder: URL, moving: Bool) {
+        let files = FileViewClipboard.files()
+        changeFiles(moving ? .move(into: folder) : .copy(into: folder), urls: files, verb: moving ? "Moved" : "Copied")
+    }
+
+    func trashFiles(_ entries: [BrowserEntry]) {
+        changeFiles(.trash, urls: entries.filter(\.canTrash).map(\.url), verb: "Removed")
+    }
+
+    private func changeFiles(_ command: FileViewFileActions.Command, urls: [URL], verb: String) {
+        guard !urls.isEmpty else { return }
+        guard !changingFiles else {
+            view?.showToast("A file operation is already in progress.")
+            return
+        }
+        changingFiles = true
+        let protected = filesInUse?() ?? []
+        Task {
+            var report = await Task.detached(priority: .utility) {
+                FileViewFileActions.run(command, urls: urls, protected: protected)
+            }.value
+            if let first = report.needsConfirmation.first {
+                let remaining = report.needsConfirmation
+                if await confirmPermanentRemoval(count: remaining.count, first: first) {
+                    let protected = filesInUse?() ?? []
+                    let result = await Task.detached(priority: .utility) {
+                        FileViewFileActions.run(.delete, urls: remaining, protected: protected)
+                    }.value
+                    report.completed += result.completed
+                    report.failures += result.failures
+                    if report.firstError == nil { report.firstError = result.firstError }
+                    report.parents.formUnion(result.parents)
+                } else {
+                    report.unchanged += remaining.count
+                }
+            }
+            changingFiles = false
+            finishFileChange(report, verb: verb)
+        }
+    }
+
+    private func confirmPermanentRemoval(count: Int, first: URL) async -> Bool {
+        guard let window = view?.window, window.isVisible, window.attachedSheet == nil else { return false }
+        let alert = NSAlert()
+        alert.messageText = "Delete permanently?"
+        alert.informativeText = count == 1
+            ? "“\(first.lastPathComponent)” is on a volume without a Trash. It will be deleted right away."
+            : "\(count) items are on volumes without a Trash. They will be deleted right away."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\r"
+        alert.addButton(withTitle: "Delete").hasDestructiveAction = true
+        return await withCheckedContinuation { continuation in
+            alert.beginSheetModal(for: window) { continuation.resume(returning: $0 == .alertSecondButtonReturn) }
+        }
+    }
+
+    private func finishFileChange(_ report: FileViewFileActions.Report, verb: String) {
+        for (from, to) in report.movedFolders { _ = favorites.rename(from, to: to) }
+        if !report.parents.isEmpty {
+            for folder in listings.keys where report.parents.contains(folder.standardizedFileURL.path) {
+                listings.removeValue(forKey: folder)
+                folderFacts[folder] = nil
+            }
+            refreshSidebar()
+            if watchingVisible, let active = activeListing, case .folder(let folder) = active.location {
+                let path = folder.standardizedFileURL.path
+                let prefix = path == "/" ? path : path + "/"
+                if report.parents.contains(path) || (active.recursive && report.parents.contains(where: { $0.hasPrefix(prefix) })) {
+                    readFolder(folder, id: active.id)
+                }
+            }
+        }
+        var lines = ["\(verb) \(report.completed) \(report.completed == 1 ? "item" : "items")"]
+        if report.unchanged > 0 { lines.append("\(report.unchanged) unchanged") }
+        if let error = report.firstError { lines.append("\(report.failures) failed · \(error)") }
+        view?.showToast(lines.joined(separator: "\n"), for: report.failures == 0 ? 3 : 6)
     }
 
     func open(_ entry: BrowserEntry, in location: BrowserLocation, sort: BrowserSort, how: HomeClick) {
@@ -823,6 +962,9 @@ import HomeScreenModel
     /// Recent at once from the stores, then again with the files whose share does not answer in a second dimmed
     /// (only when there are any).
     private func listRecent() -> AsyncThrowingStream<BrowserListing, Error> {
+#if DEBUG
+        if benchRecentPicture != nil { benchRecentListings += 1 }
+#endif
         let urls = recentURLs()
         recentDimmed = []
         let first = HomeRecent.entries(urls, resume: { positions[$0.path] }, facts: facts, dimmed: [])

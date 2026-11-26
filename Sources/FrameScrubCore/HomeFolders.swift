@@ -78,9 +78,11 @@ public enum HomeFolders {
                            viewed: videos.isEmpty ? nil : Double(started) / Double(videos.count))
     }
 
+    static let coverVideoLimit = 4
+
     /// The videos a folder's cover is made of: the first four by name.
     public static func coverVideos(_ entries: [BrowserEntry]) -> [URL] {
         Array(entries.filter(\.isFile).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            .prefix(4).map(\.url))
+            .prefix(coverVideoLimit).map(\.url))
     }
 }

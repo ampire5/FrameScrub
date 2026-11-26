@@ -1,15 +1,16 @@
 import Foundation
 
-/// What a plugin page asks the player to open: a local file, a Stash scene whose file is found on the shares (or
-/// streamed), or an http(s) stream; `paths` is empty when the page gave none and they are to be asked of Stash.
+/// What a plugin page asks the player to open: a local file, a Stash scene, a direct HTTP(S) stream, or a video
+/// page to resolve. A scene's `paths` is empty when its paths are to be asked of Stash.
 public enum PluginOpen: Equatable, Sendable {
     case file(URL, landing: LinkTarget)
     case stashScene(id: String, paths: [String], landing: LinkTarget)
     case stream(URL, landing: LinkTarget)
+    case page(URL, landing: LinkTarget)
 
     public var landing: LinkTarget {
         switch self {
-        case let .file(_, landing), let .stashScene(_, _, landing), let .stream(_, landing): landing
+        case let .file(_, landing), let .stashScene(_, _, landing), let .stream(_, landing), let .page(_, landing): landing
         }
     }
 }
@@ -282,11 +283,11 @@ struct Arguments {
         return url
     }
 
-    /// Which of `path`, `scene`, `url` the object names (`null` names none); more than one is refused.
-    func source() throws(Failure) -> String? {
-        let given = ["path", "scene", "url"].filter(given)
-        guard given.count <= 1 else { throw Failure("give one of path, scene, url") }
-        return given.first
+    /// The one named source. A JSON `null` is treated as absent.
+    func source(_ names: [String] = ["path", "scene", "url"]) throws(Failure) -> String? {
+        let specified = names.filter(given)
+        guard specified.count <= 1 else { throw Failure("give one of \(names.joined(separator: ", "))") }
+        return specified.first
     }
 }
 
@@ -346,15 +347,15 @@ extension Arguments {
 }
 
 extension PluginOpen {
-    /// `{path, t?, segments?, lock?, advance?}`, `{scene, paths?, t?, …}` or `{url, t?, …}`; a scene's id may come as a
-    /// number.
+    /// `{path, t?, segments?, lock?, advance?}`, `{scene, paths?, t?, …}`, `{url, t?, …}` or `{page, t?, …}`.
+    /// A scene's id may come as a number.
     init(_ args: Arguments) throws(PluginMessage.Failure) {
         let landing = LinkTarget(time: try args.optionalTime("t"), segments: try args.segmentList("segments") ?? [],
                                  lock: try args.optionalBool("lock"),
                                  advance: try args.optionalAdvance("advance"))
         _ = try args.sceneInfo()   // checked here; `PluginMessage.sceneInfos` hands it over
         _ = try args.framesFolder()   // and `frameFolders`
-        switch try args.source() {
+        switch try args.source(["path", "scene", "url", "page"]) {
         case "scene":
             let id = try args.sceneID("scene")
             var paths: [String] = []
@@ -369,8 +370,10 @@ extension PluginOpen {
             self = .file(URL(filePath: path, directoryHint: .notDirectory), landing: landing)   // not looked up: a share answers over the network
         case "url":
             self = .stream(try args.streamURL("url"), landing: landing)
+        case "page":
+            self = .page(try args.streamURL("page"), landing: landing)
         default:
-            throw PluginMessage.Failure("path, scene or url is missing")
+            throw PluginMessage.Failure("path, scene, url or page is missing")
         }
     }
 }

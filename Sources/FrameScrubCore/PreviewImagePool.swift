@@ -43,6 +43,25 @@ public final class PreviewImagePool: @unchecked Sendable {
         }
     }
 
+    /// Closest ready picture on the target side of an exact backward jump.
+    /// Searches only the bounded in-memory entries and uses actual decoded PTS.
+    public func seekPreview(url: URL, rotationClockwise: Int, index: FrameIndex,
+                            frames: ClosedRange<Int>) -> (image: CGImage, frame: Int)? {
+        guard matches(url: url, rotationClockwise: rotationClockwise), index.isExact,
+              frames.lowerBound >= 0, frames.upperBound < index.frameCount else { return nil }
+        let bounds = index.pts(forFrame: frames.lowerBound)...index.pts(forFrame: frames.upperBound)
+        return lock.withLock {
+            let eligible = entries.keys.lazy.filter { pts in
+                bounds.contains(pts) && index.pts(forFrame: index.frameNumber(forPTS: pts)) == pts
+            }
+            guard let pts = eligible.min(),
+                  let entry = entries[pts] else { return nil }
+            let frame = index.frameNumber(forPTS: pts)
+            touch(pts)
+            return (entry.image, frame)
+        }
+    }
+
     func set(_ image: CGImage, pts: Int64, widthPixels: Int) {
         let entry = Entry(image: image, widthPixels: widthPixels)
         lock.withLock {

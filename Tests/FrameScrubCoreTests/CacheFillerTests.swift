@@ -41,6 +41,67 @@ import Testing
         #expect(cache.usedBytes <= 400 << 20)
     }
 
+    @Test func raisingBudgetWakesSettledWorkersWithoutInput() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 32)
+        filler.setFocus(300, mode: .paused)
+        filler.start()
+        defer { filler.stop() }
+        #expect(await eventually { cache.contains(300) && cache.contains(298) })
+        #expect(!cache.contains(315))
+        cache.budgetBytes = 200 << 20
+        #expect(await eventually { cache.contains(315) && cache.contains(275) })
+    }
+
+    @Test func aColdPausedJumpAheadInTheSameGOPKeepsTheForwardDecoderPosition() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 32)
+        filler.setFocus(300, mode: .paused, supersedesRead: true)
+        filler.start()
+        defer { filler.stop() }
+        try #require(await eventually { cache.hasReadyFrame(300) })
+        #expect(filler.forwardSeeks == 1)
+        #expect(!cache.contains(410))
+
+        filler.setFocus(410, mode: .paused, supersedesRead: true)
+        try #require(await eventually { cache.hasReadyFrame(410) })
+        let frame = try #require(cache.frame(410))
+        #expect(readFrameNumber(frame.pixelBuffer) == 410)
+        #expect(filler.forwardSeeks == 1)
+    }
+
+    @Test func anEarlierPausedJumpInTheSameGOPCancelsTheOldPreroll() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 32)
+        let publishedOldTarget = Mutex(false)
+        filler.onInsert = { frame in
+            if frame == 450 { publishedOldTarget.withLock { $0 = true } }
+        }
+        filler.onPrerollPreview = { [weak filler] _, target in
+            if target == 450 { filler?.setFocus(365, mode: .paused, supersedesRead: true) }
+        }
+        filler.setFocus(450, mode: .paused, supersedesRead: true, previewFrom: 250)
+        filler.start()
+        defer { filler.stop() }
+        try #require(await eventually { cache.hasReadyFrame(365) })
+        let frame = try #require(cache.frame(365))
+        #expect(readFrameNumber(frame.pixelBuffer) == 365)
+        #expect(!publishedOldTarget.withLock { $0 })
+    }
+
+    @Test func pausedLocalReverseKeepsMoreOfTheGOPInTheSameBudget() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let decoder = try VideoDecoder(source: source, index: index)
+        let first = try #require(try decoder.nextFrame())
+        let budget = first.byteSize * 32
+        let cache = FrameCache(budgetBytes: budget)
+        let filler = CacheFiller(url: source.url, index: index, cache: cache,
+                                 estimatedFrameBytes: first.byteSize, playbackLookahead: 30)
+        filler.setFocus(300, mode: .paused)
+        filler.setFocus(299, mode: .paused, direction: -1)
+        filler.start()
+        defer { filler.stop() }
+        #expect(await eventually { (277...299).allSatisfy(cache.contains) })
+        #expect(cache.usedBytes <= budget)
+    }
+
     // The h264 fixture has keyframes at 0, 250 and 500; 400 MiB holds ~130 frames, a paused window ~70 behind the focus
     // and ~46 ahead of it.
 
@@ -272,6 +333,17 @@ import Testing
         #expect(inserted.withLock { $0.count } - before < 20)
     }
 
+    @Test func aSmallLocalWindowKeepsHistoryDuringForwardScrubbing() async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 64)
+        filler.start()
+        defer { filler.stop() }
+
+        filler.setFocus(309, mode: .paused)
+        filler.setFocus(310, mode: .paused, direction: 1)
+        #expect(await eventually { (302...314).allSatisfy(cache.contains) })
+        #expect(cache.usedBytes <= 64 << 20)
+    }
+
     @Test func steppingForwardKeepsTheDecoders() async throws {
         let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 100)
         filler.start()
@@ -459,7 +531,7 @@ import Testing
         #expect(await eventually { cache.contains(400) && !filler.hasUnresolvedFocus })
     }
 
-    @Test func backwardDecodingWaitsAfterAJump() async throws {
+    @Test func aPausedLocalJumpKeepsHistoryBeforeBackwardFilling() async throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let cache = FrameCache(budgetBytes: 400 << 20)
         let time = Mutex(100.0)
@@ -470,9 +542,109 @@ import Testing
         filler.setFocus(400, mode: .paused, direction: 1)
         #expect(await eventually { cache.contains(400) })
         try await Task.sleep(for: .milliseconds(400))          // real time passes, fake time does not
-        #expect(!(260..<400).contains { cache.contains($0) })
+        #expect(await eventually { (392..<400).allSatisfy(cache.hasReadyFrame) })
+        #expect(!(260..<392).contains { cache.contains($0) })
         time.withLock { $0 += 0.3 }
         #expect(await eventually { (380..<400).allSatisfy(cache.contains) })
+    }
+
+    @Test(arguments: [75, 200])
+    func aLongLocalForwardSeekCanPublishOneNearbyPreviewBeforeItsTarget(target: Int) async throws {
+        let (filler, cache) = try makeFiller(Fixtures.h264, budgetMiB: 64)
+        let pictures = Mutex<[Int]>([])
+        filler.onInsert = { if $0 == target { pictures.withLock { $0.append(target) } } }
+        filler.onPrerollPreview = { frame, requested in
+            if requested == target { pictures.withLock { $0.append(frame.number) } }
+        }
+        filler.setFocus(target, mode: .paused, supersedesRead: true, previewFrom: 0)
+        filler.start()
+        defer { filler.stop() }
+
+        try #require(await eventually { pictures.withLock { $0.contains(target) } })
+        let previews = pictures.withLock { trace in Array(trace.prefix { $0 != target }) }
+        if target == 75 {
+            #expect(previews.isEmpty)
+        } else {
+            #expect(previews.count == 1)
+            let preview = try #require(previews.first)
+            #expect((target - 48...target - 45).contains(preview))
+            #expect(!cache.contains(preview))
+        }
+    }
+
+    @Test(arguments: [225, 375])
+    func aNewLocalSeekOnlySupersedesAnInFlightSeekInAnotherGOP(target: Int) async throws {
+        let (media, index) = try openIndexed(Fixtures.h264)
+        let source = try PausedFirstFileRead(url: media.url)
+        let bytes = try ReadCache(url: media.url, budgetBytes: 0, source: source)
+        let cache = FrameCache(budgetBytes: 64 << 20)
+        let filler = CacheFiller(url: media.url, index: index, cache: cache,
+                                 estimatedFrameBytes: media.estimatedFrameBytes, playbackLookahead: 4, readCache: bytes)
+        let oldTarget = 475
+        let insertedOldTarget = Mutex(false)
+        filler.onInsert = { frame in
+            if frame == oldTarget { insertedOldTarget.withLock { $0 = true } }
+        }
+        filler.setFocus(oldTarget, mode: .playing, supersedesRead: true)
+        filler.start()
+        defer { filler.stop() }
+        defer { source.resume() }
+        try #require(await eventually { source.isPaused })
+        filler.setFocus(target, mode: .playing, supersedesRead: true)
+        source.resume()
+        try #require(await eventually { cache.hasReadyFrame(target) })
+        let frame = try #require(cache.frame(target))
+        #expect(readFrameNumber(frame.pixelBuffer) == target)
+        let sameGOP = index.keyframe(atOrBefore: oldTarget) == index.keyframe(atOrBefore: target)
+        #expect(insertedOldTarget.withLock { $0 } == sameGOP)
+    }
+
+    @Test func anObsoleteLocalReverseChunkStopsBeforeItsFirstOutput() async throws {
+        let (media, index) = try openIndexed(Fixtures.h264)
+        let source = try PausedFirstFileRead(url: media.url)
+        let bytes = try ReadCache(url: media.url, budgetBytes: 0, source: source)
+        let cache = FrameCache(budgetBytes: 64 << 20)
+        let filler = CacheFiller(url: media.url, index: index, cache: cache,
+                                 estimatedFrameBytes: media.estimatedFrameBytes, playbackLookahead: 4, readCache: bytes)
+        filler.fixedReverseLevel = .references
+        let insertedOldChunk = Mutex(false)
+        filler.onInsert = { frame in
+            if frame > 400 { insertedOldChunk.withLock { $0 = true } }
+        }
+        filler.setFocus(475, mode: .reversing, direction: -1)
+        filler.start()
+        defer { filler.stop() }
+        defer { source.resume() }
+        try #require(await eventually { source.isPaused })
+        filler.setFocus(225, mode: .playing, supersedesRead: true)
+        source.resume()
+        try #require(await eventually { cache.hasReadyFrame(225) })
+        let insertedObsoleteFrame = await eventually(timeout: 0.5) { insertedOldChunk.withLock { $0 } }
+        #expect(!insertedObsoleteFrame)
+    }
+
+    @Test func outrunningLocalReversePrerollLowersTheDecodeLevel() async throws {
+        let (media, index) = try openIndexed(Fixtures.h264)
+        let source = try PausedFirstFileRead(url: media.url)
+        let bytes = try ReadCache(url: media.url, budgetBytes: 0, source: source)
+        let cache = FrameCache(budgetBytes: 64 << 20)
+        let time = Mutex(10.0)
+        let filler = CacheFiller(url: media.url, index: index, cache: cache,
+                                 estimatedFrameBytes: media.estimatedFrameBytes, playbackLookahead: 4,
+                                 readCache: bytes, now: { time.withLock { $0 } })
+        filler.setReverseDemand(speed: 4, framesPerSecond: 30)
+        filler.setFocus(475, mode: .reversing, direction: -1)
+        filler.start()
+        defer { filler.stop() }
+        defer { source.resume() }
+        try #require(await eventually { source.isPaused })
+        #expect(filler.reverseLevel == .references)
+        // The 21-frame budget yields an eight-frame chunk (468...475).
+        // Moving to 459 puts the whole chunk outside the window without a jump.
+        time.withLock { $0 += 1 }
+        filler.setFocus(459, mode: .reversing, direction: -1)
+        source.resume()
+        #expect(await eventually { filler.reverseLevel == .keyframes })
     }
 
     /// A keyframe seek lands past its target; until the player moves the focus there, the forward worker must
@@ -711,4 +883,25 @@ import Testing
         filler.updateIndex(index, clearCache: false)
         #expect(await eventually(timeout: 10) { (340...400).allSatisfy(cache.contains) })
     }
+}
+
+private final class PausedFirstFileRead: ByteSource, Sendable {
+    private let file: FileByteSource
+    private let started = Mutex(false)
+    private let gate = DispatchSemaphore(value: 0)
+    var size: Int64 { file.size }
+    var isPaused: Bool { started.withLock { $0 } }
+
+    init(url: URL) throws { file = try FileByteSource(url: url) }
+
+    func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int {
+        let first = started.withLock {
+            defer { $0 = true }
+            return !$0
+        }
+        if first { gate.wait() }
+        return try file.read(at: offset, count: count, into: buffer)
+    }
+
+    func resume() { gate.signal() }
 }

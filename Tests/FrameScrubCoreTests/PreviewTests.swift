@@ -157,6 +157,32 @@ import Testing
         #expect(abs(try #require(images.value.first).frameSeconds - 250.0 / 30) < 0.00001)
     }
 
+    @Test func matchingNominalTimestampReusesPlaybackFrameWithoutNetwork() async throws {
+        let (source, exact) = try openIndexed(Fixtures.h264)
+        let frame = try #require(try VideoDecoder(source: source, index: exact).nextFrame())
+        let nominal = source.approximateIndex()
+        let cache = FrameCache(budgetBytes: 32 << 20)
+        cache.insert(frame)
+        let url = try #require(URL(string: "https://example.com/track.webm"))
+        let pool = PreviewImagePool(url: url, rotationClockwise: 0)
+        let hover = PreviewProvider(url: url, index: nominal, rotationClockwise: 0, widthPixels: 320,
+                                    policy: .network, imagePool: pool, frameCache: cache)
+        let film = PreviewProvider(url: url, index: nominal, rotationClockwise: 0, widthPixels: 160,
+                                   policy: .network, imagePool: pool, frameCache: cache)
+        defer { hover.stop(); film.stop() }
+        let hoverImages = collect(hover), filmImages = collect(film)
+
+        try #require(hover.canReuse(seconds: 0))
+        hover.request(seconds: 0, readyOnly: true)
+        try #require(await eventually { hoverImages.value.count == 1 })
+        cache.removeAll()
+        try #require(film.canReuse(seconds: 0))
+        film.request(seconds: 0, readyOnly: true)
+        try #require(await eventually { filmImages.value.count == 1 })
+        #expect(hover.decodeCount == 0 && film.decodeCount == 0)
+        #expect(hoverImages.value[0].image === filmImages.value[0].image)
+    }
+
     @Test func nearbyPlaybackFramesAndApproximateNumbersCannotMasqueradeAsKeyframes() throws {
         let (source, index) = try openIndexed(Fixtures.h264)
         let decoder = try VideoDecoder(source: source, index: index)
@@ -200,6 +226,54 @@ import Testing
             budgetBytes: image.bytesPerRow * image.height * 2)
         for pts: Int64 in [0, 250, 500] { budget.set(image, pts: pts, widthPixels: 160) }
         #expect(budget.count == 2 && budget.image(pts: 0, widthPixels: 160) == nil)
+    }
+
+    @Test func backwardSeekPreviewUsesTheClosestPictureBetweenTargetAndOrigin() throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let frame = try #require(try VideoDecoder(source: source, index: index).nextFrame())
+        let image = try #require(FrameImageRenderer().thumbnail(for: frame, rotationClockwise: 0, width: 160))
+        let pool = PreviewImagePool(url: source.url, rotationClockwise: 0)
+        for number in [220, 250, 255] {
+            pool.set(image, pts: index.pts(forFrame: number), widthPixels: 160)
+        }
+        let unindexed = index.pts(forFrame: 225) + 1
+        if unindexed < index.pts(forFrame: 226) { pool.set(image, pts: unindexed, widthPixels: 160) }
+        #expect(pool.seekPreview(url: source.url, rotationClockwise: 0, index: index, frames: 225...259)?.frame == 250)
+        #expect(pool.seekPreview(url: source.url, rotationClockwise: 0, index: index, frames: 225...249) == nil)
+        #expect(pool.seekPreview(url: source.url, rotationClockwise: 90, index: index, frames: 225...259) == nil)
+    }
+
+    @Test func utilityPreviewDefersColdWorkAndCanRetry() async throws {
+        let (source, index) = try openIndexed(Fixtures.h264)
+        let availablePolls = Locked(0)
+        let deferred = Locked(0)
+        let provider = PreviewProvider(url: source.url, index: index, rotationClockwise: 0, widthPixels: 160,
+                                       qos: .utility, shouldYield: {
+            var yields = false
+            availablePolls.mutate { remaining in
+                yields = remaining == 0
+                if remaining > 0 { remaining -= 1 }
+            }
+            return yields
+        })
+        defer { provider.stop() }
+        provider.onDeferred = { deferred.mutate { $0 += 1 } }
+        let images = collect(provider)
+        provider.request(seconds: 12)
+        #expect(await eventually { deferred.value == 1 })
+        #expect(provider.decodeCount == 0)
+        availablePolls.mutate { $0 = 2 }
+        provider.request(seconds: 12)
+        #expect(await eventually { deferred.value == 2 })
+        #expect(provider.decodeCount == 0)
+        availablePolls.mutate { $0 = -1 }
+        provider.request(seconds: 12)
+        #expect(await eventually { images.value.count == 1 })
+        #expect(provider.decodeCount == 1)
+        availablePolls.mutate { $0 = 0 }
+        provider.request(seconds: 12)
+        #expect(await eventually { images.value.count == 2 })
+        #expect(provider.decodeCount == 1 && deferred.value == 2)
     }
 
     @Test func approximateDecodeIsReusedByActualPTSAfterExactIndexArrives() async throws {

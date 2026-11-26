@@ -9,10 +9,14 @@ import SettingsKit
 @MainActor
 public final class FrameScrubSettingsStore: SettingsStore {
     /// `Config.keys` the window does not show: Home's open tab is state, the slots are set by View › Slots.
+    /// The mini filmstrip dimensions are set in the Filmstrip popover.
     // TourBox is an opt-in event-input trial configured in framescrub.conf pending real-device calibration.
     public nonisolated static let excludedKeys: Set<String> = ["home-tab", "slot-left", "slot-right", "slot-bottom", "artifact-strength",
                                                              "tourbox", "tourbox-frames-per-pulse", "tourbox-accel",
-                                                             "tourbox-accel-start", "tourbox-scroll-points"]
+                                                             "tourbox-accel-start", "tourbox-scroll-points", "tourbox-scroll-invert",
+                                                             "tourbox-knob-modifiers-swap",
+                                                             "d100h", "d100h-mute-detents", "d100h-edge-offset",
+                                                             "navigation-filmstrip-width", "navigation-filmstrip-height"]
     /// The player's wheel mode (free spin or ratchet), a key of the window only: it lives in `UserDefaults`.
     public nonisolated static let wheelFreeSpinKey = "wheel-free-spin"
     /// Its `UserDefaults` key; missing means free spin.

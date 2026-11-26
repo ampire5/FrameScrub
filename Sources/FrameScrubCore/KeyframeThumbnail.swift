@@ -72,14 +72,16 @@ public final class RecentThumbnailer: @unchecked Sendable {
 
     private let store: ThumbnailStore
     private let callbackQueue: DispatchQueue
+    private let fillsMissingOnly: Bool
     private let queue = DispatchQueue(label: "framescrub.recent-thumbnails", qos: .utility)
     private let context = CIContext(options: [.cacheIntermediates: false])
     private let lock = NSLock()
     private var current: CancellationFlag?
 
-    public init(store: ThumbnailStore, callbackQueue: DispatchQueue = .main) {
+    public init(store: ThumbnailStore, callbackQueue: DispatchQueue = .main, fillsMissingOnly: Bool = false) {
         self.store = store
         self.callbackQueue = callbackQueue
+        self.fillsMissingOnly = fillsMissingOnly
     }
 
     /// Files on this Mac's own disks are made `localWorkers` at a time; on a share (or a volume that does not say), one
@@ -112,7 +114,7 @@ public final class RecentThumbnailer: @unchecked Sendable {
                         let result = try KeyframeThumbnail.makeThrowing(url: job.url, at: job.seconds)
                         // A missing pre-open identity cannot safely identify the decoded picture.
                         if let identity = result.identity {
-                            store.save(result.picture, for: job.url, context: context, identity: identity)
+                            store.save(result.picture, for: job.url, context: context, identity: identity, onlyIfMissing: fillsMissingOnly)
                         }
                         return result.facts
                     } }

@@ -314,3 +314,30 @@ Temporal chroma accumulation follow-up (not integrated): [measured spike and rej
 Local gradient debanding follow-up (not integrated): [regional masks, detail negatives and 4K measurements](local-gradient-deband.md).
 
 Optional post-scale perceptual grain (integrated experimentally): [structure protection, controls and 4K→6K measurements](perceptual-grain.md).
+
+## Edge retest at 4K → 6K, 2026-11-23
+
+M4 Max, macOS 27.2.1, native arm64. CoreGraphics reported zero online
+displays and AppKit reported the window occluded. The fallback was
+`FrameScrubBench filters-pipeline` with the production DisplayScaler and a
+6144×3456 offscreen target. This measures GPU execution over 20 serial
+submissions after three warm-ups. Physical cadence, dropped presentations
+and end-to-end 4K60 latency remain unmeasured.
+
+| Profile | Median / p95 GPU, ms | Filter renderer scratch, MiB |
+|---|---:|---:|
+| MetalFX only | 1.93 / 1.94 | 0 |
+| Window deband | 2.50 / 2.51 | 127.5 |
+| Chroma bilateral | 2.59 / 2.67 | 127.5 |
+| Edge anti-ringing | 3.41 / 3.43 | 324 |
+| Window + bilateral + edge anti-ringing | 4.67 / 4.68 | 451.5 |
+| Same + split | 7.13 / 7.15 | 451.5 |
+| Same + changes heatmap | 7.56 / 7.66 | 451.5 |
+
+The comparison modes also allocate an original 6K baseline texture
+(162 MiB for RGBA16F) and encode a second upscale. The scratch column
+excludes that texture and MetalFX's I/O. Across the full process the
+peak physical footprint was 1,602 MiB, including all profiles and source
+preparation. It is a whole-run high-water mark. These results point to
+comparison as the most expensive optional stage in this matrix. Changing
+that path requires checking pixel equivalence and live cadence first.

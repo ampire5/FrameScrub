@@ -15,6 +15,10 @@ Startup, compilation, seeks, fades and setting changes are included; use separat
   `next_frame_work_ms` includes demux/read/decode and any seek pre-roll inside `nextFrame`. Decoding can run ahead
   into the cache; this is not synchronous work performed for every displayed frame. Seek calls outside `nextFrame`
   are excluded (the preview's `seek_decode_ms` includes its seek).
+  `seek_video_packets` counts video packets passed to the backend by the first `nextFrame` for an exact landing,
+  including interrupted seeks and packets the backend can skip. Multiply the count by the mean for the total
+  across a trace. It excludes sequential decoding after landing. `decoder.forward.local` reports
+  `continued_gop` when exact landing starts from the existing packet cursor.
 - Rendering groups identify play/pause, effect, clean-edge setting, actual mask type/width, source dimensions and
   drawable dimensions. Source 4K does not imply a 4K drawable. Groups can combine files with the same configuration.
 - `mask_work_ms` is the complete mask worker operation (including optional subject selection), `mask_queue_ms`
@@ -27,6 +31,10 @@ Startup, compilation, seeks, fades and setting changes are included; use separat
   It includes scheduling/vsync and is a latency, not a per-frame work cost. These values must not be added to decoder,
   mask and GPU times: those stages overlap. `presentation_interval_ms` counts first presentations of distinct
   delivered frames; repeated redraws and late callbacks are excluded. Pause/resume resets the interval boundary.
+- `arrival_to_render_ms` measures the wait from view arrival to render work, `drawable_acquire_ms` isolates
+  drawable acquisition, and `encoded_to_present_ms` runs from the end of image encoding to the drawable timestamp.
+- `scrub.audio` counts demux seeks and adjacent decoder continuations. `snapshot_ms` measures copying cached
+  PCM, applying gap fades and publishing it to the tape. Playback uses the separate `playback.audio` group.
 - `replaced_before_submit` counts delivered frames overwritten before command submission. `source_gap_frames`
   reports gaps before the view: seeks and speed changes can cause them, so they are not automatically render drops.
 - Preview groups separate request queue, read throttle, decoder open, seek/decode, thumbnail render, main-queue
