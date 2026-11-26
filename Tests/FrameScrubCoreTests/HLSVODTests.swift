@@ -10,16 +10,22 @@ import Testing
         return try Dictionary(uniqueKeysWithValues: files.map { ("/" + $0.lastPathComponent, try Data(contentsOf: $0)) })
     }
 
+    private func playbackConfig(cacheSizeMiB: Int) -> Config {
+        var config = Config()
+        config.autoplay = false
+        config.cacheSizeMiB = cacheSizeMiB
+        // The translated CI process cannot rely on the host's VideoToolbox decoder.
+        if runsUnderRosetta { config.hwdec = .no }
+        return config
+    }
+
     @Test(arguments: ["mpegts", "fmp4"])
     func opensVODAndSeeksToUncachedFrame(segmentType: String) async throws {
         var resources = try fixture(segmentType)
         resources["/master.m3u8"] = Data("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=3000000\nmedia.m3u8\n".utf8)
         let server = try RangeServer(resources: resources, path: "/master.m3u8")
         server.rangesSupported = false
-        var config = Config()
-        config.autoplay = false
-        config.cacheSizeMiB = 16
-        if runsUnderRosetta { config.hwdec = .no }
+        let config = playbackConfig(cacheSizeMiB: 16)
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         let delegate = RecordingDelegate()
         player.delegate = delegate
@@ -74,9 +80,7 @@ import Testing
     @Test func distantJumpsReuseDownloadedSegmentsAndKeepPreroll() async throws {
         let server = try RangeServer(resources: fixture("fmp4"), path: "/media.m3u8")
         server.responseDelays = ["/init.mp4": 0.08, "/segment01.m4s": 0.08, "/segment03.m4s": 0.08]
-        var config = Config()
-        config.autoplay = false
-        config.cacheSizeMiB = 4
+        let config = playbackConfig(cacheSizeMiB: 4)
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         defer { player.close() }
         let prepare = player.preparation(for: server.url)
@@ -122,9 +126,7 @@ import Testing
         playlist += "#EXT-X-ENDLIST\n"
         let server = try RangeServer(resources: ["/media.m3u8": Data(playlist.utf8), "/shared.mp4": movie],
                                      path: "/media.m3u8")
-        var config = Config()
-        config.autoplay = false
-        config.cacheSizeMiB = 4
+        let config = playbackConfig(cacheSizeMiB: 4)
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         let delegate = RecordingDelegate()
         player.delegate = delegate
@@ -190,9 +192,7 @@ import Testing
     @Test func aNewSeekInterruptsAStalledSegment() async throws {
         let server = try RangeServer(resources: fixture("mpegts"), path: "/media.m3u8")
         server.responseDelays = ["/segment03.ts": 4]
-        var config = Config()
-        config.autoplay = false
-        config.cacheSizeMiB = 4
+        let config = playbackConfig(cacheSizeMiB: 4)
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         defer { player.close() }
         let prepare = player.preparation(for: server.url)
@@ -209,9 +209,7 @@ import Testing
     @Test func aRepeatedSeekCanReadARecoveredSegment() async throws {
         let server = try RangeServer(resources: fixture("mpegts"), path: "/media.m3u8")
         server.failRequests(to: "/segment01.ts", count: 100)
-        var config = Config()
-        config.autoplay = false
-        config.cacheSizeMiB = 4
+        let config = playbackConfig(cacheSizeMiB: 4)
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         defer { player.close() }
         let prepare = player.preparation(for: server.url)
