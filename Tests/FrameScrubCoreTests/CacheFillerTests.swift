@@ -895,9 +895,10 @@ private final class PausedFirstFileRead: ByteSource, Sendable {
     init(url: URL) throws { file = try FileByteSource(url: url) }
 
     func read(at offset: Int64, count: Int, into buffer: UnsafeMutableRawPointer) throws -> Int {
-        let first = started.withLock {
-            defer { $0 = true }
-            return !$0
+        let first = started.withLock { started in
+            let isFirst = !started
+            started = true
+            return isFirst
         }
         if first { gate.wait() }
         return try file.read(at: offset, count: count, into: buffer)
