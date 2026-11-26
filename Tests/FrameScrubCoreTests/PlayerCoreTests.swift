@@ -2016,7 +2016,8 @@ final class HapticLog {
         #expect(delegate.messages.last?.contains(" · K") == true)
     }
 
-    @Test func hwdecPicksTheDecoderAndAppliesWhileRunning() async throws {
+    @Test(.disabled(if: runsUnderRosetta, "no hardware VideoToolbox decoder for x86_64 code under Rosetta"))
+    func hwdecPicksTheDecoderAndAppliesWhileRunning() async throws {
         let (player, _, _) = try makePlayer()
         defer { player.close() }
         #expect(await eventually { player.statsText.contains("Decoder: h264 (VideoToolbox)") })

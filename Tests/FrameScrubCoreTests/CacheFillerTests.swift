@@ -349,7 +349,8 @@ import Testing
         filler.start()
         defer { filler.stop() }
         filler.setFocus(300, mode: .paused)
-        #expect(await eventually { (295...305).allSatisfy(cache.contains) })
+        // Both workers count toward this total. Let the backward worker open before recording it.
+        try #require(await eventually { filler.decoderCreationAttempts >= 2 && (295...305).allSatisfy(cache.contains) })
         let before = filler.decoderCreationAttempts
         for n in 301...340 {
             filler.setFocus(n, mode: .paused, direction: 1)

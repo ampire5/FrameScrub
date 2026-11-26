@@ -19,6 +19,7 @@ import Testing
         var config = Config()
         config.autoplay = false
         config.cacheSizeMiB = 16
+        if runsUnderRosetta { config.hwdec = .no }
         let player = PlayerCore(config: config, enableAudio: false, cacheCompression: false)
         let delegate = RecordingDelegate()
         player.delegate = delegate
